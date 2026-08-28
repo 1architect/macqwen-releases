@@ -155,6 +155,8 @@ This source repository does not contain model weights.
 ./flashnext/chat.sh
 ```
 
+This command selects `--exact-quality` by default.
+
 Use another checkpoint path when necessary:
 
 ```bash
@@ -170,7 +172,8 @@ flashnext-chat --model /path/to/Qwen3.8-Flash-Next-MLX-oQ4
 ## Generation profiles
 
 ```bash
-./flashnext/chat.sh                      # threshold 0.85
+./flashnext/chat.sh                      # exact-quality, about 1.9 tok/s
+./flashnext/chat.sh --standard           # threshold 0.85 without RAM pinning
 ./flashnext/chat.sh --threshold 1.0      # full shipped routing
 ./flashnext/chat.sh --exact-quality      # about 1.9 tok/s prefill and decode
 ./flashnext/chat.sh --fast               # aggressive approximation
@@ -192,12 +195,12 @@ The chat prints this command list at startup:
 /thinking show|hide
 /max-tokens N|off
 /status
-/salvar NAME
-/carregar NAME
-/sessoes
-/apagar NAME
+/save [name]
+/load [name]
+/sessions
+/delete NAME
 /reset
-/sair
+/quit
 ```
 
 Replies wait for EOS by default.
@@ -205,10 +208,37 @@ Use `/max-tokens N` when you need a fixed reply limit.
 
 `/thinking hide` hides reasoning text without disabling model reasoning.
 
+The terminal matches the MACQWEN chat interface:
+
+- The `you>` prompt is bold.
+- Prefill uses the moving foreground glow.
+- Visible reasoning uses gray text.
+- Final answers start at column zero.
+- Performance appears on one dim status line.
+
+## Persistent chat settings
+
+FlashNext saves these settings automatically:
+
+- Thinking activation.
+- Thinking display.
+- The reply token limit.
+
+The settings file is:
+
+```text
+~/.cache/flashnext/preferences.json
+```
+
+Command changes take effect immediately.
+The next FlashNext process loads them automatically.
+
+Use `--preferences-file PATH` for a separate configuration.
+
 ## Persistent sessions
 
-`/salvar NAME` stores the exact live model state.
-`/carregar NAME` restores that state without repeating the old prefill.
+`/save NAME` stores the exact live model state.
+`/load NAME` restores that state without repeating the old prefill.
 
 Session files can contain conversation data.
 FlashNext writes them with private file permissions.
