@@ -216,6 +216,20 @@ The terminal matches the MACQWEN chat interface:
 - Final answers start at column zero.
 - Performance appears on one dim status line.
 
+## Multiline paste
+
+FlashNext enables terminal bracketed-paste mode.
+Every pasted newline stays inside one user message.
+
+The chat waits for a separate Enter keypress after the paste.
+A trailing newline in the pasted text does not submit the message.
+
+FlashNext does not apply a smaller paste limit.
+The model supports 262,144 total context tokens.
+
+That total includes earlier turns, the new input, and generated tokens.
+The chat shows a clear error before an input fills the available context.
+
 ## Persistent chat settings
 
 FlashNext saves these settings automatically:

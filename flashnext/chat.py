@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import atexit
 from collections import Counter
-import itertools
 import json
 import os
 from pathlib import Path
@@ -39,6 +38,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import mlx.core as mx
+
+from flashnext.terminal import read_prompt
 
 DEFAULT_MODEL = "~/models/Qwen3.8-Flash-Next-MLX-oQ4"
 NEXT_TURN_THINK = (
@@ -386,7 +387,7 @@ def main() -> None:
         flush=True,
     )
     started = time.time()
-    model, _, store = load_streaming(
+    model, config, store = load_streaming(
         path,
         expert_capacity=0,
         verbose=True,
@@ -395,6 +396,10 @@ def main() -> None:
     )
     tokenizer = AutoTokenizer.from_pretrained(path)
     language = model.language_model
+    text_config = (
+        config.get("text_config") or config.get("llm_config") or config
+    )
+    max_context = int(text_config.get("max_position_embeddings", 262144))
     threshold = args.threshold
     profile = (
         "exact-quality"
@@ -540,27 +545,35 @@ def main() -> None:
 
     while True:
         try:
-            prompt = input(f"{C['b']}you>{C['0']} ").strip()
+            prompt = read_prompt(f"{C['b']}you>{C['0']} ")
         except KeyboardInterrupt:
             print(
                 f"\n{C['dim']}(Ctrl+C again at an empty prompt to quit, "
                 f"or type /quit){C['0']}"
             )
             try:
-                prompt = input(f"{C['b']}you>{C['0']} ").strip()
+                prompt = read_prompt(f"{C['b']}you>{C['0']} ")
             except (EOFError, KeyboardInterrupt):
                 print()
                 return
         except EOFError:
             print()
             return
-        if not prompt:
+        trimmed_prompt = prompt.strip()
+        if not trimmed_prompt:
             continue
-        if prompt in ("/sair", "/quit", "/exit", "/q"):
+        is_command = "\n" not in prompt and trimmed_prompt.startswith("/")
+        if is_command:
+            prompt = trimmed_prompt
+        if is_command and prompt in ("/sair", "/quit", "/exit", "/q"):
             return
-        command_parts = prompt.split(maxsplit=1)
-        command = command_parts[0]
-        argument = command_parts[1].strip().lower() if len(command_parts) == 2 else ""
+        command_parts = prompt.split(maxsplit=1) if is_command else []
+        command = command_parts[0] if command_parts else ""
+        argument = (
+            command_parts[1].strip().lower()
+            if len(command_parts) == 2
+            else ""
+        )
         command = {
             "/save": "/salvar",
             "/load": "/carregar",
@@ -578,7 +591,8 @@ def main() -> None:
                 f"thinking={'on' if thinking_enabled else 'off'}  "
                 f"display={'show' if show_thinking else 'hide'}  "
                 f"max-tokens={token_limit_text(args.max_tokens)}\n"
-                f"{C['b']}context{C['0']}   {len(context_ids)} tokens in cache\n"
+                f"{C['b']}context{C['0']}   {len(context_ids)} / "
+                f"{max_context} tokens in cache\n"
                 f"{C['b']}model{C['0']}     RSS {rss_gb():.2f} GB\n"
                 f"{C['b']}config{C['0']}    "
                 f"{Path(args.preferences_file).expanduser()}\n"
@@ -724,6 +738,14 @@ def main() -> None:
             template = NEXT_TURN_THINK if thinking_enabled else NEXT_TURN_DIRECT
             text = template.format(prompt)
         input_ids = tokenizer(text)["input_ids"]
+        projected_context = len(context_ids) + len(input_ids)
+        if projected_context >= max_context:
+            print(
+                f"{C['r']}input fills or exceeds the {max_context}-token "
+                f"context limit: "
+                f"{projected_context} tokens with the current session{C['0']}\n"
+            )
+            continue
         ids = mx.array(input_ids)[None]
 
         if quality_mode:
@@ -739,9 +761,16 @@ def main() -> None:
                 context_ids.extend(int(value) for value in input_ids)
             else:
                 decoder.append(ids)
+                context_ids.extend(int(value) for value in input_ids)
         finally:
             ingest_glow.finish()
         prefill = time.time() - prefill_started
+        remaining_context = max_context - len(context_ids)
+        generation_limit = (
+            remaining_context
+            if args.max_tokens < 0
+            else min(args.max_tokens, remaining_context)
+        )
 
         produced: list[int] = []
         pending = ""
@@ -786,12 +815,7 @@ def main() -> None:
                 def standard_tokens():
                     nonlocal token, tail_started, tail_token_index, pinned_bytes
                     try:
-                        indices = (
-                            itertools.count()
-                            if args.max_tokens < 0
-                            else range(args.max_tokens)
-                        )
-                        for index in indices:
+                        for index in range(generation_limit):
                             value = int(token.item())
                             if value in stops:
                                 return
@@ -803,10 +827,7 @@ def main() -> None:
                             if (
                                 quality_mode
                                 and index + 1 == args.tail_warmup
-                                and (
-                                    args.max_tokens < 0
-                                    or index + 1 < args.max_tokens
-                                )
+                                and index + 1 < generation_limit
                             ):
                                 set_route_observer(None)
                                 pinned_bytes = pin_candidates(candidates)
@@ -818,10 +839,11 @@ def main() -> None:
 
                 tokens = standard_tokens()
             else:
-                mtp_limit = args.max_tokens if args.max_tokens > 0 else sys.maxsize
-                tokens = decoder.generate(mtp_limit, stops)
+                tokens = decoder.generate(generation_limit, stops)
             for value in tokens:
                 produced.append(value)
+                if decoder is not None:
+                    context_ids.append(value)
                 was_thinking = inside_thinking
                 raw_piece = tokenizer.decode([value])
                 piece, inside_thinking = filter_thinking(
@@ -882,12 +904,25 @@ def main() -> None:
         if pending:
             print(pending, end="", flush=True)
 
-        hit_limit = (
+        hit_context_limit = (
             not interrupted
+            and len(produced) >= generation_limit
+            and remaining_context <= (
+                args.max_tokens if args.max_tokens > 0 else remaining_context
+            )
+        )
+        hit_reply_limit = (
+            not interrupted
+            and not hit_context_limit
             and args.max_tokens > 0
             and len(produced) >= args.max_tokens
         )
-        if hit_limit:
+        if hit_context_limit:
+            print(
+                f"\n{C['y']}[context reached {max_context} tokens]{C['0']}",
+                end="",
+            )
+        elif hit_reply_limit:
             print(
                 f"\n{C['y']}[reply reached {args.max_tokens} tokens]{C['0']}",
                 end="",

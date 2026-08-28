@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "macqwen-flashnext"
-version = "0.2.0"
+version = "0.2.1"
 description = "Run Qwen3.8-Flash-Next from SSD on Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.12"

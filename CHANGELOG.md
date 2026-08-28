@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Preserve complete multiline terminal pastes.
+- Require Enter after a paste before generation starts.
+- Enforce the model's 262,144-token context boundary.
+
 ## 0.2.0
 
 - Make `--exact-quality` the default profile.
