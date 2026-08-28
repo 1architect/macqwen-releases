@@ -1,0 +1,9 @@
+MACQWEN Releases: FlashNext
+
+This repository does not include model weights.
+
+Qwen3.8-Flash-Next-MLX-oQ4 is distributed separately by its publisher.
+Review the checkpoint license before downloading or redistributing it.
+
+MLX, mlx-vlm, Transformers, NumPy, Requests, and Hugging Face Hub are separate
+projects. Their own license terms apply.

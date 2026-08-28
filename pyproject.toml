@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "macqwen-flashnext"
+version = "0.1.0"
+description = "Run Qwen3.8-Flash-Next from SSD on Apple Silicon"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [
+  { name = "1architect" },
+]
+dependencies = [
+  "mlx==0.32.2",
+  "mlx-vlm==0.6.17",
+  "transformers==5.16.1",
+  "numpy==2.5.2",
+  "requests==2.34.2",
+  "huggingface-hub==1.28.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/1architect/macqwen-releases"
+Issues = "https://github.com/1architect/macqwen-releases/issues"
+
+[project.scripts]
+flashnext-chat = "flashnext.chat:main"
+
+[tool.setuptools.packages.find]
+include = ["flashnext*"]
