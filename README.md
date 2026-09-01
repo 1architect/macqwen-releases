@@ -120,31 +120,30 @@ The performance figures are measurements, not minimum guarantees.
 
 Run `/help` inside the chat for the current command list.
 
-Common commands:
+Primary commands:
 
 ```text
-/thinking on|off|show|hide
-/effort low|medium|high|xhigh
-/max-tokens N|off
-/think-budget N|off
-/sampling
-/settings
-/save [name]
-/load [name]
-/sessions
-/reset
+/help [all]
+/new
+/session save|load|list|delete [name]
+/config [section] ...
+/status
 /quit
 ```
 
+`/help` shows these primary commands. `/help all` also shows compatibility
+commands. Existing commands such as `/thinking`, `/settings`, `/save`, and
+`/reset` remain accepted.
+
 The chat uses Qwen's recommended thinking-mode sampling defaults.
-Use `/sampling greedy` only when deterministic output is necessary.
+Use `/config sampling greedy` only when deterministic output is necessary.
 
 The default answer limit is 4,096 tokens.
 The default thinking capacity is 512 additional tokens.
-Use `/settings` to inspect the active model, sampling, and routing values.
+Use `/status` to inspect the active model, sampling, routing, context, and memory values.
 
 The terminal streams complete words and shows prefill progress.
-Use `/animate off` to disable the text fade.
+Use `/config display animate off` to disable the text fade.
 
 ## Routing modes
 
@@ -220,11 +219,14 @@ Tavily requires an API key. Context7 accepts an optional key.
 Manage these keys inside the chat:
 
 ```text
-/keys
-/keys set tavily
-/keys set context7
-/keys delete tavily
+/config keys
+/config keys set tavily
+/config keys set context7
+/config keys delete tavily
 ```
+
+The compatibility commands `/keys` and `/api-keys` remain accepted.
+Key management works in both chat profiles.
 
 Key input does not echo.
 

@@ -35,8 +35,9 @@ What changed in the code recently:
   nothing in between.
 - The cache-aware swap no longer runs on prefill batches, and the route
   observer no longer receives the whole prefill batch.
-- `/settings` now shows sampling, effort, thinking and the token budget
-  alongside the routing settings.
+- `/config model` now shows sampling, effort, thinking and the token budget
+  alongside the routing settings. The compatibility `/settings` command
+  remains accepted.
 
 The first thing worth doing is in "Redo the gate now that the sampler exists"
 under Next work. Cache-aware's gate result was measured under greedy decoding,
@@ -97,33 +98,33 @@ preferred answer in a long-context comparison. `exact-quality` remains the defau
 Use the live configurator before a turn:
 
 ```text
-/settings
-/settings routing exact-quality
-/settings routing cache-aware
-/settings routing fused-quality
-/settings swap-epsilon 0.02
-/settings threshold 1.0
-/settings resident-experts 32
-/settings pinned-experts 32
-/settings pin-budget-gb 6
-/settings tail-experts 6
-/settings tail-warmup 8
-/settings fusion-block 23
-/settings fusion-min-margin 1.0
-/settings fusion-min-block 20
-/settings fusion-margin-tokens 8
-/settings fusion-max-prompt 512
-/settings fusion-model <path to a draft model>
-/settings defaults
+/config model
+/config model routing exact-quality
+/config model routing cache-aware
+/config model routing fused-quality
+/config model swap-epsilon 0.02
+/config model threshold 1.0
+/config model resident-experts 32
+/config model pinned-experts 32
+/config model pin-budget-gb 6
+/config model tail-experts 6
+/config model tail-warmup 8
+/config model fusion-block 23
+/config model fusion-min-margin 1.0
+/config model fusion-min-block 20
+/config model fusion-margin-tokens 8
+/config model fusion-max-prompt 512
+/config model fusion-model <path to a draft model>
+/config model defaults
 ```
 
-`pinned-experts` aliases `resident-experts`. `pin-budget-gb` caps the pinned storage. `/settings` reports the current pinned layer-expert
+`pinned-experts` aliases `resident-experts`. `pin-budget-gb` caps the pinned storage. `/config model` reports the current pinned layer-expert
 count and bytes.
 
 Settings apply to the current process only. A new `./chat.sh` launch returns to `exact-quality`, threshold `0.85`, 32 resident experts,
 warmup `8`, and swap epsilon `0.02`.
 
-Use `/reset` before enabling the one-shot fused draft for a new conversation.
+Use `/new` before enabling the one-shot fused draft for a new conversation.
 
 `speculative-fast` and MTP stay research-only. Both need a different load path, and both lost their complete-runtime controls.
 
@@ -161,7 +162,7 @@ Run the model suite in its environment:
 Run a live session restore:
 
 ```bash
-printf '/load probe\n/status\n/quit\n' | \
+printf '/session load probe\n/status\n/quit\n' | \
   ./chat.sh --model flashnext --profile plain --exact-quality
 ```
 

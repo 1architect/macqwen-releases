@@ -1596,7 +1596,7 @@ Adaptive top-k scores ten experts per layer and keeps about eight, so two are al
 off the drive and a discarded one is already in memory within `epsilon` of its score, the resident one is taken instead.
 `FLASHNEXT_SWAP_RESIDENT=1` enables it, `FLASHNEXT_SWAP_EPSILON` sets the tolerance, default 0.02. This initial benchmark switch was off by
 default. The environment flags were the initial benchmark interface. The runtime now exposes the mechanism as the `cache-aware` routing
-profile. `/settings routing cache-aware` enables it live. `/settings swap-epsilon VALUE` controls the tolerance. `exact-quality` remains the
+profile. `/config model routing cache-aware` enables it live. `/config model swap-epsilon VALUE` controls the tolerance. `exact-quality` remains the
 default.
 
 ### Quality
@@ -1662,13 +1662,13 @@ shrink the working set and compound the gain, or settle routing onto a subset an
 The measured mechanism is now a normal routing profile. It no longer needs environment flags or a separate implementation path.
 
 ```text
-/settings routing cache-aware
-/settings swap-epsilon 0.02
-/settings routing exact-quality
+/config model routing cache-aware
+/config model swap-epsilon 0.02
+/config model routing exact-quality
 ```
 
 The CLI supports `--cache-aware` and `--swap-epsilon`. Selecting the profile enables bounded residency
-tracking in the open tensor store. This also works after a live `/settings` change. The initial four-prompt factual gate did not lose a
+tracking in the open tensor store. This also works after a live `/config model` change. The initial four-prompt factual gate did not lose a
 correct exact answer. It was too small to decide product quality. A later test compared Portuguese dream analysis at about 4,600 to 5,700
 context tokens. Both profiles stayed coherent. The exact-quality answer was better because it had better structure, continuity, and detail
 selection. The long-context rates were directional only. The prompts had different context lengths and the machine state was uncontrolled.
@@ -1677,7 +1677,7 @@ Across five aligned segments, cache-aware had a 2.2 tok/s median `gen` rate agai
 
 - Keep `exact-quality` as the default.
 - Offer `cache-aware` as an explicit speed option.
-- Show a quality warning in `/settings`.
+- Show a quality warning in `/config model`.
 - Keep the retained speed claim at 2.79 versus 2.54 tok/s in the hot
 interleaved benchmark, with a paired mean gain of 8.3 percent.
 - Require a wider quality gate before any default change.
@@ -2130,7 +2130,7 @@ for the chat.
 
 `macqwen/sampling.py` holds `Sampling` and `Sampler`, with temperature, top-k, top-p, min-p, and presence penalty, defaulting to the card's
 thinking-mode values. The backend defaults to greedy so no benchmark can sample by accident; the chat sets it from preferences.
-`run_benchmark` forces greedy whatever the preferences say. `/sampling` reads and writes it live, and `/settings` shows it alongside effort,
+`run_benchmark` forces greedy whatever the preferences say. `/config sampling` reads and writes it live, and `/config model` shows it alongside effort,
 thinking, and the token budget. Checked against the real model, same prompt, thinking off:
 
 ```text

@@ -13,8 +13,10 @@ it IS the terminal.
 A token is required. Anything on the network that reaches this port can run
 shell commands on the Mac, so an open port is not an option.
 """
-import argparse, html, os, pty, re, secrets, select, signal, socket, subprocess, sys, threading, time
+import argparse, html, json, os, pty, re, secrets, select, signal, socket, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from macqwen.commands import web_shortcuts
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 # A line buffer, not a byte stream. The chat redraws progress bars with a
@@ -164,6 +166,21 @@ def to_html(data: bytes) -> str:
     return "".join(out)
 
 
+def _shortcut_buttons() -> str:
+    """Keep phone actions aligned with the shared chat command metadata."""
+    buttons = [
+        '<button onclick="send(\'y\')">y</button>',
+        '<button onclick="send(\'n\')">n</button>',
+        '<button onclick="raw(String.fromCharCode(3))">ctrl-c</button>',
+    ]
+    for label, command in web_shortcuts():
+        buttons.append(
+            f'<button onclick="send({html.escape(json.dumps(command), quote=True)})">'
+            f'{html.escape(label)}</button>'
+        )
+    return "\n  ".join(buttons)
+
+
 PAGE = """<!doctype html><html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
@@ -190,12 +207,7 @@ PAGE = """<!doctype html><html><head>
 </style></head><body>
 <div id="out"></div>
 <div id="keys">
-  <button onclick="send('y')">y</button>
-  <button onclick="send('n')">n</button>
-  <button onclick="raw('\\u0003')">ctrl-c</button>
-  <button onclick="send('/status')">/status</button>
-  <button onclick="send('/thinking hide')">hide think</button>
-  <button onclick="send('/budget 600')">budget</button>
+  {{SHORTCUTS}}
 </div>
 <div id="bar">
   <input id="in" autocomplete="off" autocapitalize="off" autocorrect="off"
@@ -216,6 +228,7 @@ async function send(s){await fetch('/input?t='+T,{method:'POST',body:JSON.string
 function go(){const v=inp.value;inp.value='';send(v);stick=true;out.scrollTop=out.scrollHeight;}
 inp.addEventListener('keydown',e=>{if(e.key==='Enter')go()});
 </script></body></html>"""
+PAGE = PAGE.replace("{{SHORTCUTS}}", _shortcut_buttons())
 
 
 class Handler(BaseHTTPRequestHandler):

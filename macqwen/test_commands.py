@@ -212,20 +212,43 @@ class SettingTests(unittest.TestCase):
 
 
 class ProfileTests(unittest.TestCase):
+    def setUp(self):
+        self.session = FakeSession()
+
     def test_agent_only_commands_are_hidden_from_plain(self):
         plain = FakeSession(profile="plain")
         out = commands.dispatch(plain, "/approval auto")
         self.assertIn("agent profile", out)
         self.assertEqual(plain.preferences["approval"], "ask")
 
-    def test_help_lists_fewer_commands_in_plain(self):
-        self.assertLess(
-            len(commands.available("plain")), len(commands.available("agent"))
+    def test_help_keeps_six_primary_commands_for_each_profile(self):
+        self.assertEqual(len(commands.primary_commands("plain")), 6)
+        self.assertEqual(len(commands.primary_commands("agent")), 6)
+
+    def test_help_all_keeps_profile_specific_commands_filtered(self):
+        self.assertIn("/approval", commands.render_help("agent", all_commands=True))
+        self.assertNotIn("/approval", commands.render_help("plain", all_commands=True))
+
+    def test_config_help_shows_only_relevant_tool_controls(self):
+        plain = commands.dispatch(FakeSession("plain"), "/config")
+        agent = commands.dispatch(FakeSession("agent"), "/config")
+        for text in (plain, agent):
+            self.assertIn("/config keys", text)
+        self.assertNotIn("/config approval", plain)
+        self.assertNotIn("/config workspace", plain)
+        self.assertIn("/config approval", agent)
+        self.assertIn("/config workspace", agent)
+
+    def test_web_shortcuts_use_primary_command_metadata(self):
+        self.assertEqual(
+            commands.web_shortcuts(),
+            (("help", "/help"), ("new", "/new"),
+             ("config", "/config"), ("status", "/status")),
         )
 
     def test_help_mentions_every_available_command(self):
         text = commands.render_help("agent")
-        for command in commands.available("agent"):
+        for command in commands.primary_commands("agent"):
             self.assertIn(command.name, text)
 
     def test_help_hides_compatibility_aliases(self):
@@ -236,10 +259,10 @@ class ProfileTests(unittest.TestCase):
     def test_help_summary_starts_after_the_longest_usage(self):
         lines = commands.render_help("agent").splitlines()
         by_name = dict(zip(
-            (command.name for command in commands.available("agent")), lines
+            (command.name for command in commands.primary_commands("agent")), lines
         ))
-        longest = max(len(command.usage) for command in commands.available("agent"))
-        for command in commands.available("agent"):
+        longest = max(len(command.usage) for command in commands.primary_commands("agent"))
+        for command in commands.primary_commands("agent"):
             self.assertGreaterEqual(
                 by_name[command.name].index(command.summary), longest + 4
             )
@@ -256,6 +279,30 @@ class ProfileTests(unittest.TestCase):
         session = FakeSession()
         commands.dispatch(session, "/quit")
         self.assertTrue(session.stopped)
+
+    def test_new_and_reset_share_the_same_behavior(self):
+        new = commands.dispatch(self.session, "/new")
+        self.session.was_reset = False
+        reset = commands.dispatch(self.session, "/reset")
+        self.assertEqual(new, reset)
+        self.assertTrue(self.session.was_reset)
+
+    def test_session_groups_state_commands(self):
+        self.assertIn("saved demo", commands.dispatch(self.session, "/session save demo"))
+        self.assertIn("loaded demo", commands.dispatch(self.session, "/session load demo"))
+        self.assertIn("no saved sessions", commands.dispatch(self.session, "/session list"))
+        self.assertIn("deleted demo", commands.dispatch(self.session, "/session delete demo"))
+
+    def test_config_groups_setting_commands(self):
+        self.assertIn("thinking: on", commands.dispatch(self.session, "/config thinking on"))
+        self.assertIn("settings threshold 1.0", commands.dispatch(self.session, "/config model threshold 1.0"))
+        self.assertIn("animate: off", commands.dispatch(self.session, "/config display animate off"))
+
+    def test_help_all_shows_compatibility_reference(self):
+        text = commands.dispatch(self.session, "/help all")
+        self.assertIn("Compatibility commands:", text)
+        for name in ("/server", "/settings", "/reset", "/save"):
+            self.assertIn(name, text)
 
 
 if __name__ == "__main__":

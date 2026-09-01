@@ -26,9 +26,12 @@ Profile and model selection are independent.
 The chat manages input, commands, preferences, prompts, streaming, tools, and sessions. Both models use one command table. Each backend owns
 its session format.
 
-The ready line shows the model, profile, thinking state, routing profile, and resident memory. `/help` lists primary command names.
+The ready line shows the model, profile, and `/help` hint. `/status` shows
+thinking, routing, context, and memory diagnostics. `/help` lists six primary
+commands. `/help all` lists compatibility commands.
 
-Flash-Next routing changes apply through `/settings`. This includes `cache-aware` routing and its `swap-epsilon` value.
+Flash-Next routing changes apply through `/config model`. This includes
+`cache-aware` routing and its `swap-epsilon` value.
 
 The terminal shows measured prefill progress. It streams complete words with separate answer and reasoning colors. Tool protocol stays
 hidden. Tool states and execution time remain visible.

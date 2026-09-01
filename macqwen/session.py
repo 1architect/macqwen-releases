@@ -547,13 +547,9 @@ def main() -> int:
         migrate_system_prompt=not args.benchmark_json,
     )
     ready_seconds = time.time() - began
-    routing = getattr(backend, "routing_profile", None)
     print(f"{C['dim']}ready in {time.time() - began:.1f}s  "
-          f"model={prefs['model']}  profile={prefs['profile']}"
-          f"  thinking={'on' if prefs['thinking_enabled'] else 'off'}"
-          f"{'  routing=' + routing if routing else ''}"
-          f"{_swap_banner()}  "
-          f"RSS {rss_gb():.2f} GB{C['0']}\n", file=display)
+          f"{prefs['model']} / {prefs['profile']}  "
+          f"use /help for commands{C['0']}\n", file=display)
     if args.benchmark_json:
         print(json.dumps(run_benchmark(session, args.benchmark_prompt, ready_seconds)))
         return 0
