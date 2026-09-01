@@ -27,7 +27,7 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm import load
 
-MODEL = Path.home() / ".lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-V4-ends-b"
+MODEL = Path.home() / "models/Qwen3.8-27B-Apple-MLX-V4-ends-b"
 STORE = Path.home() / ".frankenstein" / "v4" / "q8"
 WORK = Path.home() / ".frankenstein" / "v4"
 # Perturbing "down to 2 bits" is a no-op for the tensors already at 2 bits,
@@ -84,7 +84,7 @@ def main():
 
     model, tok = load(str(MODEL))
     L = model.language_model.model.layers
-    root = Path("/Users/gioma/Developer/MACQWEN")
+    root = Path(__file__).resolve().parents[2]
     texts = [(root / f).read_text()[:7000] for f in HELD_OUT if (root / f).exists()]
 
     def nll():

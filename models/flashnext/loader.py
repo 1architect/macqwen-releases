@@ -1,13 +1,12 @@
 """Build Qwen3.8-Flash-Next so it runs from disk instead of from memory.
 
-Stock mlx-vlm materializes every weight. For this checkpoint that is 67.7 GB
-against 16 GB of unified memory, so macOS swaps and the machine dies. Here the
-two big tensor families never become resident:
+Stock mlx-vlm materializes every weight. These checkpoints exceed 16 GB of
+unified memory, so macOS swaps heavily. Two large tensor families stay on disk:
 
-    MoE experts   45.3 GB  ->  bounded LRU of routed experts
-    n-gram table  19.2 GB  ->  rows read per lookup
+    MoE experts   ->  bounded LRU of routed experts
+    n-gram table  ->  rows read per lookup
 
-Everything else, 3.2 GB, loads normally.
+The loader infers each selected checkpoint's quantization layout.
 """
 from __future__ import annotations
 

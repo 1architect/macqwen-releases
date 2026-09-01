@@ -1,32 +1,31 @@
-# Qwen3.8-27B handoff
+# Qwen3.8-27B reference
 
 ## Environment
 
-Set the custom Python environment:
+The launcher checks the active environment, then `.venv-qwen27b`:
 
 ```text
-MACQWEN_QWEN27B_PYTHON=/path/to/compatible/python
+.venv-qwen27b/bin/python
 ```
 
-The launcher also uses an active compatible environment or `.venv-qwen27b`.
+Override it with `MACQWEN_QWEN27B_PYTHON`.
 
 ## Model selection
 
-Place compatible builds under `MACQWEN_MODEL_ROOT`, which defaults to:
+Place V4 builds under:
 
 ```text
-~/models/
+~/models/Qwen3.8-27B-Apple-MLX-V4-BUILD
 ```
 
-Run a build by directory name:
+Run a build by suffix:
 
 ```bash
 ./chat.sh BUILD --profile plain
 ./chat.sh BUILD --profile agent
 ```
 
-The launcher also accepts `--model-path`. It rejects an incompatible
-vocabulary.
+The launcher also accepts `--model-path`. It rejects an incompatible vocabulary.
 
 ## Main files
 
@@ -52,14 +51,14 @@ vocabulary.
 Run backend and parser tests in the 27B environment:
 
 ```bash
-$MACQWEN_QWEN27B_PYTHON -m unittest \
+~/mlx-qwen38-kernel-lab/bin/python3 -m unittest \
   macqwen.test_qwen27b_backend macqwen.test_tools
 ```
 
 Run the lightweight import check:
 
 ```bash
-$MACQWEN_QWEN27B_PYTHON -c \
+~/mlx-qwen38-kernel-lab/bin/python3 -c \
   'from models.qwen27b.frankenstein_engine import FrankensteinEngine'
 ```
 
@@ -67,8 +66,7 @@ A live test requires an installed compatible checkpoint.
 
 ## Closed directions
 
-The research file contains the measurements. Do not retry these without a new
-mechanism:
+The research file contains the measurements. Do not retry these without a new mechanism:
 
 - Dense-model FFN streaming.
 - Stock-weight grafting into the retained V4 model.

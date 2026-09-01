@@ -16,15 +16,14 @@ import mlx.core as mx
 
 from models.flashnext.loader import load_streaming
 from models.flashnext.sessions import SessionStore
+from macqwen.checkpoints import resolve_flashnext
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--model", default="~/models/Qwen3.8-Flash-Next-MLX-oQ4"
-    )
+    parser.add_argument("--model")
     args = parser.parse_args()
-    model_path = Path(args.model).expanduser()
+    model_path = resolve_flashnext(args.model)
     os.environ["FLASHNEXT_TOPK_THRESHOLD"] = "0.85"
 
     from transformers import AutoTokenizer

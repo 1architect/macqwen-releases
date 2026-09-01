@@ -187,3 +187,33 @@ class PinPartsTests(unittest.TestCase):
         from models.flashnext.routing import PIN_PARTS
 
         self.assertLess(len(PIN_PARTS["scales"]), len(PIN_PARTS["all"]))
+
+
+class ObserverRowLimitTests(unittest.TestCase):
+    """The pin observer stops after `warmup` rows. Handing it a whole prefill
+    batch builds one list row per prompt token, 48 times, for nothing."""
+
+    def tearDown(self):
+        from models.flashnext.adaptive_topk import set_route_observer
+
+        set_route_observer(None)
+
+    def test_a_measurement_observer_still_sees_every_row(self):
+        from models.flashnext.adaptive_topk import (
+            _OBSERVER_MAX_ROWS,
+            set_route_observer,
+        )
+
+        set_route_observer(lambda *args: None)
+        self.assertIsNone(_OBSERVER_MAX_ROWS[0])
+
+    def test_clearing_the_observer_clears_the_limit(self):
+        from models.flashnext.adaptive_topk import (
+            _OBSERVER_MAX_ROWS,
+            set_route_observer,
+        )
+
+        set_route_observer(lambda *args: None, 8)
+        self.assertEqual(_OBSERVER_MAX_ROWS[0], 8)
+        set_route_observer(None)
+        self.assertIsNone(_OBSERVER_MAX_ROWS[0])

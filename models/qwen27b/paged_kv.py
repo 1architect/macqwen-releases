@@ -599,7 +599,7 @@ def needle_test(model_path, page_size=128, n_prompt=4000, depth=0.5,
     install()
 
     chunks = []
-    for f in sorted(Path(source_root or "/Users/gioma/Developer/MACBAT").rglob("*.swift")):
+    for f in sorted(Path(source_root or Path.cwd()).rglob("*.swift")):
         if any(x in f.parts for x in (".build", "DerivedData", ".git")):
             continue
         chunks.append(f"// FILE: {f.name}\n" + f.read_text(errors="replace"))
@@ -773,8 +773,10 @@ def main():
     p.add_argument("--ks", default="0,4,2")
     p.add_argument("--no-baseline", action="store_true",
                    help="skip the contiguous run; test only the sparse path")
-    p.add_argument("--model", default="/Users/gioma/.lmstudio/models/gioma/"
-                                      "Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1")
+    p.add_argument(
+        "--model",
+        default=str(Path.home() / "models/Qwen3.8-27B-Apple-MLX-E2-v1"),
+    )
     p.add_argument("--page-size", type=int, default=256)
     p.add_argument("--tokens", type=int, default=240)
     p.add_argument("--gen", type=int, default=48)

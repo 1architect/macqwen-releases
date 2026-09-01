@@ -25,11 +25,12 @@ import mlx.core as mx
 import numpy as np
 from transformers import AutoTokenizer
 
+from macqwen.checkpoints import resolve_flashnext
 from models.flashnext.adaptive_topk import set_threshold
 from models.flashnext.expert_cache import profile_totals, reset_profile
 from models.flashnext.loader import load_streaming
 
-MODEL = os.path.expanduser("~/models/Qwen3.8-Flash-Next-MLX-oQ4")
+MODEL = str(resolve_flashnext())
 PROMPT = "Explique a fotossintese em duas frases."
 PARTS = ("weight", "scales", "biases")
 PROJECTIONS = ("gate_proj", "up_proj", "down_proj")

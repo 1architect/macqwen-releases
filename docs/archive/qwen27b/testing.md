@@ -1,33 +1,26 @@
-# TEST_INSTRUCTIONS.md
+# Archived Frankenstein E2 test runbook
 
-## Frankenstein E2: quality, agent, memory, and ingest test runbook
+Archive status: historical Qwen 27B quality, memory, ingest, and tool-workflow tests. Paths and settings can be
+obsolete. `PROJECT.md` records the architecture and acceptance criteria.
 
-This document describes how to reproduce the current tests for Frankenstein E2.
-
-Read `PROJECT.md` first for architecture, training history, and acceptance criteria.
-
-Read `SERVER_INSTRUCTIONS.md` for server startup commands.
-
----
-
-# 1. Test philosophy
+## 1. Test philosophy
 
 The acceptance reference is the GGUF model:
 
 ```text
-/Users/gioma/.lmstudio/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-IQ2_XXS.gguf
+~/.lmstudio/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-IQ2_XXS.gguf
 ```
 
 Current target model:
 
 ```text
-/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1
+~/models/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1
 ```
 
 Original MLX baseline:
 
 ```text
-/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-v2
+~/models/Qwen3.8-27B-Apple-MLX-v2
 ```
 
 Core rule:
@@ -38,7 +31,7 @@ Judge in this order:
 
 ```text
 1. autonomous generation correctness
-2. real coding-agent usefulness
+2. real coding usefulness
 3. closure / looping behavior
 4. tool navigation
 5. long-context recall
@@ -47,9 +40,7 @@ Judge in this order:
 8. generation speed
 ```
 
----
-
-# 2. Before every test
+## 2. Before every test
 
 Kill old server/model processes:
 
@@ -66,7 +57,6 @@ lsof -nP -iTCP:8080 -sTCP:LISTEN
 ```
 
 No output should remain.
-
 Check system state:
 
 ```bash
@@ -76,12 +66,9 @@ memory_pressure | tail -1
 
 Do not compare runs when the machine is already under radically different memory pressure.
 
----
-
-# 3. Server smoke test
+## 3. Server smoke test
 
 Start the desired E2 server using `SERVER_INSTRUCTIONS.md`.
-
 Then:
 
 ```bash
@@ -97,8 +84,7 @@ Expected:
 Minimal completion:
 
 ```bash
-MODEL="/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
-
+MODEL="~/models/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
 curl -s \
 http://127.0.0.1:8080/v1/chat/completions \
 -H 'Content-Type: application/json' \
@@ -127,14 +113,12 @@ no server traceback
 final answer contains TEST_OK
 ```
 
----
-
-# 4. Real MacBat agent benchmark
+## 4. Real MacBat repository benchmark
 
 Repository:
 
 ```text
-/Users/gioma/Developer/MACBAT
+~/Developer/MACBAT
 ```
 
 Primary task:
@@ -142,14 +126,10 @@ Primary task:
 > Review `main.swift` in the context of the rest of the project and give concrete improvement suggestions.
 
 The MacBat run is the primary practical test.
-
-The agent must be allowed to inspect related files.
-
+The harness must inspect related files.
 It must not receive the contents of `main.swift` manually in the initial prompt.
 
----
-
-# 5. Install the latest read-only agent harness
+## 5. Install the read-only harness
 
 Current bounded-context harness:
 
@@ -162,33 +142,26 @@ If it is still in Downloads:
 ```bash
 cp ~/Downloads/macbat_readonly_agent_v3.py \
    ~/macbat_readonly_agent_v3.py
-
 chmod +x ~/macbat_readonly_agent_v3.py
-
 "$HOME/mlx-qwen38-apple/bin/python3" \
 -m py_compile ~/macbat_readonly_agent_v3.py \
 && echo "AGENT OK"
 ```
 
-If a newer `frankenstein_engine.py` / ContextVM agent exists, prefer it and update this document.
+Later tests can use `frankenstein_engine.py` or ContextVM.
 
----
-
-# 6. Run the E2 MacBat benchmark
+## 6. Run the E2 MacBat benchmark
 
 Start the recommended E2 server first.
-
 Then, in another Terminal:
 
 ```bash
-cd /Users/gioma/Developer/MACBAT
-
-MODEL="/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
-
+cd ~/Developer/MACBAT
+MODEL="~/models/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
 caffeinate -i \
 "$HOME/mlx-qwen38-apple/bin/python3" \
 ~/macbat_readonly_agent_v3.py \
---root "/Users/gioma/Developer/MACBAT" \
+--root "~/Developer/MACBAT" \
 --model "$MODEL" \
 --max-turns 30 \
 --max-tokens 1600 \
@@ -197,8 +170,7 @@ caffeinate -i \
 --log ~/macbat_frankenstein_e2.log
 ```
 
-The agent is read-only.
-
+The harness is read-only.
 Expected tool families:
 
 ```text
@@ -208,9 +180,7 @@ read_file
 search
 ```
 
----
-
-# 7. MacBat run measurements
+## 7. MacBat run measurements
 
 For every turn capture:
 
@@ -231,97 +201,67 @@ Also capture server memory:
 
 ```bash
 PID=$(pgrep -f "mlx_lm.*server" | head -1)
-
 ps -o pid,rss,vsz,%cpu,command -p "$PID"
-
 vmmap -summary "$PID" | grep -Ei \
 "Physical footprint|Physical footprint \(peak\)|resident|Metal"
-
 sysctl vm.swapusage
-
 memory_pressure | tail -1
 ```
 
 Run this after several significant tool turns, not only at the end.
 
----
-
-# 8. MacBat quality grading
+## 8. MacBat quality grading
 
 Grade the final review on:
 
 ```text
 A. Files inspected
-
 B. Correct cross-file relationships
-
 C. Real bugs found
-
 D. False-positive / invented bugs
-
 E. Swift/macOS correctness
-
 F. Concurrency reasoning
-
 G. Lifecycle reasoning
-
 H. Performance suggestions justified by code
-
 I. Architectural insight
-
 J. Refactoring usefulness
-
 K. Tool efficiency
-
 L. Repeated or irrelevant reads
-
 M. Reasoning loops
-
 N. Final prioritization quality
 ```
 
 Important:
-
 A longer answer is not automatically better.
-
 A model that invents issues to appear thorough fails.
 
----
+## 9. Known original-v2 baseline
 
-# 9. Known original-v2 baseline
-
-Historical baseline using the first agent harness:
+Historical baseline using the first harness:
 
 ```text
 model:
-/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-v2
+~/models/Qwen3.8-27B-Apple-MLX-v2
 ```
 
 Result:
 
 ```text
 TURN 5
-
 prompt:      4637
 completion:  1800
 time:        509.38 s
-
 failure:
 no TOOL or FINAL after thinking
 ```
 
 The model consumed its full generation budget without committing to an action.
-
-E2 previously progressed farther and made better agent decisions.
-
+E2 previously progressed farther and made better tool decisions.
 Do not interpret the old v2 failure as a server failure.
 
----
-
-# 10. E2 known behavior
+## 10. E2 known behavior
 
 E2 previously demonstrated strong held-out autonomous closure.
-
 Known held-out transition result summary:
 
 ```text
@@ -329,12 +269,10 @@ e_percentage
 GGUF: 130 tokens, closed
 v2:   227 tokens, closed
 E2:   171 tokens, closed
-
 e_lock_order
 GGUF: 555 tokens, closed
 v2:   900-token cap, did not close
 E2:   485 tokens, closed and correct
-
 e_complexity
 GGUF: 500 tokens, closed
 v2:   890 tokens, closed
@@ -351,21 +289,16 @@ E2:             962
 
 These prior results do not replace current real-world tests.
 
----
-
-# 11. Known invalid regression prompt
+## 11. Known invalid regression prompt
 
 Do not use the previous Python `asyncio.TaskGroup` prompt as a termination regression.
-
 Both E2 and the GGUF teacher looped on it.
-
 Historical result:
 
 ```text
 E2:
   generated 1800
   did not close
-
 GGUF:
   generated 2400
   did not close
@@ -375,14 +308,10 @@ Therefore:
 
 > If both reference and candidate fail the same pathological prompt, it is not useful as a candidate regression test.
 
----
-
-# 12. Prompt-ingestion benchmark
+## 12. Prompt-ingestion benchmark
 
 Goal:
-
-Measure true sustained prefill speed independently of agent quality.
-
+Measure sustained prefill speed independently of task quality.
 Test the same prompt/context at approximately:
 
 ```text
@@ -407,7 +336,6 @@ memory pressure
 ```
 
 Do not compare different prompt contents unless necessary.
-
 Current known approximate long-prompt result:
 
 ```text
@@ -418,12 +346,9 @@ Current known approximate long-prompt result:
 
 The run used conservative settings.
 
----
-
-# 13. Prefill-step sweep
+## 13. Prefill-step sweep
 
 Test exactly one step size at a time.
-
 Recommended order:
 
 ```text
@@ -444,13 +369,11 @@ For each:
 
 Reject any setting that destabilizes the Mac, regardless of speed.
 
----
-
-# 14. Prompt-cache reuse test
+## 14. Prompt-cache reuse test
 
 This test answers:
 
-> Are later agent turns processing only the new suffix, or re-ingesting the whole conversation?
+> Do later turns process only the new suffix?
 
 Start server with prompt caching enabled:
 
@@ -459,7 +382,6 @@ Start server with prompt caching enabled:
 ```
 
 Run at least three related turns.
-
 Watch:
 
 ```text
@@ -483,30 +405,22 @@ cached=0 on every turn
 ```
 
 unless intentionally running a cold benchmark.
-
 Also watch server logs for:
 
 ```text
 Prompt Cache: N sequences, X.XX GB
 ```
 
----
-
-# 15. Memory-growth test
+## 15. Memory-growth test
 
 Goal:
-
 Find whether memory scales uncontrollably as the model reads more files.
-
 Start from a clean server.
-
-Run the MacBat agent.
-
+Run the MacBat harness.
 After each significant read/tool turn:
 
 ```bash
 PID=$(pgrep -f "mlx_lm.*server" | head -1)
-
 printf "\n=== %s ===\n" "$(date)"
 ps -o pid,rss,vsz,%cpu -p "$PID"
 vmmap -summary "$PID" | grep -Ei \
@@ -521,16 +435,14 @@ Pass for current interim architecture:
 Mac remains responsive
 memory growth is controlled
 prompt cache remains inside configured budget
-agent can complete the review
+harness can complete the review
 ```
 
 The long-term ContextVM requirement is stronger:
 
 > Logical context may grow while resident memory remains approximately bounded.
 
----
-
-# 16. Q4-KV regression test
+## 16. Q4-KV regression test
 
 Compare:
 
@@ -540,7 +452,6 @@ B. --kv-bits 4 --kv-group-size 64
 ```
 
 Keep everything else identical.
-
 Compare:
 
 ```text
@@ -554,15 +465,11 @@ speed
 ```
 
 Pass only if quality remains materially unchanged.
-
 Do not judge only by token count.
 
----
-
-# 17. Q2-KV regression test
+## 17. Q2-KV regression test
 
 Only run after Q4 is stable.
-
 Compare:
 
 ```text
@@ -591,9 +498,7 @@ tool selection
 ```
 
 If Q2 loses quality:
-
 Do not modify E2 weights.
-
 Prefer:
 
 ```text
@@ -602,12 +507,9 @@ hot Q4
 cold Q2
 ```
 
----
-
-# 18. Long-context ladder
+## 18. Long-context ladder
 
 Do not jump directly to 256K.
-
 Progress:
 
 ```text
@@ -634,14 +536,10 @@ stability
 
 A context length only counts as supported if the model remains useful at that length.
 
----
-
-# 19. Fresh blind coding benchmark
+## 19. Fresh blind coding benchmark
 
 Once runtime is stable, run a fresh external benchmark.
-
 Use prompts never used during training/distillation.
-
 Suggested domains:
 
 ```text
@@ -658,7 +556,6 @@ complexity reasoning
 ```
 
 Aim for roughly 15 high-quality prompts.
-
 Run:
 
 ```text
@@ -679,9 +576,7 @@ repository state
 
 Do not load multiple 27B models simultaneously.
 
----
-
-# 20. Blind-benchmark grading
+## 20. Blind-benchmark grading
 
 For every prompt record:
 
@@ -702,31 +597,18 @@ Primary question:
 
 > Is E2 at least as useful as the GGUF teacher/reference for real coding work?
 
----
+## 21. ContextVM V0 test
 
-# 21. ContextVM V0 test
-
-After direct single-process engine implementation, this becomes the primary runtime test.
-
-Required invariant:
+The single-process engine had this required invariant:
 
 ```text
-Turn 1:
-process initial prompt
-
-Tool call:
-execute tool
-
-Turn 2:
-process ONLY newly appended tool result / control tokens
-
-Turn 3:
-process ONLY newly appended tokens
+turn 1     process the initial prompt
+tool call  execute the tool
+turn 2     process only new tool-result and control tokens
+turn 3     process only new tokens
 ```
 
-The engine must not reconstruct and re-prefill the full conversation.
-
-Telemetry required per turn:
+Required telemetry:
 
 ```text
 logical sequence tokens
@@ -741,22 +623,17 @@ prompt tok/s
 generation tok/s
 ```
 
-Pass:
+Pass: new-token work scales with the appended suffix, not the full conversation.
 
-> New-token work is proportional to the appended suffix, not total conversation length.
+## 22. ContextVM V1 test: quantized persistent KV
 
----
-
-# 22. ContextVM V1 test: quantized persistent KV
-
-Quantize only cache objects that support:
+Only cache objects with this method supported quantization:
 
 ```python
 to_quantized()
 ```
 
-For Qwen3.8 this should target full-attention KV while recurrent `ArraysCache` remains fixed-state.
-
+For Qwen3.8, this targets full-attention KV. Recurrent `ArraysCache` stays fixed-state.
 Verify:
 
 ```text
@@ -765,13 +642,9 @@ lower cache bytes
 no corruption after repeated tool turns
 ```
 
----
+## 23. ContextVM V2 test: paged KV equivalence
 
-# 23. ContextVM V2 test: paged KV equivalence
-
-Before SSD paging, prove paged attention correctness entirely in RAM.
-
-Compare:
+The RAM test compared:
 
 ```text
 contiguous KV
@@ -779,7 +652,7 @@ vs
 paged KV
 ```
 
-For identical model state and query, compare:
+The same model state and query required these checks:
 
 ```text
 attention output
@@ -788,23 +661,12 @@ greedy next token
 multi-token generation
 ```
 
-Use a strict numerical tolerance.
+Use strict numerical tolerance. SSD tests require paged and contiguous inference to agree.
 
-Do not continue to SSD spill until paged and contiguous inference agree.
+## 24. ContextVM V3 test: SSD spill
 
----
-
-# 24. ContextVM V3 test: SSD spill
-
-After paged equivalence works:
-
-1. create many KV pages;
-2. mark old pages cold;
-3. spill them to SSD;
-4. remove them from resident memory;
-5. reload selected pages;
-6. verify output against the all-RAM version.
-
+After RAM equivalence, create KV pages and mark old pages cold. Spill cold pages to SSD and remove them from memory.
+Reload selected pages. Compare the result with the all-RAM version.
 Measure:
 
 ```text
@@ -815,17 +677,11 @@ generation latency
 correctness
 ```
 
-Goal:
+Goal: logical history grows without proportional unified-memory growth.
 
-> Logical history grows without proportional unified-memory growth.
+## 25. ContextVM retrieval test
 
----
-
-# 25. ContextVM retrieval test
-
-The router should start simple.
-
-Test:
+The initial router tested:
 
 ```text
 recent hot pages
@@ -833,7 +689,7 @@ recent hot pages
 + pinned instruction pages
 ```
 
-Create cases where required information lives:
+Test information in these locations:
 
 ```text
 recently
@@ -842,20 +698,15 @@ in another source file
 behind distractor pages
 ```
 
-The system should retrieve the correct exact pages rather than rely only on summaries.
+Pass: retrieval returns the exact pages instead of summaries alone.
 
----
+## 26. Regression rules
 
-# 26. Regression rules
-
-If an optimization changes output:
-
-Ask:
+Classify every output change:
 
 ```text
-Is it a harmless wording difference?
-or
-did correctness/tool behavior change?
+harmless wording difference
+correctness or tool-behavior change
 ```
 
 Never accept:
@@ -867,13 +718,9 @@ shorter but incomplete
 more context but weaker instruction retention
 ```
 
----
+## 27. Test logs
 
-# 27. Test logs
-
-Use distinct files.
-
-Suggested names:
+Use distinct log files:
 
 ```text
 ~/macbat_e2_q4.log
@@ -885,13 +732,11 @@ Suggested names:
 ~/contextvm_v0.log
 ```
 
-Never overwrite a useful baseline log.
+Keep every useful baseline log.
 
----
+## 28. Quick current test sequence
 
-# 28. Quick current test sequence
-
-For the current project state, run in this order:
+Historical test order:
 
 ```text
 1. server smoke test
@@ -903,17 +748,15 @@ For the current project state, run in this order:
 7. begin ContextVM V0
 ```
 
-Do not spend more time retraining E2 unless fresh external quality evidence demonstrates a real deficiency.
+Retraining required new external evidence of a quality defect.
 
----
+## 29. Current success criterion
 
-# 29. Current success criterion
-
-The immediate milestone is:
+Historical immediate milestone:
 
 ```text
 Frankenstein E2
-+ real MacBat agent
++ real MacBat repository review
 + stable 16 GB operation
 + no repeated full-history ingest
 + controlled KV memory
@@ -921,7 +764,7 @@ Frankenstein E2
 + materially faster iterative turns
 ```
 
-The next milestone is ContextVM:
+Historical ContextVM milestone:
 
 ```text
 large logical context
@@ -931,17 +774,15 @@ read/process information once
 reuse it thereafter
 ```
 
----
+## 30. ContextVM V0 engine tests
 
-# 30. ContextVM V0 engine tests
-
-The engine replaces the HTTP server for agent work. No server is needed.
+The engine replaces the HTTP server for tool work. No server is needed.
 
 ```text
-/Users/gioma/Developer/MACQWEN/frankenstein_engine.py
+~/Developer/MACQWEN/frankenstein_engine.py
 ```
 
-## 30.1 Template selftest
+### 30.1 Template selftest
 
 Run this first. It loads the tokenizer only. It takes about 2 seconds.
 
@@ -956,10 +797,9 @@ Expected:
 SELFTEST: PASS
 ```
 
-A FAIL means the append-only segment builder no longer matches the chat
-template. Fix that before any model run.
+A FAIL means the append-only segment builder no longer matches the chat template. Fix that before any model run.
 
-## 30.2 Three-turn engine demo
+### 30.2 Three-turn engine demo
 
 ```bash
 caffeinate -i "$HOME/mlx-qwen38-apple/bin/python3" \
@@ -974,7 +814,7 @@ turn 2 and turn 3 process only a few new tokens
 invariant cache==tape: True
 ```
 
-## 30.3 MacBat agent benchmark
+### 30.3 MacBat repository benchmark
 
 ```bash
 caffeinate -i "$HOME/mlx-qwen38-apple/bin/python3" \
@@ -998,7 +838,7 @@ host free memory, swap
 
 The engine prints all of this and writes a log file.
 
-## 30.4 Safety guards
+### 30.4 Safety guards
 
 The run stops itself on:
 
@@ -1008,7 +848,7 @@ swap growth above --max-swap-growth-gb      (default 3.0)
 cache/tape invariant broken
 ```
 
-## 30.5 Known good result
+### 30.5 Known good result
 
 See PROJECT.md section 45. Reference numbers:
 

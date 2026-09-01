@@ -1,17 +1,16 @@
-# Qwen3.8-27B brief
+# Qwen3.8-27B overview
 
 ## Purpose
 
-This runtime explores dense and hybrid Qwen inference on a 16 GB Apple Silicon
-Mac. It established the original MACQWEN memory and context techniques.
+This runtime explores dense and hybrid Qwen inference on a 16 GB Apple Silicon Mac. It established the first MACQWEN memory and context
+techniques.
 
 ## Model
 
-The runtime targets Qwen3.8-27B checkpoints with vocabulary size `248320`.
-Local V4 builds use measured heterogeneous affine quantization.
+The runtime targets Qwen3.8-27B checkpoints with vocabulary size `248320`. Local V4 builds use measured heterogeneous affine quantization.
 
-The last documented V4-flat build used 13.05 GB on disk. Its lean loader kept
-about 12.65 GB resident by moving the embedding outside resident memory.
+The last documented V4-flat build used 13.05 GB on disk. Its lean loader kept about 12.65 GB resident by moving the embedding outside
+resident memory.
 
 ## Main retained results
 
@@ -24,13 +23,11 @@ about 12.65 GB resident by moving the embedding outside resident memory.
 
 ## Limits
 
-The 27B runtime needs a custom MLX environment. Builds above about 12.6 GB
-resident memory caused swap and large generation losses on the tested machine.
+The 27B runtime needs a custom MLX environment. Builds above about 12.6 GB resident memory caused swap and large generation losses on the
+tested machine.
 
-The most recent local verification found no installed V4 checkpoint. Unit and
-import tests still pass.
+The most recent local verification found no installed V4 checkpoint. Unit and import tests still pass.
 
 ## Status
 
-Qwen27B is supported as a secondary research runtime. Flash-Next is the current
-project focus.
+Qwen27B remains available for research. Flash-Next is the primary runtime.

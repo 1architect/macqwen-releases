@@ -53,6 +53,11 @@ def swap_enabled() -> bool:
     return os.environ.get("FLASHNEXT_SWAP_RESIDENT") == "1"
 
 
+def swap_max_rows() -> int:
+    """Largest batch the swap runs on. Prefill routes exactly above it."""
+    return int(os.environ.get("FLASHNEXT_SWAP_MAX_ROWS", "4"))
+
+
 def prewarm_enabled() -> bool:
     """Read at call time. A module-level constant cannot be flipped by a
     benchmark, because Python caches the module after the first import."""
@@ -210,10 +215,14 @@ class RoutingProfile:
                             block.gate_proj.cache.prefix.rsplit(".", 1)[0]
                         )
             epsilon = swap_epsilon() if swap_enabled() else self.swap_epsilon
-            set_swap_resident(self._expert_resident, epsilon)
+            set_swap_resident(
+                self._expert_resident, epsilon, swap_max_rows()
+            )
         if not self.quality:
             return
-        set_route_observer(self._observe)
+        # `_observe` stops at `warmup` rows per layer, so a prefill batch of
+        # one row per prompt token gives it nothing extra.
+        set_route_observer(self._observe, self.warmup)
 
     def _fast_keep(self, scores, threshold):
         total = sum(scores)

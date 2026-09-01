@@ -1,8 +1,8 @@
 """N-gram embedding rows read straight from the checkpoint.
 
-The hashed trigram table is 19.2 GB across 128 shards, but a row is only 60
-bytes and a token touches a handful of them. Holding a shard resident to read
-one row wastes 150 MB, so rows are fetched individually and dequantized.
+The hashed trigram table spans 128 shards, but each lookup needs one small row.
+A token touches only a few rows. Holding a whole shard resident wastes memory,
+so the runtime fetches and dequantizes rows individually.
 """
 from __future__ import annotations
 

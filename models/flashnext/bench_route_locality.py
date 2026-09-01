@@ -24,7 +24,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import mlx.core as mx
 
-DEFAULT_MODEL = "~/models/Qwen3.8-Flash-Next-MLX-oQ4"
 # 3.0 tok/s needs about 75.3% coverage; 32 experts give 62.7 to 69.6%
 SIZES = (8, 16, 32, 48, 64, 96, 128)
 PROMPTS = {
@@ -40,12 +39,14 @@ PROMPTS = {
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--model")
     parser.add_argument("--tokens", type=int, default=120)
     args = parser.parse_args()
 
     os.environ.setdefault("FLASHNEXT_TOPK_THRESHOLD", "0.85")
-    path = os.path.expanduser(args.model)
+    from macqwen.checkpoints import resolve_flashnext
+
+    path = str(resolve_flashnext(args.model))
 
     from transformers import AutoTokenizer
     from models.flashnext.adaptive_topk import set_route_observer

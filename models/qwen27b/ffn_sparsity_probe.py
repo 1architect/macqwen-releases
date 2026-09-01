@@ -19,8 +19,9 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm import load
 
-MODEL = os.environ.get("MODEL", "/Users/gioma/.lmstudio/models/gioma/"
-                                "Qwen3.8-27B-Apple-MLX-V3.1-Compact")
+MODEL = os.environ.get(
+    "MODEL", str(Path.home() / "models/Qwen3.8-27B-Apple-MLX-V3.1-Compact")
+)
 NBLOCKS = [32, 64, 128]
 KEEP    = [0.50, 0.25, 0.125, 0.0625, 0.03125]
 CAP = {}          # layer index -> summary rows

@@ -49,7 +49,7 @@ def truly_resident(store, name: str, row: int) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="~/models/Qwen3.8-Flash-Next-MLX-oQ4")
+    parser.add_argument("--model")
     parser.add_argument("--tokens", type=int, default=60)
     parser.add_argument("--cap", type=int, default=12000)
     args = parser.parse_args()
@@ -63,7 +63,7 @@ def main() -> None:
 
     from macqwen.backends.flashnext import FlashNextBackend
 
-    backend = FlashNextBackend()
+    backend = FlashNextBackend(model_path=args.model)
     store = backend.store
     prompt = ("<|im_start|>user\nExplique a fotossintese em duas frases."
               "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")

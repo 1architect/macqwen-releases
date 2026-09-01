@@ -87,6 +87,38 @@ COMPARISONS = {
             "FLASHNEXT_SWAP_RESIDENT": "1",
         },
     },
+    # How far the swap may reach for a resident expert. At 0.02 it replaces
+    # 13.9 percent of cold reads and at 0.005 it replaces 11.9. Above 0.02 is
+    # unmeasured. Cache-aware measures 2.91 gen at 0.02, so 3.0 needs about 5
+    # percent fewer bytes, from 360 to near 341.
+    #
+    # A wider epsilon takes experts the router scored further from its choice.
+    # This trades answer quality for bytes, so run the quality gate on any
+    # value that wins here. Do not promote one on rate alone.
+    "swap-epsilon": {
+        "e=0.02": {
+            "FLASHNEXT_TRACK_RESIDENT": "1",
+            "FLASHNEXT_SWAP_RESIDENT": "1",
+            "FLASHNEXT_SWAP_EPSILON": "0.02",
+        },
+        "e=0.05": {
+            "FLASHNEXT_TRACK_RESIDENT": "1",
+            "FLASHNEXT_SWAP_RESIDENT": "1",
+            "FLASHNEXT_SWAP_EPSILON": "0.05",
+        },
+    },
+    "swap-epsilon-wide": {
+        "e=0.02": {
+            "FLASHNEXT_TRACK_RESIDENT": "1",
+            "FLASHNEXT_SWAP_RESIDENT": "1",
+            "FLASHNEXT_SWAP_EPSILON": "0.02",
+        },
+        "e=0.10": {
+            "FLASHNEXT_TRACK_RESIDENT": "1",
+            "FLASHNEXT_SWAP_RESIDENT": "1",
+            "FLASHNEXT_SWAP_EPSILON": "0.10",
+        },
+    },
     # Two changes that are each too small to resolve alone. Both act on how
     # much memory is left for the page cache, so they may not be independent:
     # pinning scales only frees 3.6 GB of mlock, and prewarm needs cache to
@@ -164,6 +196,20 @@ LIVE_SETTINGS = {
         ),
         lambda backend: backend.store._track_residency,
         lambda value: value == "1",
+    ),
+    "FLASHNEXT_SWAP_EPSILON": (
+        # The environment is what `begin_decode` reads, but the router uses
+        # the module value, so set both and read back the one that decides.
+        lambda backend, value: (
+            os.environ.__setitem__("FLASHNEXT_SWAP_EPSILON", value),
+            __import__(
+                "models.flashnext.adaptive_topk", fromlist=["_SWAP_EPSILON"]
+            )._SWAP_EPSILON.__setitem__(0, float(value)),
+        ),
+        lambda backend: __import__(
+            "models.flashnext.adaptive_topk", fromlist=["_SWAP_EPSILON"]
+        )._SWAP_EPSILON[0],
+        lambda value: float(value),
     ),
 }
 

@@ -1,5 +1,6 @@
-# V3.8 Prefill accounting: where every millisecond goes
+# Archived V3.8 prefill accounting
 
+Archive status: closed. Dense prefill reached the M4 compute limit.
 2026-08-24, V3.1-Compact, M4 Air, 256-token chunk. Measured, not estimated.
 
 ## Layer costs
@@ -19,8 +20,8 @@ recurrent scan          2.84 ms   10%
 conv1d                  0.39 ms    1%
 ```
 
-Scan cost per token settles at about 10.3 us and stops falling, which confirms
-it is a sequential scan. It is also too small to matter.
+Scan cost per token settles at about 10.3 us and stops falling, which confirms it is a sequential scan. It is also too
+small to matter.
 
 ```text
 T      scan_ms   scan/T_us
@@ -62,9 +63,8 @@ BM BK BN  median_ms  speedup
 32 32 32      18.45    1.000
 ```
 
-The custom `mlx-qwen38-kernel-lab` build gives the same 17.25 ms as the stock
-`mlx-qwen38-apple` build for this projection. No difference.
-
+The custom `mlx-qwen38-kernel-lab` build gives the same 17.25 ms as the stock `mlx-qwen38-apple` build for this
+projection. No difference.
 Ceiling:
 
 ```text
@@ -76,9 +76,7 @@ measured 46.8 tok/s
 ## Verdict
 
 The measured prefill rate is 46.8 tok/s. Prefill is closed as a compute problem.
-
-Raising it requires one of three things, all of which cost something already
-ruled out:
+Higher speed requires one of these rejected tradeoffs:
 
 ```text
 fewer active parameters   smaller model or MoE, costs quality

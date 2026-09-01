@@ -1,14 +1,9 @@
-# SERVER_INSTRUCTIONS.md
+# Archived Frankenstein E2 MLX server runbook
 
-## Frankenstein E2: MLX server runbook
+Archive status: historical fallback instructions for the Qwen 27B runtime. Paths, versions, and recommended settings can
+be obsolete. `PROJECT.md` contains the related architecture.
 
-This document describes how to start, verify, monitor, and stop the current HTTP server for the trained **Frankenstein E2** model.
-
-For the broader project architecture and ContextVM roadmap, read `PROJECT.md`.
-
----
-
-# 1. Environment
+## 1. Environment
 
 Python environment:
 
@@ -20,19 +15,19 @@ PY="$VENV/bin/python3"
 Current best model:
 
 ```bash
-MODEL="/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
+MODEL="~/models/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
 ```
 
 Original MLX baseline model:
 
 ```bash
-BASELINE="/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-v2"
+BASELINE="~/models/Qwen3.8-27B-Apple-MLX-v2"
 ```
 
 Reference GGUF model:
 
 ```bash
-GGUF="/Users/gioma/.lmstudio/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-IQ2_XXS.gguf"
+GGUF="~/.lmstudio/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-IQ2_XXS.gguf"
 ```
 
 Default server address:
@@ -41,9 +36,7 @@ Default server address:
 http://127.0.0.1:8080
 ```
 
----
-
-# 2. Verify the Python environment
+## 2. Verify the Python environment
 
 ```bash
 "$HOME/mlx-qwen38-apple/bin/python3" - <<'PY'
@@ -61,14 +54,11 @@ MLX     0.32.1
 MLX-LM  0.32.0
 ```
 
-The local MLX-LM install has been modified during this project. Do not blindly reinstall/upgrade it without checking `PROJECT.md`.
+This project modified the local MLX-LM install. Check `PROJECT.md` before an upgrade or reinstall.
 
----
-
-# 3. Check whether the KV-server patch is installed
+## 3. Check whether the KV-server patch is installed
 
 The stock MLX-LM server did not expose the KV-quantization arguments used by the normal generation path.
-
 Check:
 
 ```bash
@@ -78,7 +68,6 @@ Check:
 ```
 
 If all three options appear, the server is already patched.
-
 Expected options:
 
 ```text
@@ -95,7 +84,6 @@ If they do not appear, apply the patch script once:
 ```
 
 The patch script should create a backup of `mlx_lm/server.py` before changing it.
-
 Verify again:
 
 ```bash
@@ -104,9 +92,7 @@ Verify again:
 | grep -E "kv-bits|kv-group-size|quantized-kv-start"
 ```
 
----
-
-# 4. Kill old servers before starting
+## 4. Kill old servers before starting
 
 Never leave multiple 27B MLX servers alive on a 16 GB Mac.
 
@@ -123,12 +109,9 @@ lsof -nP -iTCP:8080 -sTCP:LISTEN
 
 No output is expected before starting the new server.
 
----
+## 5. Recommended current server
 
-# 5. Recommended current server
-
-The recommended E2 agent-test configuration follows.
-
+This configuration was recommended for repeated tool tests.
 It enables:
 
 - E2 model
@@ -139,8 +122,7 @@ It enables:
 - bounded prompt-cache storage
 
 ```bash
-MODEL="/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
-
+MODEL="~/models/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
 caffeinate -i \
 "$HOME/mlx-qwen38-apple/bin/python3" \
 -m mlx_lm server \
@@ -155,17 +137,14 @@ caffeinate -i \
 --quantized-kv-start 1024
 ```
 
-Keep this Terminal visible while testing.
+Keep this Terminal visible during tests.
 
----
-
-# 6. Conservative / known-safe server
+## 6. Conservative / known-safe server
 
 If the Q4-KV server crashes or appears incorrect, use this configuration to isolate the problem.
 
 ```bash
-MODEL="/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
-
+MODEL="~/models/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
 caffeinate -i \
 "$HOME/mlx-qwen38-apple/bin/python3" \
 -m mlx_lm server \
@@ -178,24 +157,20 @@ caffeinate -i \
 ```
 
 This disables KV quantization but keeps prefix caching.
-
-Use this configuration when checking whether a failure is caused by:
+This configuration isolates these failure sources:
 
 ```text
 Q4 KV
 vs
-the model / agent itself
+the model or tool workflow
 ```
 
----
-
-# 7. Cold-quality server
+## 7. Cold-quality server
 
 Use this only for controlled quality comparisons where prompt-cache reuse must not affect measurements.
 
 ```bash
-MODEL="/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
-
+MODEL="~/models/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
 caffeinate -i \
 "$HOME/mlx-qwen38-apple/bin/python3" \
 -m mlx_lm server \
@@ -206,21 +181,16 @@ caffeinate -i \
 --prefill-step-size 512
 ```
 
-Do **not** use this for normal multi-turn agent work.
-
+Do not use this for normal multi-turn work.
 With `--prompt-cache-size 0`, every turn can reprocess the entire conversation.
+Previous runs grew from a few hundred prompt tokens to about 15K tokens and became slow.
 
-That caused previous agent runs to grow from a few hundred prompt tokens to roughly 15K tokens and become extremely slow.
-
----
-
-# 8. Original-v2 baseline server
+## 8. Original-v2 baseline server
 
 Only use this when reproducing the old baseline.
 
 ```bash
-MODEL="/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-v2"
-
+MODEL="~/models/Qwen3.8-27B-Apple-MLX-v2"
 caffeinate -i \
 "$HOME/mlx-qwen38-apple/bin/python3" \
 -m mlx_lm server \
@@ -231,7 +201,7 @@ caffeinate -i \
 --prefill-step-size 512
 ```
 
-Known historical result with the first MacBat agent harness:
+Known historical result with the first MacBat harness:
 
 ```text
 Turn 5
@@ -243,9 +213,7 @@ result:     failure: reasoning hit the token cap without TOOL or FINAL
 
 The current work does not target this model.
 
----
-
-# 9. Verify the server is healthy
+## 9. Verify the server is healthy
 
 In another Terminal:
 
@@ -271,13 +239,10 @@ Check listener:
 lsof -nP -iTCP:8080 -sTCP:LISTEN
 ```
 
----
-
-# 10. Minimal API smoke test
+## 10. Minimal API smoke test
 
 ```bash
-MODEL="/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
-
+MODEL="~/models/Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1"
 curl -N \
 http://127.0.0.1:8080/v1/chat/completions \
 -H 'Content-Type: application/json' \
@@ -304,9 +269,7 @@ Success means:
 - no Python exception appears in the server Terminal
 - final answer contains `SERVER_OK`
 
----
-
-# 11. Monitor memory while the server is running
+## 11. Monitor memory while the server is running
 
 Find the process:
 
@@ -344,27 +307,21 @@ Useful combined command:
 
 ```bash
 PID=$(pgrep -f "mlx_lm.*server" | head -1)
-
 echo "=== PROCESS ==="
 ps -o pid,rss,vsz,%cpu,command -p "$PID"
-
 echo
 echo "=== VM ==="
 vmmap -summary "$PID" | grep -Ei \
 "Physical footprint|Physical footprint \(peak\)|resident|Metal"
-
 echo
 echo "=== SWAP ==="
 sysctl vm.swapusage
-
 echo
 echo "=== MEMORY PRESSURE ==="
 memory_pressure | tail -1
 ```
 
----
-
-# 12. Watch prompt-cache behavior
+## 12. Watch prompt-cache behavior
 
 The server should log lines similar to:
 
@@ -372,8 +329,7 @@ The server should log lines similar to:
 Prompt Cache: N sequences, X.XX GB
 ```
 
-For a normal agent run, `N` should eventually become non-zero.
-
+For a normal multi-turn run, `N` should become non-zero.
 Bad sign:
 
 ```text
@@ -381,15 +337,11 @@ Prompt Cache: 0 sequences, 0.00 GB
 ```
 
 on every single turn when caching was expected.
+The old benchmark intentionally used `--prompt-cache-size 0`.
 
-The old agent benchmark intentionally did this because `--prompt-cache-size 0` was used.
-
----
-
-# 13. Prefill-step-size experiments
+## 13. Prefill-step-size experiments
 
 Do not change multiple variables at once.
-
 Test:
 
 ```text
@@ -425,17 +377,12 @@ Current observed long-prompt prefill was roughly:
 ```
 
 with conservative settings.
-
 Do not assume a larger prefill step is faster until measured.
 
----
-
-# 14. Q2 KV experiments
+## 14. Q2 KV experiments
 
 Do not start here.
-
 First prove Q4 is stable and quality-preserving.
-
 When ready:
 
 ```bash
@@ -445,7 +392,6 @@ When ready:
 ```
 
 Run long-context quality tests before adopting Q2.
-
 The target is memory reduction without degrading:
 
 ```text
@@ -456,9 +402,7 @@ tool selection
 long-distance retrieval
 ```
 
----
-
-# 15. Stop the server
+## 15. Stop the server
 
 Preferred:
 
@@ -478,12 +422,9 @@ Then verify:
 lsof -nP -iTCP:8080 -sTCP:LISTEN
 ```
 
----
-
-# 16. If the Mac starts swapping heavily
+## 16. If the Mac starts swapping heavily
 
 Stop the test before the machine becomes unusable.
-
 Check:
 
 ```bash
@@ -499,13 +440,10 @@ pkill -f "mlx_lm.*server"
 
 Do not start a second large model until the first one is completely gone.
 
----
-
-# 17. ContextVM memory rule
+## 17. ContextVM memory rule
 
 The HTTP server is an interim compatibility layer.
-
-The intended final runtime is a **single-process persistent engine** that:
+The planned runtime was a **single-process persistent engine** that:
 
 ```text
 loads E2 once
@@ -516,20 +454,17 @@ executes tools in-process
 virtualizes old KV pages
 ```
 
-When `frankenstein_engine.py` / ContextVM V0 becomes functional, these server instructions should remain as a fallback/reference implementation rather than the primary runtime.
+When `frankenstein_engine.py` / ContextVM V0 becomes functional, these server instructions should remain as a
+fallback/reference implementation rather than the primary runtime.
 
----
+## 18. Server for QWENUI
 
-# 18. Server for QWENUI
-
-QWENUI is the SwiftUI chat client at `/Users/gioma/Developer/QWENUI`.
-It expects `http://127.0.0.1:8080` and the model name `default_model`.
-The MLX server accepts that name and serves the loaded model.
-
+QWENUI is the SwiftUI chat client at `~/Developer/QWENUI`. It expects `http://127.0.0.1:8080` and the model
+name `default_model`. The MLX server accepts that name and serves the loaded model.
 Start the server:
 
 ```bash
-/Users/gioma/Developer/MACQWEN/start_server.sh
+~/Developer/MACQWEN/start_server.sh
 ```
 
 KV settings in that script apply the section 47/48 findings in PROJECT.md:
@@ -543,14 +478,12 @@ KV settings in that script apply the section 47/48 findings in PROJECT.md:
 Build and launch the client:
 
 ```bash
-/Users/gioma/Developer/QWENUI/bundle.sh
-open /Users/gioma/Developer/QWENUI/QWENUI.app
+~/Developer/QWENUI/bundle.sh
+open ~/Developer/QWENUI/QWENUI.app
 ```
 
-`bundle.sh` wraps the SwiftPM executable in a `.app`. A bare executable runs
-as a background process: no window, no menu bar, and NSOpenPanel
-security-scoped bookmarks misbehave.
-
+`bundle.sh` wraps the SwiftPM executable in a `.app`. A bare executable runs as a background process: no window, no menu
+bar, and NSOpenPanel security-scoped bookmarks misbehave.
 Verified working end to end:
 
 ```text

@@ -185,7 +185,7 @@ class IngestGlow:
     def _line(self, done: int, total: int, elapsed: float, chunked: bool,
               current_rate: float = 0.0, width: int = 28) -> str:
         if not total:
-            return f"{self._label}  •"
+            return self._label
         rate = current_rate or done / max(elapsed, 1e-6)
         eta = (total - done) / rate if rate > 0 and total else 0
         filled = min(width, int(width * done / total)) if total else 0
@@ -230,6 +230,54 @@ TOOL_ACTIONS = {
     "replace_text": ("Editing file", "Edited file"),
     "run_command": ("Running command", "Ran command"),
 }
+
+
+def tool_result_lines(name: str, args: dict, result) -> list[str]:
+    """Compact user-facing view of a tool result.
+
+    The model no longer prints listings, matches, or contents; the interface
+    shows them here instead, so a byte of tool output never costs a decode
+    token. Kept short: caps every list and never dumps file contents.
+    """
+    if not isinstance(result, dict) or result.get("error"):
+        return []
+    cap = 24
+    lines: list[str] = []
+    if name == "list_dir":
+        entries = result.get("entries", [])
+        for entry in entries[:cap]:
+            mark = "/" if entry.get("type") == "dir" else ""
+            lines.append(f"{entry.get('name', '')}{mark}")
+        extra = len(entries) - cap
+        if extra > 0:
+            lines.append(f"+{extra} more")
+    elif name == "find_files":
+        matches = result.get("matches", [])
+        for match in matches[:cap]:
+            lines.append(str(match))
+        extra = len(matches) - cap
+        if extra > 0:
+            lines.append(f"+{extra} more")
+        elif result.get("truncated"):
+            lines.append("more matches truncated")
+    elif name == "search":
+        counts: dict[str, int] = {}
+        for match in result.get("matches", []):
+            path = match.get("path", "")
+            counts[path] = counts.get(path, 0) + 1
+        for path, count in list(counts.items())[:cap]:
+            lines.append(f"{path}  ({count})")
+        extra = len(counts) - cap
+        if extra > 0:
+            lines.append(f"+{extra} more files")
+        elif result.get("truncated"):
+            lines.append("more matches truncated")
+    elif name == "read_file":
+        start, end = result.get("start_line"), result.get("end_line")
+        total = result.get("total_lines")
+        if start is not None and end is not None and total is not None:
+            lines.append(f"lines {start}-{end} of {total}")
+    return lines
 
 
 def tool_action(name: str, args: dict, complete: bool = False) -> str:
@@ -296,7 +344,7 @@ class AgentUI:
         """Start the execution-only duration clock immediately before dispatch."""
         self._tool_started = time.perf_counter()
 
-    def tool_finished(self, error: bool = False) -> None:
+    def tool_finished(self, error: bool = False, result=None) -> None:
         """Stop execution timing, then satisfy the visual display interval."""
         finished = time.perf_counter()
         elapsed = (
@@ -313,6 +361,9 @@ class AgentUI:
         label = tool_action(name, args, complete=True)
         prefix = f"{C['r']}Failed{C['0']}  " if error else ""
         self.output.write(f"{prefix}{C['dim']}{label}  {elapsed:.1f}s{C['0']}\n")
+        if not error:
+            for line in tool_result_lines(name, args, result):
+                self.output.write(f"{C['gray']}    {line[:100]}{C['0']}\n")
         self.output.flush()
         self._tool = None
         self._tool_started = None

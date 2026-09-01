@@ -1,7 +1,7 @@
-# V3.7 Context image: measured
+# Archived V3.7 context-image result
 
-2026-08-24, V3.1-Compact, M4 Air. One model load, paired in-process
-comparison, so no thermal drift between runs.
+Archive status: completed experiment. The measurements apply to V3.1-Compact on 2026-08-24.
+2026-08-24, V3.1-Compact, M4 Air. One model load, paired in-process comparison, so no thermal drift between runs.
 
 ## Result
 
@@ -12,9 +12,7 @@ speedup       190.8x
 ```
 
 Restoring is equivalent to about 8,800 tok/s of ingestion.
-
-The saved file contains the KV state. Restored context is bit-identical to
-normal prefill.
+The saved file contains the KV state. Restored context is bit-identical to normal prefill.
 
 ## Comparison with other project measurements
 
@@ -34,10 +32,9 @@ per-token cost    about 156 KB, dominated by the constant GDN state
 floor             about 160 MB per image regardless of file size
 ```
 
-The 48 Gated DeltaNet layers hold a fixed-size recurrent state that must be
-saved whole, so a small file costs nearly as much as a large one.
-
-Three real limits:
+The 48 Gated DeltaNet layers hold a fixed-size recurrent state that must be saved whole, so a small file costs nearly as
+much as a large one.
+Limits:
 
 ```text
 1. only helps content already ingested once
@@ -48,22 +45,17 @@ Three real limits:
    the effort setting. Change any of them and it is invalid.
 ```
 
-Fifty files would cost about 9.5 GB on disk, which is affordable, but they
-cannot be combined into one context.
+Fifty files would cost about 9.5 GB on disk, which is affordable, but they cannot be combined into one context.
 
 ## Status before this measurement
 
-`repo_context_image.py` was already written and already imported by
-`frankenstein_chat.py`. No image had ever been built. The feature existed and
-had never run.
+`repo_context_image.py` was already written and already imported by `frankenstein_chat.py`. No image had ever been
+built. The feature existed and had never run.
 
 ## Operational effect
 
-For a coding agent working in a fixed repository the same files are read over
-and over. The first read costs 46.8 tok/s. Every later read costs 0.27 s.
-
-Prefill kernel speed stops being the interesting number. The interesting
-number is the cache hit rate.
+Repository work often reads the same files again. The first read costs 46.8 tok/s. Each later read costs 0.27 seconds.
+Prefill kernel speed stops being the interesting number. The interesting number is the cache hit rate.
 
 ## Next
 

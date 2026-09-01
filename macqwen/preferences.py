@@ -35,6 +35,11 @@ def _choice(default, options):
     return default, lambda v: v in options
 
 
+# One source of truth. `/effort` used to carry its own copy of this tuple and
+# silently rejected `high` after the schema gained it.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
+
+
 def _text(default):
     return default, lambda v: isinstance(v, str) and bool(v.strip())
 
@@ -50,6 +55,12 @@ def _token_limit(default):
     )
 
 
+def _number(default, low, high):
+    return default, lambda v: (
+        isinstance(v, (int, float)) and not isinstance(v, bool) and low <= v <= high
+    )
+
+
 def _whole(default):
     return default, lambda v: (
         isinstance(v, int) and not isinstance(v, bool) and v >= 0
@@ -61,8 +72,19 @@ SCHEMA = {
     "thinking_enabled": _boolean(False),
     "show_thinking": _boolean(False),
     "think_budget": _token_limit(DEFAULT_THINK_TOKENS),
-    "effort": _choice("medium", ("low", "medium", "xhigh")),
+    "effort": _choice("medium", EFFORT_LEVELS),
     "max_tokens": _token_limit(-1),
+    # Qwen's card recommends these for thinking mode. This runtime decoded
+    # with argmax, which is temperature 0 and none of the rest, and greedy
+    # decoding resolves a tie the same way every time. Set temperature to 0
+    # for greedy, which the benchmarks need to compare token IDs.
+    "temperature": _number(1.0, 0.0, 2.0),
+    "top_p": _number(0.95, 0.0, 1.0),
+    "top_k": _whole(20),
+    "min_p": _number(0.0, 0.0, 1.0),
+    # "adjust between 0 and 2 to reduce endless repetition. However, using a
+    # higher value may occasionally result in language mixing"
+    "presence_penalty": _number(0.0, 0.0, 2.0),
     # how the chat behaves
     "stream_answers": _boolean(True),
     "animate": _boolean(True),

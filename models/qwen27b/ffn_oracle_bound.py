@@ -14,8 +14,9 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm import load
 
-MODEL = os.environ.get("MODEL", "/Users/gioma/.lmstudio/models/gioma/"
-                                "Qwen3.8-27B-Apple-MLX-V3.1-Compact")
+MODEL = os.environ.get(
+    "MODEL", str(Path.home() / "models/Qwen3.8-27B-Apple-MLX-V3.1-Compact")
+)
 KEEPS = [1.0, 0.50, 0.25, 0.125, 0.0625]
 STATE = {"keep": 1.0}
 ENGINE_SOURCE = Path(__file__).with_name("frankenstein_engine.py")

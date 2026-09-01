@@ -1,26 +1,41 @@
-# Flash-Next handoff
+# Flash-Next reference
+
+Read this file and [`research.md`](research.md) before a new experiment. [`CONTRIBUTING.md`](../../CONTRIBUTING.md) defines the project
+rules.
 
 ## Environment
 
-The launcher expects:
+The release launcher uses the local environment created by `./chat.sh setup`:
 
 ```text
 Python       .venv/bin/python
-Checkpoint   one compatible complete checkpoint under ~/models
+Checkpoint   one complete compatible Flash-Next directory
 ```
 
-Run `./chat.sh setup` to create the environment.
-Override the interpreter with `MACQWEN_FLASHNEXT_PYTHON`.
-Override the checkpoint with `--checkpoint` or `MACQWEN_FLASHNEXT_MODEL`.
+Override the interpreter with `MACQWEN_FLASHNEXT_PYTHON`. Select the checkpoint with `--checkpoint`, `--model-path`, or
+`MACQWEN_FLASHNEXT_MODEL`. The launcher saves an explicit selection. Set `MACQWEN_MODEL_ROOT` to change the automatic search directory.
 
 ## Download
+
+oQ4 is the baseline and the installed checkpoint.
 
 ```bash
 hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ4 \
   --local-dir "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ4"
 ```
 
-The checkpoint should contain 22 safetensors shards and use about 112 GB.
+oQ4 contains 22 safetensors shards and 111.7 GB of model weights.
+
+oQ3-MTP is supported and is not installed. It contains 19 shards, 86.2 GiB, and MTP weights the production backend does not load. It failed
+the trajectory gate, so it was removed:
+
+```bash
+hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP \
+  --local-dir "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ3-MTP"
+```
+
+Use `--checkpoint oq4` or `--checkpoint oq3` when both exist. MACQWEN selects a sole compatible local checkpoint automatically. The
+reference machine has room for one.
 
 ## Run
 
@@ -33,12 +48,10 @@ The checkpoint should contain 22 safetensors shards and use about 112 GB.
 ./chat.sh --model flashnext --fast-quality
 ./chat.sh --model flashnext --cache-aware
 ./chat.sh --model flashnext --fused-quality
-./chat-swap.sh
 ```
 
-`fused-quality` is experimental. It failed the retained reasoning gate.
-`cache-aware` is optional. It improves speed but changed the preferred answer
-in a long-context comparison. `exact-quality` remains the default.
+`fused-quality` is experimental. It failed the retained reasoning gate. `cache-aware` is optional. It improves speed but changed the
+preferred answer in a long-context comparison. `exact-quality` remains the default.
 
 Use the live configurator before a turn:
 
@@ -63,17 +76,15 @@ Use the live configurator before a turn:
 /settings defaults
 ```
 
-`pinned-experts` aliases `resident-experts`. `pin-budget-gb` caps the pinned
-storage. `/settings` reports the current pinned layer-expert count and bytes.
+`pinned-experts` aliases `resident-experts`. `pin-budget-gb` caps the pinned storage. `/settings` reports the current pinned layer-expert
+count and bytes.
 
-Settings apply to the current process only. A new `./chat.sh` launch returns to
-`exact-quality`, threshold `0.85`, 32 resident experts, warmup `8`, and
-swap epsilon `0.02`.
+Settings apply to the current process only. A new `./chat.sh` launch returns to `exact-quality`, threshold `0.85`, 32 resident experts,
+warmup `8`, and swap epsilon `0.02`.
 
 Use `/reset` before enabling the one-shot fused draft for a new conversation.
 
-`speculative-fast` and MTP stay research-only. Both need a different load path,
-and both lost their complete-runtime controls.
+`speculative-fast` and MTP stay research-only. Both need a different load path, and both lost their complete-runtime controls.
 
 ## Main files
 
@@ -102,7 +113,7 @@ and both lost their complete-runtime controls.
 Run the model suite in its environment:
 
 ```bash
-.venv/bin/python -m unittest discover \
+~/models/.venv-qwen4exp/bin/python -m unittest discover \
   -s models/flashnext -p 'test_*.py' -q
 ```
 
@@ -120,17 +131,14 @@ Run the complete JSON benchmark path:
   --max-tokens 32 --benchmark-json --benchmark-prompt 'Explain virtual memory.'
 ```
 
-Standard output must contain one JSON object. Diagnostic text goes to standard
-error.
+Standard output must contain one JSON object. Diagnostic text goes to standard error.
 
 ## Prefill scaling
 
-The reference machine is an M4 Mac with 16 GB of unified memory and a 256 GB
-SSD. Prefill throughput increases with prompt length. Large batches amortize
-fixed setup and streamed-read costs across more tokens. A prompt near 5,000
-tokens may reach about 40 to 50 tok/s under favorable conditions. Do not
-extrapolate large-prompt throughput from a short interactive prompt. Prompt
-content, free memory, SSD state, and page-cache state can move the result.
+The reference machine is an M4 Mac with 16 GB of unified memory and a 256 GB SSD. Prefill throughput increases with prompt length. Large
+batches amortize fixed setup and streamed-read costs across more tokens. A prompt near 5,000 tokens may reach about 40 to 50 tok/s under
+favorable conditions. Do not extrapolate large-prompt throughput from a short interactive prompt. Prompt content, free memory, SSD state,
+and page-cache state can move the result.
 
 ## Measured rate
 
@@ -138,25 +146,26 @@ content, free memory, SSD state, and page-cache state can move the result.
 |---|---:|
 | exact-quality, complete decode, ten kept arms | **2.713 tok/s**, 390 MB/token |
 | the same arms, pinned tail | 2.650 tok/s |
-| cache-aware hot-run median | **2.79 tok/s**, 347.6 MB/token |
-| exact arm in the same hot run | 2.54 tok/s, 417.8 MB/token |
-| cache-aware paired effect | **+8.3%**, seven of eight pairs faster |
+| cache-aware, harness, four kept arms | **2.91 tok/s**, 2.92 tail, 360.4 MB/token |
+| exact arm in the same harness run | 2.73 tok/s, 2.70 tail, 430.0 MB/token |
+| cache-aware paired effect | **+6.5%**, band 0.6%, six of six pairs faster |
+| cache-aware, earlier hot run, superseded | 2.79 against 2.54, 347.6 against 417.8 MB/token |
 | older harness, ten pinned-tail arms, colder start | 2.42 to 2.73 tok/s, mean 2.59 |
 | terminal `gen`, short chat turns | about 2.0 to 2.5 tok/s |
 | separate warmup-eight pair | 2.88 and 2.78 tok/s, mean 2.83 |
 | synthetic fixed routes, every expert read resident | **5.33 tok/s** |
 | synthetic fixed routes, every expert read cold | 1.09 tok/s |
 
-The 2.83 value is not a production baseline. The ten-arm mean is 2.59, and
-prompt-locality tests ranged from 1.98 to 2.44 tok/s. All these values measure
-the pinned tail. Use complete decode for interactive performance.
+The 2.83 value is not a production baseline. The ten-arm mean is 2.59, and prompt-locality tests ranged from 1.98 to 2.44 tok/s. All these
+values measure the pinned tail. Use complete decode for interactive performance.
 
-The synthetic ceiling shows that compute can exceed 3 tok/s when expert reads
-stay resident. It does not predict a real production reply.
+The synthetic ceiling shows that compute can exceed 3 tok/s when expert reads stay resident. It does not predict a real production reply.
 
-The cache-aware comparison ran on a hot machine. Its alternating arms make the
-paired effect useful, but its absolute 2.79 rate does not replace the 2.713
-exact-quality baseline. All eight cache-aware arms read fewer bytes.
+Cache-aware has since gone through the harness. Its exact arm measured 2.73 at 430 MB/token against the 2.713 and 390 MB/token baseline, so
+that run sat at production warmth and its numbers hold. The 16.2% byte reduction there matches the 16.8% from the earlier hot run, so the
+opportunity carries across residency states.
+
+Every rate in this table came from greedy decoding, which the benchmarks use so token IDs stay comparable across arms. The chat samples.
 
 Use `models/flashnext/bench_read_ceiling.py` to reprice the drive at zero:
 
@@ -167,9 +176,8 @@ FLASHNEXT_READ=pread FLASHNEXT_PROFILE_IO=1 \
   python3 models/flashnext/bench_read_ceiling.py --mode disk
 ```
 
-`FLASHNEXT_READ` selects the expert read path. `pread` is the default and the
-only one to use in production. `resident` maps mlocked rows instead of copying
-them; it wins by 25 percent when the drive is idle and loses under load.
+`FLASHNEXT_READ` selects the expert read path. `pread` is the default and the only one to use in production. `resident` maps mlocked rows
+instead of copying them; it wins by 25 percent when the drive is idle and loses under load.
 
 The profile decides whether the variable applies:
 
@@ -182,8 +190,7 @@ The profile decides whether the variable applies:
 | `fast-quality` | `shared_mmap` after warmup | yes | no |
 | `fast` | `shared_mmap` | no | no |
 
-`fast` and `fast-quality` were measured on `shared_mmap` and keep it. Setting
-`FLASHNEXT_READ` does not change them.
+`fast` and `fast-quality` were measured on `shared_mmap` and keep it. Setting `FLASHNEXT_READ` does not change them.
 
 ## Measurement rules
 
@@ -192,72 +199,145 @@ The profile decides whether the variable applies:
 - Compare token IDs before accepting a performance change.
 - Reverse or interleave A/B order.
 - **Use three arms per condition minimum.** The first arm of a run is always
-  the slowest, because the page cache warms across arms. Two-arm A/Bs on this
-  machine have produced +12.8% and +10.7% results that were both noise.
+the slowest, because the page cache warms across arms. Two-arm A/Bs on this machine have produced +12.8% and +10.7% results that were both
+noise.
 - Read the resolution band the harness prints. It is two standard errors of
-  the difference between medians. A reading inside it is unresolved, which is
-  not the same as absent.
+the difference between medians. A reading inside it is unresolved, which is not the same as absent.
 - Stack two changes that are each unresolved and measure the pair. It costs
-  one comparison instead of two re-runs, and a real pair clears the band.
+one comparison instead of two re-runs, and a real pair clears the band.
 - Interleave the lengths in any sweep over prompt size. Walking them in order
-  measures the warm-up: an ascending sweep read fewer bytes at 4 tokens than
-  at 2, and moved the batching crossover from 32 tokens to 8.
+measures the warm-up: an ascending sweep read fewer bytes at 4 tokens than at 2, and moved the batching crossover from 32 tokens to 8.
 - An isolated reader A/B cannot support a layout claim. The reader is not what
-  the model waits on once the page cache, the n-gram stream and the compute
-  share one process.
+the model waits on once the page cache, the n-gram stream and the compute share one process.
 - A benchmark must prove its own premise before it reports. Verify the drive
-  served the reads, verify the setting took effect, and refuse to report
-  otherwise. Three benchmarks in one day returned plausible numbers while
-  measuring nothing: one never set the read mode its gate needed, one read
-  back pages its own write had cached, and one could not change a setting held
-  in a module constant.
+served the reads, verify the setting took effect, and refuse to report otherwise. Three benchmarks in one day returned plausible numbers
+while measuring nothing. One missed its required read mode. One read pages cached by its own write. One could not change a module constant.
 - Read this file's do-not-retry list and grep the research log before building
-  anything. The expert-major repack was rebuilt from scratch while sitting as
-  item three on that list.
+anything. The expert-major repack was rebuilt from scratch while sitting as item three on that list.
 - Record free memory and competing applications.
 - Never predict throughput from the routing coverage curve. Coverage counts
-  accesses to the top experts. It does not describe page-cache residency.
+accesses to the top experts. It does not describe page-cache residency.
 
 ## Do not retry without a new mechanism
 
 - Expert result caches and resident weight slabs.
 - Warm read-ahead and in-process prefetch overlap.
 - Repacking the complete checkpoint.
+- Widening `swap-epsilon` past 0.02. Both 0.05 and 0.10 remove the same 1.4%
+of physical bytes and neither clears its band, while 0.10 changed the output in 7 of 7 arms. Expert score gaps look bimodal, so there's
+nothing between 0.02 and 0.10 to harvest.
+- Verifying several tokens in one pass, at any block length and with any draft.
+A batch of two reads 808 MB/token against decode's 390, so the verify block costs 3.9 times one decode. Batching widens the distinct working
+set and defeats the page cache. Read the amortisation curve in `research.md` before proposing a variant.
+- Compressing the checkpoint on disk. On real oQ4 data zlib saves 3.59% at
+43 MB/s while decode needs 1.06 GB/s, and compression removes the byte offsets positioned reads depend on.
+- Stripping the `vision_tower` tensors. They're dead weight for the text
+runtime but only 0.90 GB, interleaved with 93 language tensors inside a 2.05 GB span of shard 1.
 - Two-bit expert requantization.
 - Low-rank expert approximation.
 - Native MTP for this complete runtime.
 - Exact speculative paths already measured in the research log.
 - Removing host work from the read path. Mapping resident rows instead of
-  copying them, dropping the concatenate, and issuing reads earlier were each
-  measured. Every one returns its saving to the GPU wait under drive pressure.
+copying them, dropping the concatenate, and issuing reads earlier were each measured. Every one returns its saving to the GPU wait under
+drive pressure.
 - Pinning more than 32 experts. Tested again with a corrected candidate pool:
-  `hot=40` pins 6.12 GB and returns the same rate as `hot=32`.
+`hot=40` pins 6.12 GB and returns the same rate as `hot=32`.
 - Longer routing warmup. `warmup=40` measured 3.7 percent slower than 8.
 - Sorting a layer's reads by offset, pinning only scales and biases, and
-  warming last session's expert set. Each measured inside its resolution band
-  alone, and the last two measured -1.4% together with 8% more physical reads,
-  so they do not add.
+warming last session's expert set. Each measured inside its resolution band alone, and the last two measured -1.4% together with 8% more
+physical reads, so they do not add.
 - Mapping resident expert rows, at any gate accuracy. A tracker with 97.6
-  percent precision, well past its 78.5 percent break-even, measured 5.9
-  percent slower while reading 3.2 percent fewer bytes, and degraded further
-  as more rows became eligible. The harm scales with the mapped fraction.
+percent precision, well past its 78.5 percent break-even, measured 5.9 percent slower while reading 3.2 percent fewer bytes, and degraded
+further as more rows became eligible. The harm scales with the mapped fraction.
+
+## Trajectory gate
+
+If a change alters what the model computes, run a code task that names a real external API before adopting it. That applies to checkpoints
+and routing profiles alike. Prose won't catch this kind of failure.
+
+The task: ask for a SketchUp extension that extrudes several selected faces to a height the user types. The reply has to be a complete `.rb`
+file. Load it in SketchUp and run it. Record the checkpoint, the effort level, and whether it works.
+
+Run it at `medium` and at `high` with sampling on, and keep the sampler and the effort the same on both sides of the comparison. `medium` is
+the default effort and is where most output lives. Add `xhigh` if the change might affect long reasoning.
+
+oQ4 passes. oQ3-MTP fails at both `low` and `xhigh`, and higher effort moved it further from the right method rather than closer.
+
+Effort and sampling can move the output more than most tested changes. Greedy breaks ties the same way every time and causes repetition on
+its own, so a greedy result applies only to greedy decoding. Repeat the cache-aware gate.
+
+Check these items in the reply:
+
+- `Face#pushpull`. There is no `Face#extrude`; oQ3-MTP invented it.
+- `pushpull` with one argument. The second parameter is `copy`, not a direction
+flag, so passing `true` leaves the original face behind.
+- `next unless face.valid?`. Extruding one face invalidates an adjacent
+coplanar one, which is the hard part of this task.
+- A length parse that can't raise. `Sketchup.parse_length` returns nil;
+`String#to_l` raises.
+
+## Machine constraints
+
+The reference machine holds one checkpoint at a time. The data volume is 228 GB with about 22 GB free while oQ4 is installed. Swapping to
+oQ3-MTP means deleting oQ4 first, and back again means re-running `~/models/dl-oQ4.sh`.
+
+Cleaning won't change that. The biggest reclaimable items add up to about 13 GB. The Trash is empty and there are no APFS local snapshots.
+
+Long sessions build up swap. After a day of streaming work the machine held seven 1 GB swapfiles at 93% use, plus a 1 GB `kernelcore` panic
+dump in `/System/Volumes/VM`. Reboot before a trusted measurement. Swap adds variance that the harness cannot remove.
+
+Two directories look like free space and aren't. `macqwen/cli.py` runs Flash-Next from `~/models/.venv-qwen4exp/bin/python` and Qwen3.8-27B
+from `~/mlx-qwen38-kernel-lab/bin/python3`, so deleting either stops the chat. `~/mlx-qwen38-apple` has no git history and no remote, so its
+work only exists here. Don't delete any of the three to free space.
 
 ## Next work
 
-- Repeat cache-aware routing on a cool machine. Confirm its absolute rate.
-- Expand the cache-aware quality gate. Include long generations, reasoning,
-  Portuguese, code, and factual prompts.
-- Test `swap-epsilon 0.005` as the conservative profile. The opportunity study
-  found 11.9 percent fewer cold reads at this value, versus 13.9 percent at
-  `0.02`, with less routed mass changed.
-- Keep exact-quality as the default. Promote cache-aware only if the wider
-  quality gate supports the change.
-- Treat `pin-parts` as rejected. Its positive isolated reading disappeared
-  when stacked with prewarm. The pair lost 1.4 percent and read 8 percent more.
-- Lower-bit checkpoints such as oQ3 are an option nobody has chosen. The
-  projection is 2.95 to 3.10 tok/s from about 17 percent fewer bytes, but it
-  means deleting oQ4, which is not reversible without a 92 GB download, and it
-  trades quality for rate. Do not treat it as planned work.
-- Improve installation and checkpoint verification.
-- Explore lower-bit published checkpoints with explicit quality gates.
-- Keep all accepted changes on the complete shared chat path.
+The checkpoint question is settled. oQ4 is the baseline and is installed. oQ3-MTP is gone from the reference machine.
+
+### Redo the gate now that the sampler exists
+
+- Run the SketchUp Ruby task on both routing profiles with sampling on, at
+`high`, and again at `medium`. Keep the sampler and the effort identical on both sides. The existing result used greedy decoding, which
+causes repetition on its own, so it says more about greedy than about routing.
+- Give reasoning its own budget for those runs. Both earlier runs had
+`think_budget` off, so the loops came out of the answer allowance.
+
+### Pending measurements
+
+- Measure the prefill recovery from `FLASHNEXT_SWAP_MAX_ROWS`. One cache-aware
+turn prefilled at 35.1 tok/s against 45.0 exact before the fix. Nothing has measured it since.
+- Run cache-aware on a long generation. Sixty-token arms can't see whether
+preferring resident experts shrinks the working set or settles routing onto a subset. The harness flagged r = -0.71 against elapsed time,
+but over a 1.2% range on four points, so it settled nothing.
+- Run cache-aware at a context near 5,000 tokens. Every harness arm uses about
+  50. One long turn gained 7.1% on `tail`.
+- Re-run `bench_draft_contention.py` warm. Both runs sat near 1013 MB/token
+against a 390 MB baseline, so the premise gate refused their absolute projection. The retention figure is fine; the absolute rate isn't.
+
+### Open defects
+
+- Track down the missing spaces at chunk joins in streamed replies.
+`o focodeixa` and `resgatarou` show up under both routing profiles, so it's probably the word animator rather than routing.
+
+### Quality gates
+
+- Widen the cache-aware quality gate. Four factual prompts is too narrow to
+promote a routing change that alters expert choices. Add long generations, reasoning, Portuguese, code, and factual prompts.
+- Keep `exact-quality` as the default until a wider gate says otherwise.
+
+### Open experiments
+
+- Try the weight-preserving swap. `swap_row` currently exchanges the expert
+index and its weight together, so the kept mass drops by up to epsilon per swapped slot and `scores / selected_mass` scales every kept
+expert up to refill it, about 1.4 swaps per layer across 48 layers. Swapping the index and leaving the weight alone keeps the router's mass
+for that slot and leaves renormalization untouched. Two lines in `adaptive_topk.swap_row`. It might keep the 16.2% byte reduction without
+the trajectory cost.
+- Consider lower-bit published checkpoints only with the code gate attached.
+oQ3-MTP was 21% faster and produced a broken SketchUp extension at both effort levels. Speed alone doesn't qualify a checkpoint.
+
+### Standing decisions
+
+- `pin-parts` is rejected. Its positive isolated reading disappeared when
+stacked with prewarm; the pair lost 1.4% and read 8% more.
+- Keep every accepted change on the shared chat path.
+- Installation and checkpoint verification could still be better.

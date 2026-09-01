@@ -33,6 +33,7 @@ from macqwen.api_keys import (
 from macqwen.agent import Limits, run_agent
 from macqwen.model_settings import FLASHNEXT_DEFAULTS
 from macqwen.profiles import system_prompt, tools_for
+from macqwen.sampling import Sampling
 from macqwen.tools.repo import Repo
 from macqwen.tools.toolbox import Toolbox
 from macqwen.terminal import read_prompt
@@ -111,7 +112,7 @@ class Session:
 
     def save_preferences(self):
         preferences.save(self.preferences, self.preferences_path)
-        self.backend.thinking_enabled = self.preferences["thinking_enabled"]
+        mirror_preferences(self.backend, self.preferences, self.profile)
 
     def stop(self):
         self.running = False
@@ -244,6 +245,7 @@ class Session:
             f"display={'show' if prefs['show_thinking'] else 'hide'}  "
             f"animate={'on' if prefs['animate'] else 'off'}  "
             f"effort={prefs['effort']}  "
+            f"{'greedy' if prefs['temperature'] <= 0 else 'sampled'}  "
             f"answer-tokens={preferences.answer_limit(prefs, default_answer)}  "
             f"think-tokens={preferences.think_limit(prefs)}",
             f"{C['b']}context{C['0']}   {len(self.backend.tape)} tokens",
@@ -258,6 +260,25 @@ class Session:
         except Exception:
             pass
         return "\n".join(lines)
+
+
+def mirror_preferences(backend, prefs: dict, profile: str) -> None:
+    """Copy preference state a backend needs onto it.
+
+    `/settings` reads these to show what the next turn will do. The dedicated
+    commands stay the writers, so each value has one owner.
+    """
+    backend.thinking_enabled = prefs["thinking_enabled"]
+    if not hasattr(backend, "sampling"):
+        return
+    backend.sampling = Sampling.from_preferences(prefs)
+    backend.reasoning_effort = prefs["effort"]
+    backend.think_budget = preferences.think_limit(prefs)
+    backend.answer_budget = preferences.answer_limit(
+        prefs,
+        preferences.DEFAULT_PLAIN_ANSWER_TOKENS if profile == "plain"
+        else preferences.DEFAULT_ANSWER_TOKENS,
+    )
 
 
 def build_backend(name: str, args, prefs: dict):
@@ -281,7 +302,7 @@ def build_backend(name: str, args, prefs: dict):
             fusion_model=args.fusion_model,
             session_dir=(args.session_dir or "~/.cache/flashnext/sessions"),
         )
-        backend.thinking_enabled = prefs["thinking_enabled"]
+        mirror_preferences(backend, prefs, prefs["profile"])
         return backend
     if name == "qwen27b":
         if not args.model_path:
@@ -311,7 +332,7 @@ def build_backend(name: str, args, prefs: dict):
             shortlist_k=args.shortlist_k,
             session_dir=(args.session_dir or "~/.frankenstein/sessions"),
         )
-        backend.thinking_enabled = prefs["thinking_enabled"]
+        mirror_preferences(backend, prefs, prefs["profile"])
         return backend
     raise SystemExit(
         f"unknown model {name!r}. Use 'flashnext' or 'qwen27b'.")
@@ -485,14 +506,20 @@ def main() -> int:
     if prefs["model"] == "flashnext":
         from macqwen.checkpoints import resolve_flashnext
 
+        explicit_checkpoint = args.model_path
         environment_checkpoint = os.environ.get("MACQWEN_FLASHNEXT_MODEL")
-        choice = args.model_path or environment_checkpoint \
-            or prefs["flashnext_checkpoint"] or None
+        saved_checkpoint = prefs["flashnext_checkpoint"]
+        choice = (
+            explicit_checkpoint
+            or environment_checkpoint
+            or saved_checkpoint
+            or None
+        )
         try:
             args.model_path = str(resolve_flashnext(choice))
         except ValueError as exc:
             parser.error(str(exc))
-        if args.model_path and not environment_checkpoint:
+        if explicit_checkpoint or not (environment_checkpoint or saved_checkpoint):
             prefs["flashnext_checkpoint"] = args.model_path
     if args.benchmark_json and prefs["profile"] != "plain":
         parser.error("--benchmark-json requires --profile plain")
@@ -662,14 +689,31 @@ def run_turn_plain(session, prompt: str, glow: IngestGlow) -> None:
 
 
 def run_benchmark(session, prompt: str, ready_seconds: float) -> dict:
+    # Benchmarks compare token IDs across arms to prove a change left the
+    # trajectory alone. Sampling makes that impossible, so this path is greedy
+    # whatever the preferences say.
+    backend = session.backend
+    if hasattr(backend, "sampling"):
+        from macqwen.sampling import Sampling
+
+        backend.sampling = Sampling.greedy_settings()
     open_or_continue(session, prompt)
     prefs = session.preferences
     limit = preferences.generation_limit(
         prefs, preferences.DEFAULT_PLAIN_ANSWER_TOKENS
     )
+    # Physical reads make a rate comparable. Decode rate on this machine spans
+    # about 21 percent with page-cache state, so a rate without its read
+    # volume cannot be compared against another rate.
+    try:
+        from models.flashnext.diskio import disk_bytes_read
+    except Exception:
+        disk_bytes_read = None
+    read_before = disk_bytes_read() if disk_bytes_read else -1
     began = time.time()
     text, stats = session.backend.generate(max_tokens=limit)
     turn_seconds = time.time() - began
+    read_after = disk_bytes_read() if disk_bytes_read else -1
     produced = session.backend.tape[-stats.tokens:] if stats.tokens else []
     token_bytes = b"".join(
         int(value).to_bytes(4, "little", signed=False) for value in produced
@@ -694,6 +738,13 @@ def run_benchmark(session, prompt: str, ready_seconds: float) -> dict:
         "output_text": text,
         "turn_seconds": turn_seconds,
         "complete_tps": stats.tokens / turn_seconds if turn_seconds else 0.0,
+        "physical_bytes": (
+            read_after - read_before if read_before >= 0 and read_after >= 0 else -1
+        ),
+        "mb_per_token": (
+            (read_after - read_before) / 1e6 / stats.tokens
+            if read_before >= 0 and read_after >= 0 and stats.tokens else -1.0
+        ),
     }
     try:
         import mlx.core as mx

@@ -10,6 +10,7 @@ import unittest
 
 from models.flashnext.adaptive_topk import (
     _SWAP_EPSILON,
+    _SWAP_MAX_ROWS,
     _SWAP_RESIDENT,
     set_swap_resident,
     swap_row,
@@ -93,6 +94,15 @@ class SwitchTests(unittest.TestCase):
         self.assertAlmostEqual(_SWAP_EPSILON[0], 0.01)
         set_swap_resident(None)
         self.assertIsNone(_SWAP_RESIDENT[0])
+
+    def test_prefill_batches_keep_exact_routing(self):
+        set_swap_resident(lambda layer, expert: True, 0.01, 4)
+        self.assertEqual(_SWAP_MAX_ROWS[0], 4)
+
+    def test_the_row_limit_survives_a_later_epsilon_change(self):
+        set_swap_resident(lambda layer, expert: True, 0.01, 8)
+        set_swap_resident(lambda layer, expert: True, 0.02)
+        self.assertEqual(_SWAP_MAX_ROWS[0], 8)
 
     def test_the_environment_default_is_off(self):
         import os

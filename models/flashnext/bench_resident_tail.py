@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import mlx.core as mx
 from transformers import AutoTokenizer
 
+from macqwen.checkpoints import resolve_flashnext
 from models.flashnext.adaptive_topk import (
     FAST_LAYERS,
     mean_keeps,
@@ -28,7 +29,7 @@ from models.flashnext.expert_cache import profile_totals, reset_profile
 from models.flashnext.loader import load_streaming
 
 
-MODEL = os.path.expanduser("~/models/Qwen3.8-Flash-Next-MLX-oQ4")
+MODEL = str(resolve_flashnext())
 PROMPT = (
     "Explique em cerca de 200 palavras como a fotossíntese transforma luz "
     "solar em energia química."

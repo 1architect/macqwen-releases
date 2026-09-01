@@ -5,14 +5,14 @@ Times one GDN layer and one full-attention layer directly, then projects to
 the 48/16 layer split, and compares against a measured whole-model prefill.
 """
 import argparse, sys, time
+from pathlib import Path
 import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.generate import wired_limit
 from mlx_lm.models.cache import make_prompt_cache
 from models.qwen27b.paged_kv import require_free_memory
 
-E2 = ("/Users/gioma/.lmstudio/models/gioma/"
-      "Qwen3.8-27B-Apple-MLX-GGUF-Distill-Multisample-E2-v1")
+E2 = str(Path.home() / "models/Qwen3.8-27B-Apple-MLX-E2-v1")
 
 
 def timeit(fn, n=5):

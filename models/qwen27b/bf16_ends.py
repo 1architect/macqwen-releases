@@ -24,7 +24,7 @@ import mlx.nn as nn
 
 SRC = Path.home() / "bf16-src"
 OUT = Path.home() / ".frankenstein" / "bf16-ends"
-MODEL = "/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-V3.1-Compact"
+MODEL = str(Path.home() / "models/Qwen3.8-27B-Apple-MLX-V3.1-Compact")
 ENGINE_SOURCE = Path(__file__).with_name("frankenstein_engine.py")
 
 

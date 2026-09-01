@@ -85,8 +85,8 @@ try:
 except ImportError:
     PagedKVCache = None
 
-E2 = "/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-V3.1-Compact"
-MACBAT = "/Users/gioma/Developer/MACBAT"
+E2 = str(Path.home() / "models/Qwen3.8-27B-Apple-MLX-V3.1-Compact")
+MACBAT = os.environ.get("MACQWEN_WORKSPACE", str(Path.cwd()))
 
 IM_START = "<|im_start|>"
 IM_END = "<|im_end|>"
@@ -115,7 +115,7 @@ Final review:
 
 For every important finding cite the relative file path and relevant type/function/code region. Distinguish definite bugs from risks, tradeoffs, and style preferences."""
 
-TASK = """Review main.swift in /Users/gioma/Developer/MACBAT in the context of the rest of the project. Inspect whatever related files you need, then give the complete review requested by the system instructions."""
+TASK = """Review main.swift in the selected workspace. Inspect related files as needed, then give the complete review requested by the system instructions."""
 
 TOOLS = [
  {"type": "function", "function": {"name": "api_docs", "description": "Look up the exact signature of a library or framework method: argument names, order, defaults, return type and a real example. Use this instead of recalling a signature, and before writing any call you have not read in this session. Covers SketchUp, Ruby, Python, SwiftUI, MLX, React and thousands more. Faster and far more reliable than web_search for API questions.", "parameters": {"type": "object", "properties": {"library": {"type": "string"}, "topic": {"type": "string"}}, "required": ["library", "topic"], "additionalProperties": False}}},

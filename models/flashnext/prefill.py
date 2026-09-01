@@ -17,8 +17,17 @@ PREFILL_RELEASE_BYTES = int(
 PREFILL_CLEAR_CACHE = os.environ.get("FLASHNEXT_PREFILL_CLEAR_CACHE", "1") != "0"
 
 
-def prefill_language(language, ids, cache):
-    """Keep large MoE prefills whole while avoiding full-sequence logits."""
+def prefill_language(language, ids, cache, sampler=None):
+    """Keep large MoE prefills whole while avoiding full-sequence logits.
+
+    `sampler` picks the first reply token from the last prompt position.
+    None keeps the greedy choice the benchmarks depend on.
+    """
+    def pick(row):
+        if sampler is None:
+            return mx.argmax(row, axis=-1).astype(mx.uint32)
+        return sampler(row).astype(mx.uint32)
+
     full_logits_limit = min(
         QSA_CHUNK_THRESHOLD,
         PREFILL_FULL_LOGITS_MAX_TOKENS,
@@ -27,7 +36,7 @@ def prefill_language(language, ids, cache):
         output = language(ids, cache=cache)
         logits = output.logits
         mx.eval(logits)
-        token = mx.argmax(logits[:, -1, :], axis=-1).astype(mx.uint32)
+        token = pick(logits[:, -1, :])
         mx.eval(token)
         release_cache = int(logits.nbytes) >= PREFILL_RELEASE_BYTES
         output = None
@@ -43,9 +52,14 @@ def prefill_language(language, ids, cache):
         skip_logits=True,
     )
     last_hidden = output.hidden_states[-1][:, -1:]
-    token = language.speculative_argmax_from_hidden(
-        last_hidden
-    ).reshape(-1).astype(mx.uint32)
+    if sampler is None:
+        # The fused head skips materialising logits, which is why this path
+        # exists. Only a sampler needs them, and only for the final row.
+        token = language.speculative_argmax_from_hidden(
+            last_hidden
+        ).reshape(-1).astype(mx.uint32)
+    else:
+        token = pick(language.speculative_logits_from_hidden(last_hidden))
     mx.eval(token, [entry.state for entry in cache])
     output = None
     last_hidden = None

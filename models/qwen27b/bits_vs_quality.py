@@ -19,7 +19,7 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm import load
 
-REF = "/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-V3.1-Compact"
+REF = str(Path.home() / "models/Qwen3.8-27B-Apple-MLX-V3.1-Compact")
 STORE = Path.home() / ".frankenstein" / "v4" / "q8"
 # Do not delete the files named here, and do not edit them. They are the
 # held-out corpus. Perplexity is comparable across builds only while the
@@ -94,7 +94,7 @@ def main():
     flush(f"{len(layers_avail)} layers available: {layers_avail}")
 
     model, tok = load(REF)
-    root = Path("/Users/gioma/Developer/MACQWEN")
+    root = Path(__file__).resolve().parents[2]
     texts = [(root / f).read_text()[:8000] for f in HELD_OUT]
     L = model.language_model.model.layers
 

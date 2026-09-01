@@ -13,6 +13,7 @@ os.environ.setdefault("FLASHNEXT_RENORM", "0")
 import mlx.core as mx
 from transformers import AutoTokenizer
 
+from macqwen.checkpoints import resolve_flashnext
 from models.flashnext.adaptive_topk import (
     mean_keeps,
     reset_keep_stats,
@@ -23,7 +24,7 @@ from models.flashnext.adaptive_topk import (
 from models.flashnext.loader import load_streaming
 
 
-MODEL = os.path.expanduser("~/models/Qwen3.8-Flash-Next-MLX-oQ4")
+MODEL = str(resolve_flashnext())
 PROMPTS = (
     "2 + 2 =",
     "The chemical symbol for gold is",

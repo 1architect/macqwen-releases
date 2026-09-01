@@ -39,10 +39,10 @@ cache data. Keep these directories private:
 
 Do not publish session files.
 
-## Agent tools
+## Repository tools
 
-The agent profile can read and modify files inside its selected workspace.
-Modifying tools require approval by default.
+Repository tools can read and modify files inside the selected workspace.
+Tools that modify files require approval by default.
 
 Review the workspace path before approving a command. Use the plain profile
 when repository access is unnecessary.
@@ -85,9 +85,8 @@ unaffected.
 
 `--allow-origin '*'` accepts any page. Do not use it for normal operation.
 
-The server returns tool calls to the client instead of running them. A web page
-cannot use this endpoint to execute a tool. Tools run only in the chat agent
-profile, which requires approval.
+The server returns tool calls to the client without running them.
+A web page cannot use this endpoint to execute repository tools.
 
 ## Models and dependencies
 

@@ -25,7 +25,7 @@ import numpy as np
 import mlx.core as mx
 import mlx.nn as nn
 
-MODEL = "/Users/gioma/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-V3.1-Compact"
+MODEL = str(Path.home() / "models/Qwen3.8-27B-Apple-MLX-V3.1-Compact")
 CALIB = Path.home() / ".frankenstein" / "calibration.npz"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

@@ -18,7 +18,10 @@ from typing import Any, Callable
 from macqwen.preferences import (
     DEFAULT_ANSWER_TOKENS,
     DEFAULT_PLAIN_ANSWER_TOKENS,
+    EFFORT_LEVELS,
+    SCHEMA,
 )
+from macqwen.sampling import THINKING
 from macqwen.ui import token_limit_text
 
 
@@ -102,12 +105,46 @@ def _think_budget(session, argument: str) -> str:
     return f"thinking tokens: {token_limit_text(prefs['think_budget'])}"
 
 
+def _sampling(session, argument: str) -> str:
+    """Qwen's card recommends thinking mode at temperature 1.0, top-p 0.95,
+    top-k 20. Greedy resolves a tie the same way every time, which is what
+    the benchmarks need and what makes a chat repeat itself."""
+    prefs = session.preferences
+    keys = ("temperature", "top_p", "top_k", "min_p", "presence_penalty")
+    parts = argument.split()
+    if not parts:
+        shown = "  ".join(f"{k.replace('_', '-')} {prefs[k]:g}" for k in keys)
+        mode = "greedy" if prefs["temperature"] <= 0 else "sampled"
+        return f"{mode}: {shown}"
+    if parts[0] == "greedy":
+        prefs["temperature"] = 0.0
+    elif parts[0] == "default":
+        for key, value in THINKING.items():
+            prefs[key] = value
+    elif len(parts) == 2:
+        key = parts[0].replace("-", "_")
+        if key not in keys:
+            return f"usage: /sampling [greedy|default|{'|'.join(keys)} VALUE]"
+        try:
+            value = int(parts[1]) if key == "top_k" else float(parts[1])
+        except ValueError:
+            return f"{key} needs a number"
+        _, valid = SCHEMA[key]
+        if not valid(value):
+            return f"{key} rejects {parts[1]}"
+        prefs[key] = value
+    else:
+        return f"usage: /sampling [greedy|default|{'|'.join(keys)} VALUE]"
+    session.save_preferences()
+    return _sampling(session, "")
+
+
 def _effort(session, argument: str) -> str:
     prefs = session.preferences
     if not argument:
         return f"effort: {prefs['effort']}"
-    if argument not in ("low", "medium", "xhigh"):
-        return "usage: /effort low|medium|xhigh"
+    if argument not in EFFORT_LEVELS:
+        return f"usage: /effort {'|'.join(EFFORT_LEVELS)}"
     prefs["effort"] = argument
     session.save_preferences()
     return f"effort: {argument}"
@@ -244,7 +281,9 @@ COMMANDS: tuple[Command, ...] = (
             "set the answer limit", _max_tokens),
     Command(("/think-budget",), "/think-budget N|off",
             "set extra reasoning capacity", _think_budget),
-    Command(("/effort",), "/effort low|medium|xhigh",
+    Command(("/sampling",), "/sampling [greedy|default|NAME VALUE]",
+            "how the next token is chosen", _sampling),
+    Command(("/effort",), f"/effort {'|'.join(EFFORT_LEVELS)}",
             "how hard the model should think", _effort),
     Command(("/stream",), "/stream on|off",
             "stream the answer as it is written", _stream),

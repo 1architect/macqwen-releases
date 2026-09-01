@@ -15,11 +15,12 @@ os.environ.setdefault("FLASHNEXT_OVERLAP", "1")
 import mlx.core as mx
 from transformers import AutoTokenizer
 
+from macqwen.checkpoints import resolve_flashnext
 from models.flashnext.adaptive_topk import set_renorm_blend, set_threshold
 from models.flashnext.loader import load_streaming
 
 
-MODEL = os.path.expanduser("~/models/Qwen3.8-Flash-Next-MLX-oQ4")
+MODEL = str(resolve_flashnext())
 PROMPT = "Explain photosynthesis in six detailed sentences."
 
 

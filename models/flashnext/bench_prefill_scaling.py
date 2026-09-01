@@ -31,7 +31,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lengths", type=int, nargs="+",
                         default=[128, 512, 1024, 2048])
-    parser.add_argument("--model", default="~/models/Qwen3.8-Flash-Next-MLX-oQ4")
+    parser.add_argument("--model")
     parser.add_argument("--rounds", type=int, default=3,
                         help="passes over the lengths; the first is discarded")
     args = parser.parse_args()
@@ -42,7 +42,7 @@ def main() -> None:
     from models.flashnext.diskio import disk_bytes_read
     from macqwen.backends.flashnext import FlashNextBackend
 
-    backend = FlashNextBackend()
+    backend = FlashNextBackend(model_path=args.model)
     language = backend.language
 
     def one(length):

@@ -25,7 +25,6 @@ from models.flashnext.expert_cache import profile_totals, reset_profile
 from models.flashnext.loader import load_streaming
 
 
-DEFAULT_MODEL = "~/models/Qwen3.8-Flash-Next-MLX-oQ4"
 DEFAULT_PROMPT = "Explique a fotossintese em duas frases."
 LAYER_TIMERS: dict[str, float] = {}
 
@@ -120,7 +119,7 @@ def decode_pass(language, ids, count):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--model")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--tokens", type=int, default=24)
     parser.add_argument("--passes", type=int, default=3)
@@ -140,7 +139,9 @@ def main() -> None:
     args = parser.parse_args()
 
     os.environ.setdefault("FLASHNEXT_TOPK_THRESHOLD", "0.85")
-    path = os.path.expanduser(args.model)
+    from macqwen.checkpoints import resolve_flashnext
+
+    path = str(resolve_flashnext(args.model))
 
 
     from transformers import AutoTokenizer

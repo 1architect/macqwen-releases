@@ -104,9 +104,11 @@ def _moe_call(self, x: mx.array) -> mx.array:
         # predictor, or cache-aware routing will read it. Forcing it every
         # layer costs a materialisation 48 times per token for a feature that
         # is off, so it joins the same sync as `scores` only when wanted.
-        needed = (
-            _EARLY_SUBMIT or _WARM_ON or _SWAP_RESIDENT[0] is not None
+        swap_active = (
+            _SWAP_RESIDENT[0] is not None
+            and scores.size // k <= _SWAP_MAX_ROWS[0]
         )
+        needed = _EARLY_SUBMIT or _WARM_ON or swap_active
         if _PROFILE:
             began = time.perf_counter()
             mx.eval(scores, inds) if needed else mx.eval(scores)
@@ -136,15 +138,27 @@ def _moe_call(self, x: mx.array) -> mx.array:
         observer = _ROUTE_OBSERVER[0]
         expert_rows = None
         if observer is not None and layer_id is not None:
-            expert_rows = inds.reshape(-1, k).tolist()
-            observer(
-                layer_id,
-                expert_rows,
-                scores.reshape(-1, k).tolist(),
-                keeps,
-            )
+            limit = _OBSERVER_MAX_ROWS[0]
+            if limit is not None and scores.size // k > limit:
+                # A pin observer stops after a fixed number of rows per layer.
+                # Handing it a whole prefill batch builds two lists of one row
+                # per prompt token, 48 times, and discards nearly all of them.
+                observer(
+                    layer_id,
+                    inds.reshape(-1, k)[:limit].tolist(),
+                    scores.reshape(-1, k)[:limit].tolist(),
+                    keeps[:limit],
+                )
+            else:
+                expert_rows = inds.reshape(-1, k).tolist()
+                observer(
+                    layer_id,
+                    expert_rows,
+                    scores.reshape(-1, k).tolist(),
+                    keeps,
+                )
 
-        swap = _SWAP_RESIDENT[0]
+        swap = _SWAP_RESIDENT[0] if swap_active else None
         if swap is not None and layer_id is not None:
             if expert_rows is None:
                 expert_rows = inds.reshape(-1, k).tolist()
@@ -235,13 +249,16 @@ def _moe_call(self, x: mx.array) -> mx.array:
         # this the profile pinned nothing and silently lost its own feature.
         observer = _ROUTE_OBSERVER[0]
         if observer is not None:
-            rows = inds.reshape(-1, k).tolist()
-            observer(
-                layer_id,
-                rows,
-                scores.reshape(-1, k).tolist(),
-                [k] * len(rows),
-            )
+            limit = _OBSERVER_MAX_ROWS[0]
+            rows_here = inds.size // k
+            if limit is not None and rows_here > limit:
+                rows_here = limit
+                rows = inds.reshape(-1, k)[:limit].tolist()
+                score_rows = scores.reshape(-1, k)[:limit].tolist()
+            else:
+                rows = inds.reshape(-1, k).tolist()
+                score_rows = scores.reshape(-1, k).tolist()
+            observer(layer_id, rows, score_rows, [k] * rows_here)
 
     selected_mass = scores.sum(axis=-1, keepdims=True)
     normalizer = topk_mass + _RENORM_BLEND[0] * (selected_mass - topk_mass)
@@ -311,7 +328,15 @@ _ROUTE_OBSERVER = [None]
 # `_SWAP_RESIDENT[0]` is a predicate (layer, expert) -> bool. None disables.
 _SWAP_RESIDENT = [None]
 _SWAP_EPSILON = [0.02]
+# The swap spends Python time per token to remove a physical read. Prefill
+# reads one expert row for a whole batch of tokens, so the read it removes is
+# already amortised while the Python cost is paid per token. A cache-aware
+# chat turn prefilled at 35.1 tok/s against 45.0 exact. Above this many rows
+# in one call the swap stands down and the batch routes exactly.
+_SWAP_MAX_ROWS = [int(os.environ.get("FLASHNEXT_SWAP_MAX_ROWS", "4"))]
 _RESIDENT_EXPERTS = {}
+# Rows handed to the route observer per call. None means every row.
+_OBSERVER_MAX_ROWS = [None]
 _TAIL_MODE = ["off"]
 _TAIL_STATS = {}
 _TAIL_COEFFICIENTS = {}
@@ -416,17 +441,21 @@ def mean_keeps() -> float:
     return _KEEP_SUM[0] / _KEEP_COUNT[0] if _KEEP_COUNT[0] else 0.0
 
 
-def set_swap_resident(predicate=None, epsilon: float | None = None) -> None:
+def set_swap_resident(predicate=None, epsilon: float | None = None,
+                      max_rows: int | None = None) -> None:
     """Route to a resident expert when a cold one scores no better.
 
     `predicate(layer, expert)` reports whether the expert's rows are already
     in memory. Passing None restores exact routing. This changes what the
     model computes, so it is gated by the reasoning quality gate rather than
-    by token identity.
+    by token identity. `max_rows` is the largest batch the swap runs on, so
+    that prefill keeps exact routing and pays no Python cost.
     """
     _SWAP_RESIDENT[0] = predicate
     if epsilon is not None:
         _SWAP_EPSILON[0] = float(epsilon)
+    if max_rows is not None:
+        _SWAP_MAX_ROWS[0] = int(max_rows)
 
 
 def swap_row(experts, weights, keep, resident, epsilon):
@@ -466,8 +495,12 @@ def swap_row(experts, weights, keep, resident, epsilon):
     return experts, weights
 
 
-def set_route_observer(observer=None) -> None:
+def set_route_observer(observer=None, max_rows: int | None = None) -> None:
+    """Watch routing decisions. `max_rows` caps the rows handed over per
+    call, for an observer that stops after a fixed count. A measurement that
+    wants every token must leave it None."""
     _ROUTE_OBSERVER[0] = observer
+    _OBSERVER_MAX_ROWS[0] = None if max_rows is None else int(max_rows)
 
 
 def set_resident_experts(values=None) -> None:

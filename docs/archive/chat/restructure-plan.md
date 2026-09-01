@@ -1,16 +1,16 @@
 # Restructure plan
 
-Written 2026-08-31. One chat, two profiles, model-exclusive work in subfolders.
+Archived plan from 2026-08-31. The completed restructure created one chat, two
+profiles, and separate model directories.
 
 ## Background
 
-The repository began as a Qwen3.8-27B runtime. That model grew a chat with
-agentic tools. `flashnext/` then appeared as a folder inside it for a different
-model and grew a second chat, which added features the first lacks and lacks
-features the first has. Neither is a superset. A fix to one does not reach the
-other, which is the same failure mode as issue #1 at repository scale.
+The repository began as a Qwen3.8-27B runtime with a tool-enabled chat.
+`flashnext/` added a different model and a second chat. Each chat had unique
+features. Fixes did not transfer between them. This repeated issue #1 at the
+repository level.
 
-## The binding constraint
+## Runtime limit
 
 The two models need different Python environments:
 
@@ -19,13 +19,12 @@ The two models need different Python environments:
 | `~/mlx-qwen38-kernel-lab` | 0.32.1.dev+3a62199 | 0.32.0 | none | 5.15.1 |
 | `~/models/.venv-qwen4exp` | 0.32.2 | 0.31.3 | 0.6.17 | 5.16.1 |
 
-The 27B runtime uses a custom MLX build. Merging the environments risks that
-work, so **one process cannot serve both models**. "One chat interface" means
-one shared codebase with a per-model launcher, not one interpreter.
+The 27B runtime uses a custom MLX build. One process cannot serve both models
+without risking that build. The shared chat uses one codebase and separate
+model launchers.
 
-Consequence: the shared package must import cleanly in both environments. It
-stays pure Python. Anything touching MLX lives in a backend, imported only by
-the launcher that owns it.
+The shared package imports in both environments and stays pure Python. Each
+launcher imports its MLX backend only when required.
 
 ## Target layout
 
@@ -37,7 +36,7 @@ macqwen/                 the chat, shared by every model
   preferences.py         one preferences file, one schema
   commands.py            one command table, aliases included
   profiles/
-    agent.py             large system prompt, tools, approval, budget
+    tools.py             large system prompt, tools, approval, budget
     plain.py             minimal prompt, no tools
   tools/                 api_guard, code_check, context7, search, repo cache
   backends/
@@ -52,8 +51,8 @@ models/
 docs/
 ```
 
-Profile and model are orthogonal. `--profile agent` selects prompt and tools;
-the model selects the backend. Either profile can run on either model.
+Profile and model are independent. The tool profile selects its prompt and
+tools. The model selects the backend. Either profile can use either model.
 
 ## Backend interface
 
@@ -77,7 +76,7 @@ difference stays inside the backend.
 
 ## Sequencing
 
-Each step is verifiable on its own and leaves both chats working.
+The plan used these independently verifiable steps:
 
 1. Create `macqwen/` and copy the shared pieces into it. Change nothing else.
    Both chats keep running from their current files.
@@ -90,17 +89,17 @@ Each step is verifiable on its own and leaves both chats working.
 5. Retire `frankenstein_chat.py` and `flashnext/chat.py`.
 6. Move model-exclusive files into `models/`.
 
-## Feature gaps to close in step 3
+## Feature gaps recorded for step 3
 
-Into the agent chat, from flashnext: `/thinking on|off|show|hide`,
-`/max-tokens`, the routing profiles, exact sessions, `--benchmark-json`.
+Flash-Next supplied `/thinking on|off|show|hide`, `/max-tokens`, routing
+profiles, exact sessions, and `--benchmark-json`.
 
-Into the plain chat, from the agent: `/effort`, `/stream`, `/prompt`,
-workspace awareness.
+The original chat supplied `/effort`, `/stream`, `/prompt`, and workspace
+awareness.
 
-Kept apart on purpose: tools and approval belong to the agent profile only.
+Tools and approval remain limited to the tool profile.
 
-## Rules this restructure exists to enforce
+## Recorded design rules
 
 - A setting is read from one place. See issue #1: four settings were defined
   twice and silently discarded tonight.

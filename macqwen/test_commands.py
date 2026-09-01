@@ -260,3 +260,25 @@ class ProfileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EffortLevelTests(unittest.TestCase):
+    """`/effort` carried its own copy of the level list and rejected `high`
+    after the schema gained it. The command and the schema now read the same
+    tuple, and this test fails if anyone splits them again."""
+
+    def test_the_command_accepts_every_schema_level(self):
+        from macqwen.preferences import EFFORT_LEVELS, SCHEMA
+
+        _, valid = SCHEMA["effort"]
+        for level in EFFORT_LEVELS:
+            self.assertTrue(valid(level), level)
+
+    def test_the_command_body_holds_no_second_copy(self):
+        import inspect
+
+        from macqwen import commands
+
+        body = inspect.getsource(commands._effort)
+        self.assertIn("EFFORT_LEVELS", body)
+        self.assertNotIn('"xhigh"', body)

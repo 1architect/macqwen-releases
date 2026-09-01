@@ -15,6 +15,39 @@ from __future__ import annotations
 IM_START = "<|im_start|>"
 IM_END = "<|im_end|>"
 
+# The chat template turns `reasoning_effort` into a single sentence of system
+# text. `xhigh` asks the model to "validate key assumptions, consider plausible
+# alternatives", `low` asks it to be brief, and `medium` is an empty string.
+# There is nothing between the two instructions, which is why the two levels
+# behave so differently.
+#
+# Measured on a SketchUp Ruby task: `xhigh` validated its assumptions and
+# caught that `String#to_l` raises instead of returning nil, then looped on
+# questions where both branches were correct, because "consider plausible
+# alternatives" has no stopping rule. `medium` wrote clean prose and skipped
+# the `Face#valid?` guard that the task actually needs.
+#
+# `high` keeps what `xhigh` buys and adds the stopping rule it lacks. It rides
+# in the system turn because the template raises on any effort name it does
+# not know.
+EXTRA_REASONING = {
+    "high": (
+        "Think carefully through the task and validate key assumptions "
+        "before you answer. When two options are both correct, choose one "
+        "and move on. Do not re-ask a question you have already answered."
+    ),
+}
+TEMPLATE_EFFORT = {"high": "medium"}
+
+
+def reasoning_system_text(system: str, reasoning_effort: str) -> tuple[str, str]:
+    """Return the system text and the effort name the template accepts."""
+    extra = EXTRA_REASONING.get(reasoning_effort, "")
+    template_effort = TEMPLATE_EFFORT.get(reasoning_effort, reasoning_effort)
+    if not extra:
+        return system, template_effort
+    return (f"{extra}\n\n{system}" if system else extra), template_effort
+
 
 class Conversation:
     """The token tape and the turn framing around it."""
@@ -67,6 +100,7 @@ class Conversation:
         """System turn with the tool contract, first user turn, generation prompt."""
         if self.tape or self.pending:
             raise RuntimeError("conversation already open")
+        system, reasoning_effort = reasoning_system_text(system, reasoning_effort)
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},

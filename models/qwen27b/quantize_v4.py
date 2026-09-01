@@ -37,7 +37,7 @@ def _reference():
     """Any built model of this family will do: only the tokenizer and the
     non-quantisation half of config.json are copied. Naming specific builds
     was fragile, because they get deleted to make room."""
-    root = Path.home() / ".lmstudio/models/gioma"
+    root = Path.home() / "models"
     cands = [d for d in sorted(root.glob("*"))
              if (d / "config.json").exists() and (d / "tokenizer.json").exists()]
     for d in cands:                       # prefer a Qwen3.8 build
@@ -521,7 +521,7 @@ def main():
     s.add_argument("--keep", action="store_true", help="do not delete shards")
     s.set_defaults(fn=cmd_score)
     b = sub.add_parser("build")
-    b.add_argument("--out", default=str(Path.home() / ".lmstudio/models/gioma/"
+    b.add_argument("--out", default=str(Path.home() / "models/"
                                         "Qwen3.8-27B-Apple-MLX-V4"))
     b.add_argument("--embed-bits", type=int, default=4)
     b.add_argument("--head-bits", type=int, default=4,

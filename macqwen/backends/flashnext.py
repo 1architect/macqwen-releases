@@ -16,6 +16,7 @@ from macqwen.backends.base import DecodeTimer
 from macqwen.checkpoints import resolve_flashnext
 from macqwen.conversation import Conversation
 from macqwen.model_settings import FLASHNEXT_DEFAULTS
+from macqwen.sampling import Sampler, Sampling
 from macqwen.text import stream_decode
 
 DEFAULT_FUSION_MODEL = FLASHNEXT_DEFAULTS["fusion_model"]
@@ -106,6 +107,17 @@ class FlashNextBackend(Conversation):
         self.fusion_model = os.path.expanduser(fusion_model)
         self.session_dir = session_dir
         self.thinking_enabled = False
+        # Greedy by default so no benchmark can sample by accident. Every
+        # comparison here proves a change left the trajectory alone by
+        # matching token IDs across arms. The chat sets this from
+        # preferences to Qwen's recommended thinking-mode sampler.
+        self.sampling = Sampling.greedy_settings()
+        # Mirrored from preferences for display, the way `thinking_enabled`
+        # is. `/effort`, `/thinking` and `/think-budget` remain the writers,
+        # so there is one owner per value and nothing to drift.
+        self.reasoning_effort = "medium"
+        self.think_budget = 0
+        self.answer_budget = 0
         self._store = None
         self._decoder = None
         self._fused_pending = routing_profile == "fused-quality"
@@ -143,8 +155,23 @@ class FlashNextBackend(Conversation):
                 "answers in the current quality check"
             )
         warning = "".join(f"\n  warning             {item}" for item in warnings)
+        # Mirrored from preferences by the session. A backend built directly,
+        # as the benchmarks do, never gets them.
+        answer = getattr(self, "answer_budget", 0)
+        thinking = getattr(self, "think_budget", 0)
+        budgets = (
+            f"{answer} answer"
+            + (f" + {thinking} reasoning" if thinking
+               else " (reasoning shares it)")
+        ) if answer else "(set by the chat)"
         return (
             "Flash-Next settings\n"
+            f"  sampling            "
+            f"{getattr(self, 'sampling', Sampling.greedy_settings()).describe()}\n"
+            f"  effort              {getattr(self, 'reasoning_effort', '(set by the chat)')}\n"
+            f"  thinking            "
+            f"{'on' if getattr(self, 'thinking_enabled', False) else 'off'}\n"
+            f"  token-budget        {budgets}\n"
             f"  routing             {self.routing_profile}\n"
             f"  swap-epsilon        {self.swap_epsilon:g}  (cache-aware)\n"
             f"  threshold           {self.threshold:g}\n"
@@ -164,6 +191,7 @@ class FlashNextBackend(Conversation):
             f"  session-dir         {getattr(self, 'session_dir', '(startup only)')}"
             f"{warning}\n"
             "usage: /settings NAME VALUE | /settings defaults\n"
+            "decoding is set by /sampling, /effort, /thinking, /think-budget\n"
             "routing: standard, fast, fast-quality, exact-quality, "
             "cache-aware, fused-quality\n"
             "research-only: speculative-fast and MTP require a model reload"
@@ -533,7 +561,9 @@ class FlashNextBackend(Conversation):
         set_prefill_progress(layer_completed)
         try:
             if decoder is None:
-                _, token = prefill_language(self.language, ids, self.cache)
+                _, token = prefill_language(
+                    self.language, ids, self.cache, sampler=Sampler(self.sampling)
+                )
             else:
                 decoder.append(ids)
                 self.cache = decoder.target_cache
@@ -553,6 +583,8 @@ class FlashNextBackend(Conversation):
         if decoder is not None:
             decoder.set_route_observer(self.routing._observe)
 
+        sampler = Sampler(self.sampling)
+
         def standard_tokens():
             nonlocal token
             for _index in range(max_tokens):
@@ -560,8 +592,9 @@ class FlashNextBackend(Conversation):
                 if value in self.stops:
                     return
                 yield value
+                sampler.observe(value)
                 step = self.language(token[None], cache=self.cache)
-                token = mx.argmax(step.logits[:, -1, :], axis=-1)
+                token = sampler(step.logits[:, -1, :])
                 mx.eval(token)
 
         tokens = (

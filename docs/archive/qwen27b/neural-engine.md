@@ -1,16 +1,14 @@
-# V3.4 Neural Engine: result
+# Archived V3.4 Neural Engine result
 
+Archive status: rejected for the full model. The ANE cannot hold all MLP layers.
 Measured 2026-08-24 on the M4 Air, model V3.1-Compact.
-
-The measurements provide a positive component-level result.
+The component test passed, but the full-model capacity test failed.
 
 ## ANE rationale
 
-Every other optimisation tried in this project reduces work because the GPU is
-saturated. Measured: prefill runs at 93% of the GPU compute ceiling, and the
-MLP is 67% of prefill time. The 16-core Neural Engine sits completely idle.
-
-Using it raises the ceiling instead of doing less work.
+Prefill reaches 93% of the GPU compute ceiling. The MLP uses 67% of prefill time. The 16-core Neural Engine remains idle
+during GPU work.
+Concurrent ANE work can raise the compute ceiling.
 
 ## Engine overlap
 
@@ -47,12 +45,11 @@ CPU_AND_NE   44.7 ms
 ane_vs_cpu   1.05x
 ```
 
-The ANE does not need to beat the GPU. It needs to run at the same time.
+The ANE only needs to overlap GPU work.
 
 ## Two real Qwen layers, hybrid prefill
 
 `v34_two_layer_pipeline_benchmark.py --layers 2`
-
 Without residency:
 
 ```text
@@ -63,9 +60,8 @@ pipeline_ms  2598.7
 speedup      0.504x
 ```
 
-Loading each Core ML model costs about 840 ms, roughly twice the processing
-time. That alone makes the hybrid twice as slow.
-
+Loading each Core ML model costs about 840 ms, roughly twice the processing time. That alone makes the hybrid twice as
+slow.
 With `--resident`:
 
 ```text
@@ -93,9 +89,8 @@ layer 03  process_ms 1955.9
 speedup   0.377x
 ```
 
-Per-layer processing rose from about 450 ms to about 1700 ms. The engines were
-not the problem: four separate models contend for the ANE and it swaps them.
-
+Per-layer processing rose from about 450 ms to about 1700 ms. The engines were not the problem: four separate models
+contend for the ANE and it swaps them.
 The same four layers exported as one multifunction model:
 
 ```text
@@ -135,8 +130,8 @@ speedup                0.364x
 resident_load_ms      10151.6
 ```
 
-Multifunction packaging fixes four layers and does not fix eight. The ANE
-resident working-set limit lies between 542 MB and 1.1 GB.
+Multifunction packaging fixes four layers and does not fix eight. The ANE resident working-set limit lies between 542 MB
+and 1.1 GB.
 
 ```text
 2 layers, separate       271 MB   ~450 ms   1.460x
@@ -148,14 +143,10 @@ resident working-set limit lies between 542 MB and 1.1 GB.
 ## Verdict
 
 The ANE cannot hold this model's complete MLP.
-
-Sixty-four layers of MLP are about 8.7 GB in Core ML int4, eight to sixteen
-times what the ANE sustains. Dropping to int2 would give about 4.4 GB, still
-far beyond it. Keeping four resident and streaming the rest fails too: each
-load costs about 840 ms against about 450 ms of processing.
-
+Sixty-four layers of MLP are about 8.7 GB in Core ML int4, eight to sixteen times what the ANE sustains. Dropping to
+int2 would give about 4.4 GB, still far beyond it. Keeping four resident and streaming the rest fails too: each load
+costs about 840 ms against about 450 ms of processing.
 Accelerating four layers out of sixty-four is worth nothing overall.
-
 Retained results:
 
 ```text
@@ -164,9 +155,8 @@ the exact Qwen MLP runs on the ANE at 0.5 to 0.8% RMSE, which passes
 within the resident limit the hybrid is genuinely 1.45x faster
 ```
 
-The idea is sound. The hardware does not have the memory to apply it at this
-model's scale. This is a capacity limit, not a correctness or design failure.
-
+The idea is sound. The hardware does not have the memory to apply it at this model's scale. This is a capacity limit,
+not a correctness or design failure.
 Reopen this line if any of these change:
 
 ```text
@@ -175,7 +165,7 @@ an ANE with a larger resident working set
 a Core ML path that streams weights without the 840 ms load
 ```
 
-Rules learned, both of which invert the result if ignored:
+Measurement rules:
 
 ```text
 never benchmark the ANE without --resident
@@ -191,8 +181,8 @@ A8W2 TensorOps (v31)  0.70x                            rejected
 ANE MLP resident      1.46x   0.5% RMSE                passes
 ```
 
-Only the ANE approach improves speed and passes the quality gate in these
-measurements. It uses the same weights and arithmetic on different hardware.
+Only the ANE approach improves speed and passes the quality gate in these measurements. It uses the same weights and
+arithmetic on different hardware.
 
 ## Projection and costs
 
@@ -200,14 +190,11 @@ measurements. It uses the same weights and arithmetic on different hardware.
 48 t/s x 1.46 = about 70 t/s
 ```
 
-Startup: residency costs about 807 ms per layer, so roughly 52 s once per
-session for 64 layers.
+Startup: residency costs about 807 ms per layer, so roughly 52 s once per session for 64 layers.
+Memory: 135.5 MB per layer, 8.7 GB for 64. This only fits if the MLP leaves the MLX model and lives solely in Core ML,
+leaving MLX with the mixing weights at about 2.6 GB. Total about 11.3 GB, close to today's footprint.
 
-Memory: 135.5 MB per layer, 8.7 GB for 64. This only fits if the MLP leaves
-the MLX model and lives solely in Core ML, leaving MLX with the mixing weights
-at about 2.6 GB. Total about 11.3 GB, close to today's footprint.
-
-## Open
+## Historical follow-up items
 
 ```text
 1. does 1.46x hold across all 64 layers, or only the first two
@@ -216,5 +203,4 @@ at about 2.6 GB. Total about 11.3 GB, close to today's footprint.
 4. amortise or hide the 52 s residency load
 ```
 
-Rule that came out of this: never benchmark the ANE without `--resident`.
-The load cost inverts the result.
+Always benchmark the ANE with `--resident`. Load cost reverses the result.

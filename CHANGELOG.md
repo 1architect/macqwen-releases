@@ -1,17 +1,70 @@
 # Changelog
 
+## Unreleased
+
+## MACQWEN 0.3.3 - 2026-09-01
+
+### Added
+
+- Add Qwen's recommended thinking-mode sampler and the `/sampling` command.
+- Keep benchmark backends greedy and make `run_benchmark` enforce that mode.
+- Show sampling, effort, thinking, and token budgets in `/settings`.
+- Add `high` reasoning effort between `medium` and `xhigh`.
+- Give `high` a validation instruction with an explicit stopping rule.
+
+### Measured
+
+- Cache-aware measured 2.91 tok/s against 2.73 for exact routing.
+- Cache-aware read 360.4 MB per token against 430.0 MB for exact routing.
+- The 6.5 percent gain exceeded the 0.6 percent resolution band in all six pairs.
+- An off-process draft at realistic duty reduced target speed by 1.5 percent.
+- A speculative batch of two read 808 MB per token against 390 MB for decode.
+- Cache-aware failed the greedy `xhigh` trajectory gate through repetition.
+- Exact-quality completed the same SketchUp task and remains the default.
+- Telegraphic thinking comes from `xhigh` effort instead of routing.
+- oQ4 produced a working SketchUp extension in the checkpoint gate.
+- oQ3-MTP produced invalid extensions at `low` and `xhigh` effort.
+- oQ4 remains the quality baseline for tasks that require real API names.
+
+### Fixed
+
+- Limit cache-aware swaps to batches of four rows.
+- Stop cache-aware routing from slowing large prefill batches.
+- Add a row cap to `set_route_observer` for normal chat prefill.
+- Keep uncapped observation available for benchmarks.
+
+### Changed
+
+- Rewrite the complete documentation set for shorter, direct instructions.
+- Keep performance results near the top of the README.
+- Replace the model-specific contributor guide with `CONTRIBUTING.md`.
+- Replace personal absolute paths with portable home and workspace defaults.
+
+### Removed
+
+- Remove the non-portable `chat-swap.sh` convenience launcher.
+
 ## MACQWEN 0.3.2 - 2026-09-01
 
 ### Distribution
 
 - Use the public `macqwen-releases` URL in Quick Start and package metadata.
 - Add a Python package, the `macqwen` command, and `macqwen setup`.
-- Discover project environments and compatible checkpoints without user-specific paths.
+- Discover project environments and compatible checkpoints without personal paths.
 - Add Apple Silicon CI for shared and Flash-Next tests.
-- Publish future version tags as GitHub Releases after CI passes.
-- Add dependency update checks and repository identity regression tests.
+- Publish version tags as GitHub Releases after CI passes.
+- Add dependency checks and repository identity tests.
 
 ## MACQWEN 0.3.1 - 2026-08-31
+
+### Changed
+
+- Add `Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP` as the current research
+  checkpoint.
+- Resolve Flash-Next checkpoints from a saved choice, `--checkpoint`, the
+  environment, or the sole compatible local installation.
+- Keep oQ4 available as a supported checkpoint choice.
+- Keep MTP disabled in the production backend until local tests support it.
 
 ### Added
 
@@ -35,8 +88,7 @@
 ### Quality
 
 - Keep `exact-quality` as the default. The small cache-aware factual gate lost
-  no correct answer, but we preferred exact-quality in a later
-  long-context comparison.
+  no correct answer. A later long-context comparison favored exact-quality.
 - Show this quality warning when `cache-aware` is active under `/settings`.
 
 ### Correctness
@@ -118,18 +170,18 @@ Measurements use the reference M4 Mac with 16 GB of unified memory.
 ### Shared chat
 
 - Add one chat interface for all models.
-- Add `plain` and repository `agent` profiles.
+- Add plain chat and repository-tool profiles.
 - Add one shared command table.
-- Add all nine repository tools to the agent profile.
+- Add all nine tools to the repository-tool profile.
 - Require approval before tools change files or system state by default.
 - Add persistent preferences across chat runs.
 - Add live `/settings` controls for Flash-Next runtime values.
 - Add persistent `/animate on|off` control for the word fade.
 - Add `/stream on|off` and `/effort low|medium|xhigh`.
-- Add `/profile plain|agent` with conversation reset and toolbox rebuild.
+- Add live profile changes with conversation reset and toolbox rebuild.
 - Store one editable system prompt file for each profile.
 - Migrate the legacy saved system prompt into the active profile file.
-- Raise the default agent answer allowance to 2,048 tokens.
+- Set the repository-tool answer allowance to 2,048 tokens.
 - Keep the plain answer allowance at 4,096 tokens.
 - Add a separate 512-token reasoning capacity and `/think-budget` control.
 - Add secure terminal management for Tavily and Context7 API keys.
@@ -164,7 +216,7 @@ Measurements use the reference M4 Mac with 16 GB of unified memory.
 - Exclude terminal writes and word animation from decode timing.
 - Use monotonic performance counters for interval measurements.
 - Report prompt tokens, generated tokens, context size, and complete turn time.
-- Aggregate all model segments in the final agent statistics.
+- Aggregate all model segments in the final tool-request statistics.
 - Show measured live prefill rate and remaining time.
 - Add regression tests that keep terminal speed independent from reported
   model speed.

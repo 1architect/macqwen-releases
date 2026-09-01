@@ -142,11 +142,10 @@ def run_agent(engine: Backend, repo, out, limits: Limits = Limits(),
             try:
                 if ui is not None:
                     ui.tool_executing()
-                results.append(
-                    render_tool_result(name, repo.call(name, args), limits.tool_format)
-                )
+                raw = repo.call(name, args)
+                results.append(render_tool_result(name, raw, limits.tool_format))
                 if ui is not None:
-                    ui.tool_finished()
+                    ui.tool_finished(result=raw)
             except Exception as exc:
                 results.append(json.dumps({"error": f"{type(exc).__name__}: {exc}"}))
                 if ui is not None:

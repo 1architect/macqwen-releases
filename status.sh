@@ -1,6 +1,6 @@
 #!/bin/bash
 # Live status dashboard for model runs. Keep this window open.
-D=/Users/gioma/Developer/MACQWEN
+D="$(cd "$(dirname "$0")" && pwd)"
 while true; do
   clear
   printf '\033[1m=== FRANKENSTEIN STATUS ===\033[0m   %s\n\n' "$(date '+%H:%M:%S')"

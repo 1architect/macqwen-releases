@@ -69,3 +69,49 @@ class ConversationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReasoningEffortTests(unittest.TestCase):
+    """`high` fills the gap the chat template leaves.
+
+    The template maps effort to one sentence of system text. `xhigh` asks for
+    validation and alternatives, `low` asks for brevity, and `medium` is empty.
+    `high` keeps the validation and adds a stopping rule, so it has to reach
+    the model as system text under an effort name the template accepts.
+    """
+
+    def test_known_levels_pass_through_untouched(self):
+        from macqwen.conversation import reasoning_system_text
+
+        for level in ("low", "medium", "xhigh"):
+            text, effort = reasoning_system_text("You are helpful.", level)
+            self.assertEqual(text, "You are helpful.")
+            self.assertEqual(effort, level)
+
+    def test_high_rides_in_the_system_turn(self):
+        from macqwen.conversation import reasoning_system_text
+
+        text, effort = reasoning_system_text("You are helpful.", "high")
+        self.assertEqual(effort, "medium")
+        self.assertTrue(text.endswith("You are helpful."))
+        self.assertIn("validate key assumptions", text)
+        self.assertIn("choose one", text)
+
+    def test_high_uses_a_template_effort_the_template_accepts(self):
+        from macqwen.conversation import TEMPLATE_EFFORT
+
+        self.assertIn(TEMPLATE_EFFORT["high"], ("low", "medium", "xhigh"))
+
+    def test_high_survives_an_empty_system_prompt(self):
+        from macqwen.conversation import reasoning_system_text
+
+        text, _ = reasoning_system_text("", "high")
+        self.assertIn("validate key assumptions", text)
+        self.assertFalse(text.startswith("\n"))
+
+    def test_the_preference_accepts_high(self):
+        from macqwen.preferences import SCHEMA
+
+        _, valid = SCHEMA["effort"]
+        self.assertTrue(valid("high"))
+        self.assertFalse(valid("enormous"))
