@@ -3,6 +3,47 @@
 Read this file and [`research.md`](research.md) before a new experiment. [`CONTRIBUTING.md`](../../CONTRIBUTING.md) defines the project
 rules.
 
+## Where things stand
+
+Last worked on 2026-09-01.
+
+The runtime streams a 176B sparse MoE model from SSD on a 16 GB M4 Mac. oQ4 is
+installed and is the baseline. `exact-quality` is the default routing profile
+and measures 2.713 tok/s on the harness at 390 MB of physical reads per token.
+
+Recent decisions, with the evidence in `research.md`:
+
+- oQ3-MTP was tried and dropped. It ran about 21% faster and produced a broken
+  SketchUp extension at both `low` and `xhigh` effort, where oQ4 produced one
+  that worked. It is deleted from the machine.
+- `cache-aware` routing measures 2.91 gen and 2.92 tail on the harness at
+  360.4 MB/token, a 6.5% gain against a 0.6% band, ahead in 6 of 6 paired arms.
+  It is opt-in, not the default, because it failed the trajectory gate.
+- `swap-epsilon` stays at 0.02. Both 0.05 and 0.10 remove the same 1.4% of
+  bytes and neither clears its band.
+- Speculative decoding is closed at any block length. A batch of two reads
+  808 MB/token against decode's 390.
+
+What changed in the code recently:
+
+- Sampling. The runtime decoded with `argmax` everywhere, against Qwen's
+  guidance. `macqwen/sampling.py` now holds the sampler, the chat uses Qwen's
+  recommended thinking-mode values, and the benchmarks force greedy so token
+  IDs stay comparable.
+- `/effort high`, a level between `medium` and `xhigh`. The chat template maps
+  effort to one sentence of system text and `medium` is empty, so there was
+  nothing in between.
+- The cache-aware swap no longer runs on prefill batches, and the route
+  observer no longer receives the whole prefill batch.
+- `/settings` now shows sampling, effort, thinking and the token budget
+  alongside the routing settings.
+
+The first thing worth doing is in "Redo the gate now that the sampler exists"
+under Next work. Cache-aware's gate result was measured under greedy decoding,
+which causes repetition on its own, so it says more about greedy than about
+routing. That one comparison decides whether cache-aware can become the
+default, and it decides the 2.91 against 2.73 question with it.
+
 ## Environment
 
 The release launcher uses the local environment created by `./chat.sh setup`:
