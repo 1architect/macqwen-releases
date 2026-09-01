@@ -2158,3 +2158,32 @@ default. This project defaults to `medium`, a step below.
 insufficient analysis, more failures, and repeated retries". That matches `medium` shipping without the `Face#valid?` guard.
 - Reasoning and final output are meant to have separate allowances, 262,144 and
 131,072 tokens. Running with `think_budget` off puts reasoning inside the answer allowance, which is the opposite of the intent.
+
+## Weight-preserving cache-aware swap rejected, 2026-09-01
+
+Issue #10 proposed swapping the expert index while keeping the selected
+expert's weight. This keeps selected route mass unchanged. It still changes
+the expert function, so exact token identity remained the acceptance check.
+
+The prototype used a separate environment switch. It did not change the
+current cache-aware implementation. Six paired production-harness arms used
+epsilon 0.02 and 60 tokens. The first two arms per condition were dropped:
+
+| Condition | Gen median | Tail | Physical MB/token |
+|---|---:|---:|---:|
+| current cache-aware | 2.211 | 2.213 | 386.5 |
+| weight-preserving | 2.142 | 2.103 | 379.2 |
+
+The weight-preserving median was 3.1 percent lower. The run resolved only
+differences above 11.1 percent, so the speed result is unresolved. It led in
+three of six pairs. Physical reads fell in five of six pairs and by 1.9
+percent at the median.
+
+The seven-prompt exactness gate compared exact routing with the
+weight-preserving variant. Three replies were identical. Four diverged at
+generated tokens 43, 23, 37, and 31. No checkable answer was lost, but the
+variant was not bit-perfect.
+
+Decision: reject this variant for `exact-quality`. Keeping a route weight does
+not preserve output when the expert index changes. The prototype was removed,
+and the current cache-aware implementation remains unchanged.

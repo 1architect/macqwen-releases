@@ -23,6 +23,8 @@ Recent decisions, with the evidence in `research.md`:
   bytes and neither clears its band.
 - Speculative decoding is closed at any block length. A batch of two reads
   808 MB/token against decode's 390.
+- The weight-preserving cache-aware swap is rejected for `exact-quality`.
+  Four of seven replies changed, and its speed result was unresolved.
 
 What changed in the code recently:
 
@@ -343,11 +345,13 @@ Current work is tracked in the public issue tracker:
 - [#7](https://github.com/1architect/macqwen-releases/issues/7) Confirm draft contention with a warm page cache.
 - [#8](https://github.com/1architect/macqwen-releases/issues/8) Fix missing spaces at streamed chunk joins.
 - [#9](https://github.com/1architect/macqwen-releases/issues/9) Widen the cache-aware quality gate.
-- [#10](https://github.com/1architect/macqwen-releases/issues/10) Test a weight-preserving cache-aware swap.
+- [#10](https://github.com/1architect/macqwen-releases/issues/10) Weight-preserving cache-aware swap. Measured and rejected in `research.md`.
 
 ### Standing decisions
 
 - `pin-parts` is rejected. Its positive isolated reading disappeared when
 stacked with prewarm; the pair lost 1.4% and read 8% more.
+- Weight-preserving expert substitution is not bit-perfect. Keep the current
+cache-aware implementation unchanged.
 - Keep every accepted change on the shared chat path.
 - Installation and checkpoint verification could still be better.
