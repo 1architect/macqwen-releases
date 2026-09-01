@@ -180,6 +180,20 @@ class WordAnimatorTests(unittest.TestCase):
             sleep=clock.sleep, **options,
         )
 
+    def test_reported_phrase_joins_keep_spaces(self):
+        for pieces, expected in (
+            (("o", " foco", " deixa"), "o foco deixa"),
+            (("o ", "foco ", "deixa"), "o foco deixa"),
+            (("resgatar", " ou"), "resgatar ou"),
+            (("resgatar ", "ou"), "resgatar ou"),
+        ):
+            output = StringIO()
+            animator = WordAnimator(output=output, is_tty=False)
+            for piece in pieces:
+                animator.feed(piece)
+            animator.finish()
+            self.assertEqual(output.getvalue(), expected)
+
     def test_redirected_chat_never_prints_partial_words_or_ansi(self):
         output = StringIO()
         animator = WordAnimator(output=output, is_tty=False)

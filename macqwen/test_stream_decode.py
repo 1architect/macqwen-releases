@@ -58,6 +58,20 @@ class StreamDecodeTests(unittest.TestCase):
 
 
 class CompletedTextTests(unittest.TestCase):
+    def test_reported_phrase_joins_keep_spaces(self):
+        for pieces, expected in (
+            (("o", " foco", " deixa"), "o foco deixa"),
+            (("o ", "foco ", "deixa"), "o foco deixa"),
+            (("resgatar", " ou"), "resgatar ou"),
+            (("resgatar ", "ou"), "resgatar ou"),
+        ):
+            buffer = CompletedTextBuffer()
+            output = []
+            for piece in pieces:
+                output.extend(buffer.feed(piece))
+            output.extend(buffer.finish())
+            self.assertEqual("".join(output), expected)
+
     def test_partial_word_stays_hidden(self):
         buffer = CompletedTextBuffer()
         self.assertEqual(buffer.feed("hel"), [])

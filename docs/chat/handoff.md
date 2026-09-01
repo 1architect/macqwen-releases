@@ -30,27 +30,26 @@
 
 ## Commands
 
-Run `/help` for the current command list. Important management commands are:
+Run `/help` for the six primary commands. Use `/help all` for the complete
+reference, including compatibility commands.
 
 ```text
-/thinking on|off|show|hide
-/max-tokens N|off
-/think-budget N|off
-/profile plain|agent
-/workspace PATH
-/prompt [text|edit|default]
-/keys [list|set SERVICE|delete SERVICE]
-/settings [NAME VALUE|defaults]
-/server
-/save [name]
-/load [name]
-/sessions
-/reset
+/help [all]
+/new
+/session save|load|list|delete [name]
+/config [section] ...
+/status
+/quit
 ```
 
-`/workspace` and approval controls apply to the repository-tool profile. `/help` shows primary command names only. Compatibility aliases still work.
+`/session` groups save, load, list, and delete actions. `/config` groups
+thinking, token, sampling, display, model, prompt, profile, and tool settings.
+Use `/config keys` for API key settings in either profile. Use `/config tools`
+for approval and workspace settings.
+Approval and workspace controls require the `agent` profile.
+Compatibility commands and aliases still work.
 
-For Flash-Next, use `/settings routing cache-aware` to select the optional cache-aware profile. Use `/settings swap-epsilon 0.02` to set its
+For Flash-Next, use `/config model routing cache-aware` to select the optional cache-aware profile. Use `/config model swap-epsilon 0.02` to set its
 tolerance. Exact-quality remains the default.
 
 ## Token settings
@@ -60,7 +59,7 @@ tolerance. Exact-quality remains the default.
 | Answer allowance | 4,096 | 2,048 | Answer capacity |
 | Thinking capacity | 512 | 512 | Extra capacity when thinking is enabled |
 
-`/max-tokens off` selects the profile default. `/think-budget off` removes extra reasoning capacity. `/status` shows the resolved values.
+`/config tokens off` selects the profile default. `/config think-tokens off` removes extra reasoning capacity. `/status` shows the resolved values.
 
 The command-line forms are `--max-tokens N` and `--think-budget N`. A legacy saved `think_budget` value of `0` resolves to the 512-token
 default. Use `-1` to keep extra reasoning capacity disabled.
@@ -87,8 +86,8 @@ production baseline.
 Cache-aware routing measured 2.79 tok/s against 2.54 in one hot interleaved run. Pairing adjacent arms gave an 8.3 percent mean gain. This
 mode changes expert choices, so its answer can differ from exact-quality.
 
-The ready line shows model, chat profile, thinking status, routing profile, and resident memory. `/profile` shows the active profile.
-Changing it resets the conversation and rebuilds the toolbox.
+The ready line shows model, chat profile, and a `/help` hint. `/status` shows thinking status, routing profile, context, and memory.
+Changing the profile resets the conversation and rebuilds the toolbox.
 
 ## Output rules
 
@@ -109,7 +108,7 @@ The default preferences path creates these profile files:
 ~/.macqwen/system-prompt-agent.txt
 ```
 
-`/prompt` prints the active prompt and path. `/prompt edit` opens that file. `/prompt default` removes the custom file. Use `/reset` after
+`/config prompt` prints the active prompt and path. `/config prompt edit` opens that file. `/config prompt default` removes the custom file. Use `/new` after
 an external edit.
 
 ## Validation
@@ -151,7 +150,7 @@ prediction.
 
 | Symptom | Meaning or check |
 |---|---|
-| `stopped: truncated` | Increase `/max-tokens` or `/think-budget` |
+| `stopped: truncated` | Increase `/config tokens` or `/config think-tokens` |
 | Bar stays at zero | Confirm the backend sends progress callbacks |
 | Tool cursor appears blank | Check `ToolCallStreamFilter` event handling |
 | Tool duration is too large | Keep visual delay outside execution timing |

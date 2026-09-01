@@ -32,6 +32,8 @@ class Command:
     summary: str
     handler: Callable[[Any, str], str]
     profiles: tuple[str, ...] = ("plain", "agent")
+    primary: bool = False
+    web_label: str | None = None
 
     @property
     def name(self) -> str:
@@ -243,6 +245,12 @@ def _server(session, argument: str) -> str:
 
 
 def _reset(session, argument: str) -> str:
+    return _new(session, argument)
+
+
+def _new(session, argument: str) -> str:
+    if argument:
+        return "usage: /new"
     session.reset()
     return "conversation reset, model stayed loaded"
 
@@ -265,8 +273,106 @@ def _delete(session, argument: str) -> str:
     return session.delete_session(argument.strip())
 
 
+def _session(session, argument: str) -> str:
+    """Provide one shallow entry point for saved conversation states."""
+    parts = argument.split(maxsplit=1)
+    if not parts:
+        return render_session_help()
+    action = parts[0].lower()
+    value = parts[1].strip() if len(parts) > 1 else ""
+    if action in ("list", "ls"):
+        return session.list_sessions() if not value else "usage: /session list"
+    if action == "save":
+        return session.save_session(value or "last")
+    if action == "load":
+        return session.load_session(value or "last")
+    if action in ("delete", "remove"):
+        if not value:
+            return "usage: /session delete NAME"
+        return session.delete_session(value)
+    return render_session_help()
+
+
 def _help(session, argument: str) -> str:
-    return render_help(session.profile)
+    if argument.strip() in ("", "primary"):
+        return render_help(session.profile)
+    if argument.strip() == "all":
+        return render_help(session.profile, all_commands=True)
+    return "usage: /help [all]"
+
+
+def _config(session, argument: str) -> str:
+    """Group settings without changing the existing command handlers."""
+    parts = argument.split(maxsplit=1)
+    if not parts:
+        return render_config_help(session.profile)
+    section = parts[0].lower().replace("_", "-")
+    value = parts[1].strip() if len(parts) > 1 else ""
+    if section in ("thinking", "think"):
+        return _thinking(session, value)
+    if section in ("tokens", "answer-tokens", "max-tokens"):
+        return _max_tokens(session, value)
+    if section in ("think-tokens", "thinking-tokens", "think-budget"):
+        return _think_budget(session, value)
+    if section == "sampling":
+        return _sampling(session, value)
+    if section == "effort":
+        return _effort(session, value)
+    if section == "display":
+        return _display(session, value)
+    if section == "model":
+        return _settings(session, value)
+    if section == "approval":
+        return _agent_only(session, _approval, value)
+    if section in ("tools", "tool"):
+        return _tools(session, value)
+    if section == "workspace":
+        return _agent_only(session, _workspace, value)
+    if section == "profile":
+        return _profile(session, value)
+    if section == "prompt":
+        return _prompt(session, value)
+    if section in ("keys", "api-keys"):
+        return _keys(session, value)
+    return render_config_help(session.profile)
+
+
+def _display(session, argument: str) -> str:
+    parts = argument.split(maxsplit=1)
+    if not parts:
+        return (f"stream: {'on' if session.preferences['stream_answers'] else 'off'}\n"
+                f"animate: {'on' if session.preferences['animate'] else 'off'}")
+    section = parts[0].lower()
+    value = parts[1].strip() if len(parts) > 1 else ""
+    if section == "stream":
+        return _stream(session, value)
+    if section == "animate":
+        return _animate(session, value)
+    return "usage: /config display [stream|animate] on|off"
+
+
+def _tools(session, argument: str) -> str:
+    parts = argument.split(maxsplit=1)
+    if not parts:
+        if session.profile == "agent":
+            return ("tools: /config approval ask|auto, "
+                    "/config workspace PATH, /config keys ...")
+        return "tools: API keys use /config keys ..."
+    section = parts[0].lower()
+    value = parts[1].strip() if len(parts) > 1 else ""
+    if section == "approval":
+        return _agent_only(session, _approval, value)
+    if section == "workspace":
+        return _agent_only(session, _workspace, value)
+    if section in ("keys", "api-keys"):
+        return _keys(session, value)
+    return "usage: /config tools [approval|workspace|keys] ..."
+
+
+def _agent_only(session, handler, argument: str) -> str:
+    if session.profile != "agent":
+        return "this setting is only available in the agent profile"
+    return handler(session, argument)
 
 
 def _quit(session, argument: str) -> str:
@@ -275,6 +381,21 @@ def _quit(session, argument: str) -> str:
 
 
 COMMANDS: tuple[Command, ...] = (
+    # These six entries are the only commands shown by `/help`.
+    Command(("/help",), "/help [all]", "show commands and help", _help,
+            primary=True, web_label="help"),
+    Command(("/new",), "/new", "start a new conversation", _new,
+            primary=True, web_label="new"),
+    Command(("/session",), "/session ACTION [name]", "save or restore a conversation", _session,
+            primary=True),
+    Command(("/config",), "/config [section] ...", "change chat settings", _config,
+            primary=True, web_label="config"),
+    Command(("/status",), "/status", "show settings and diagnostics", _status,
+            primary=True, web_label="status"),
+    Command(("/quit", "/exit", "/q"), "/quit", "leave the chat", _quit,
+            primary=True),
+
+    # The original commands stay registered as hidden compatibility commands.
     Command(("/thinking", "/think"), "/thinking on|off|show|hide",
             "enable or hide model reasoning", _thinking),
     Command(("/max-tokens",), "/max-tokens N|off",
@@ -299,7 +420,6 @@ COMMANDS: tuple[Command, ...] = (
             "view or change the system prompt", _prompt),
     Command(("/keys", "/api-keys"), "/keys [list|set SERVICE|delete SERVICE]",
             "manage private API keys", _keys),
-    Command(("/status",), "/status", "settings, context and memory", _status),
     Command(("/settings",), "/settings [NAME VALUE|defaults]",
             "view or change model settings", _settings),
     Command(("/server",), "/server",
@@ -309,8 +429,6 @@ COMMANDS: tuple[Command, ...] = (
     Command(("/load",), "/load [name]", "restore a saved state", _load),
     Command(("/sessions",), "/sessions", "list saved states", _sessions),
     Command(("/delete",), "/delete NAME", "delete a saved state", _delete),
-    Command(("/help",), "/help", "show this list", _help),
-    Command(("/quit", "/exit", "/q"), "/quit", "leave the chat", _quit),
 )
 
 BY_NAME: dict[str, Command] = {
@@ -319,16 +437,77 @@ BY_NAME: dict[str, Command] = {
 
 
 def available(profile: str) -> tuple[Command, ...]:
+    """Return every command available to a profile, including compatibility commands."""
     return tuple(c for c in COMMANDS if profile in c.profiles)
 
 
-def render_help(profile: str) -> str:
-    commands = available(profile)
-    usage_width = max(len(command.usage) for command in commands) + 2
-    lines = []
-    for command in commands:
-        lines.append(f"  {command.usage:<{usage_width}}{command.summary}")
+def primary_commands(profile: str) -> tuple[Command, ...]:
+    return tuple(c for c in available(profile) if c.primary)
+
+
+def render_help(profile: str, all_commands: bool = False) -> str:
+    """Render the compact primary list or the complete grouped reference."""
+    if not all_commands:
+        commands = primary_commands(profile)
+        usage_width = max(len(command.usage) for command in commands) + 2
+        return "\n".join(
+            f"  {command.usage:<{usage_width}}{command.summary}"
+            for command in commands
+        )
+
+    commands = tuple(c for c in COMMANDS if profile in c.profiles)
+    primary = tuple(c for c in commands if c.primary)
+    compatibility = tuple(c for c in commands if not c.primary)
+    lines = ["Primary commands:"]
+    primary_width = max(len(c.usage) for c in primary) + 2
+    for command in primary:
+        aliases = "".join(f" ({name})" for name in command.names[1:])
+        lines.append(f"  {command.usage:<{primary_width}}{command.summary}{aliases}")
+    lines.append("\nCompatibility commands:")
+    compatibility_width = max(len(c.usage) for c in compatibility) + 2
+    for command in compatibility:
+        aliases = "".join(f" ({name})" for name in command.names[1:])
+        lines.append(f"  {command.usage:<{compatibility_width}}{command.summary}{aliases}")
     return "\n".join(lines)
+
+
+def render_session_help() -> str:
+    return ("session commands:\n"
+            "  /session save [name]    save the current conversation\n"
+            "  /session load [name]    restore a saved conversation\n"
+            "  /session list            list saved conversations\n"
+            "  /session delete NAME    delete a saved conversation")
+
+
+def render_config_help(profile: str) -> str:
+    lines = [
+        "config sections:",
+        "  /config thinking on|off|show|hide",
+        "  /config tokens N|off",
+        "  /config think-tokens N|off",
+        "  /config sampling [greedy|default|NAME VALUE]",
+        "  /config effort LEVEL",
+        "  /config display [stream|animate] on|off",
+        "  /config model [NAME VALUE|defaults]",
+        "  /config prompt [text|edit|default]",
+        "  /config profile plain|agent",
+        "  /config keys [list|set SERVICE|delete SERVICE]",
+    ]
+    if profile == "agent":
+        lines.extend([
+            "  /config approval ask|auto",
+            "  /config workspace PATH",
+        ])
+    return "\n".join(lines)
+
+
+def web_shortcuts(profile: str = "plain") -> tuple[tuple[str, str], ...]:
+    """Return safe command buttons for the web terminal from command metadata."""
+    return tuple(
+        (command.web_label, command.name)
+        for command in primary_commands(profile)
+        if command.web_label
+    )
 
 
 def dispatch(session, text: str) -> str | None:

@@ -89,8 +89,10 @@ emoji, or green status word. Failed tools keep an explicit failure label.
 
 ## Output layout and statistics
 
-The ready line reports model, chat profile, thinking status, routing profile, and RSS. Help output hides compatibility aliases, but dispatch
-still accepts them.
+The ready line reports model, chat profile, and a `/help` hint. `/status`
+reports thinking status, routing profile, context, and memory. `/help` shows
+six primary commands. `/help all` shows compatibility commands and aliases.
+Dispatch still accepts every compatibility command.
 
 Visible reasoning starts directly below the input prompt. The stream removes leading tag newlines. It leaves one blank line before the
 answer.
@@ -103,7 +105,9 @@ tokens, output tokens, prefill time, and decode time.
 The final line reports prompt rate, decode rate, context size, and wall time. The stop reason follows on the next line. `truncated` means
 generation reached its ceiling before a final answer or tool call completed.
 
-Flash-Next owns live routing configuration. The shared `/settings` command passes `cache-aware` and `swap-epsilon` to that backend. This
+Flash-Next owns live routing configuration. The shared `/config model` command
+passes `cache-aware` and `swap-epsilon` to that backend. The compatibility
+`/settings` command remains accepted. This
 keeps routing state outside the shared chat package.
 
 ## Profile prompts
@@ -130,7 +134,7 @@ Input text keeps control-marker strings as text. It does not inject chat control
 The repository contained no hard-coded API keys during the 2026-08-31 audit. The audit also checked high-confidence secret patterns in Git
 history.
 
-The `/keys` interface stores Tavily and Context7 keys outside the repository. Key input does not echo. Inline key arguments are rejected.
+The `/config keys` interface stores Tavily and Context7 keys outside the repository in both profiles. Compatibility `/keys` and `/api-keys` commands remain accepted. Key input does not echo. Inline key arguments are rejected. Approval and workspace settings remain agent-only.
 
 Secret-like environment variables are removed from tool and checker child processes.
 
