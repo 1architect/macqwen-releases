@@ -2194,7 +2194,7 @@ The retained production baseline is 2.713 tok/s, or 369 ms/token. Reaching
 3 tok/s needs about 36 ms/token. The following paths remain open. Treat every
 number below as a projection until the production harness measures it.
 
-### Path 2: deschedule host work, not DMA
+### Path 2: deschedule host work, not DMA ([#21](https://github.com/1architect/macqwen-releases/issues/21))
 
 Every rejected overlap experiment moved SSD DMA into GPU work. That invokes
 the measured unified-memory contention. Moving small host bookkeeping can be
@@ -2223,7 +2223,7 @@ devices are idle. If that exclusive window holds 15 to 20 ms/token, move one
 dependency-safe bookkeeping block into an existing device wait. Do not move
 DMA. Token IDs must match. This path does not need a quality gate.
 
-### Path 4: measure `gather_qmm` in situ
+### Path 4: measure `gather_qmm` in situ ([#22](https://github.com/1architect/macqwen-releases/issues/22))
 
 The bandwidth record prices GDN at 67 GB/s and a small Q4 matvec at 105 GB/s.
 It does not isolate the routed-expert gather inside the complete model. The
@@ -2240,7 +2240,7 @@ If the gather stays near 105 GB/s, close this GPU block. If it stays near
 20 GB/s, about 30 to 45 ms of real GPU work becomes a focused optimization
 target. This benchmark changes no model behavior and needs no quality gate.
 
-### Exact compile sweep
+### Exact compile sweep ([#23](https://github.com/1architect/macqwen-releases/issues/23))
 
 `mx.compile` is bit-exact in the retained probes. It improved the PLE gate
 chain by 28%, the router chain by 2.6%, and `_normalize_qk` by 5.7%. The
@@ -2254,7 +2254,7 @@ but report its interactive cost separately. Require `mx.array_equal` at each
 compiled boundary and identical greedy token IDs. Then use paired production
 arms. This path needs no quality gate.
 
-### Routed-expert Q4 group-size sweep
+### Routed-expert Q4 group-size sweep ([#24](https://github.com/1architect/macqwen-releases/issues/24))
 
 The oQ4 base uses four-bit affine quantization with group size 32. Its 228
 protected modules are resident `shared_expert` and `linear_attn.out_proj`
@@ -2315,7 +2315,7 @@ below come from the real shard headers, not model-card summaries.
 The header method reproduces oQ3-MTP at 92.5 GB, equal to the recorded 86.2
 GiB. This cross-check supports the table's decimal sizes.
 
-### Primary candidate: REAP-288
+### Primary candidate: REAP-288 ([#25](https://github.com/1architect/macqwen-releases/issues/25))
 
 REAP-288 cuts the routed-expert bank from 75.5 GB to 38.2 GB. The measured oQ4
 cold tail is about 154 distinct experts per layer and 21.7 GB. Proportional

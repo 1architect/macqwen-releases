@@ -350,15 +350,11 @@ Current work is tracked in the public issue tracker:
 
 Open exact-quality performance experiments:
 
-- Instrument host-only intervals where both NVMe and GPU are idle. Move only
-dependency-safe bookkeeping, not DMA.
-- Measure routed `gather_qmm` in situ on fixed resident expert sets.
-- Apply the measured bit-exact `mx.compile` candidates to the complete runtime.
-- Probe routed-expert Q4 group sizes 64 and 128 before building a checkpoint.
-- Treat REAP-288 Q4/G64 as the primary smaller-bank checkpoint candidate.
-  Add the `shard_N` and `shards.N` loader alias before downloading it.
-- Gate REAP-288 at `medium`, `high`, and mandatory `xhigh`, with sampling and
-  no repetition penalty first. Use REAP-384 as the fallback.
+- [#21](https://github.com/1architect/macqwen-releases/issues/21) Instrument host-only intervals where both NVMe and GPU are idle.
+- [#22](https://github.com/1architect/macqwen-releases/issues/22) Measure routed `gather_qmm` in situ on fixed resident expert sets.
+- [#23](https://github.com/1architect/macqwen-releases/issues/23) Apply bit-exact `mx.compile` candidates to the complete runtime.
+- [#24](https://github.com/1architect/macqwen-releases/issues/24) Probe routed-expert Q4 group sizes 64 and 128.
+- [#25](https://github.com/1architect/macqwen-releases/issues/25) Gate and benchmark REAP-288. Use REAP-384 as the fallback.
 
 ### Standing decisions
 
