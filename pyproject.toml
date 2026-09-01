@@ -25,7 +25,7 @@ flashnext = [
   "transformers==5.16.1",
   "numpy==2.5.2",
   "requests==2.34.2",
-  "huggingface-hub==1.28.0",
+  "huggingface-hub==1.29.0",
 ]
 
 [project.scripts]
