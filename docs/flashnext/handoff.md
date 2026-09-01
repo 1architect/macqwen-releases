@@ -40,6 +40,21 @@ What changed in the code recently:
 - `/config model` now shows sampling, effort, thinking and the token budget
   alongside the routing settings. The compatibility `/settings` command
   remains accepted.
+- The 2026-09-01 performance sweep closed host-only bookkeeping, routed
+  `gather_qmm`, and the complete-runtime compile estimate. The closed results
+  recover about 4.16 ms, measure 13 to 16 ms of expert gather, and measure
+  about 1 ms of compile savings. None explains the 36 ms gap.
+- A 12-arm comparison gives `buffer-chunk2` a resolved 6.3% generation gain
+  over the current concatenate path. Token IDs match and physical bytes fall.
+  The run started after a clean boot. Issue #26 tracks adoption as the default.
+- A whole-layer control costs 255.93 ms/token with expert pages hot. The
+  individually timed component parts total 41.00 ms. Issue #27 tracks the
+  missing attribution.
+- The session changes are uncommitted. Modified files are
+  `adaptive_topk.py`, `expert_cache.py`, and `bench_production.py`. New files
+  are `bench_gather_qmm.py`, `bench_host_window.py`, `bench_layer_split.py`,
+  `compiled.py`, and `hostwindow.py`. The Flash-Next test suite passes all 94
+  tests.
 
 The first thing worth doing is in "Redo the gate now that the sampler exists"
 under Next work. Cache-aware's gate result was measured under greedy decoding,
@@ -350,11 +365,16 @@ Current work is tracked in the public issue tracker:
 
 Open exact-quality performance experiments:
 
-- [#21](https://github.com/1architect/macqwen-releases/issues/21) Instrument host-only intervals where both NVMe and GPU are idle.
-- [#22](https://github.com/1architect/macqwen-releases/issues/22) Measure routed `gather_qmm` in situ on fixed resident expert sets.
-- [#23](https://github.com/1architect/macqwen-releases/issues/23) Apply bit-exact `mx.compile` candidates to the complete runtime.
 - [#24](https://github.com/1architect/macqwen-releases/issues/24) Probe routed-expert Q4 group sizes 64 and 128.
 - [#25](https://github.com/1architect/macqwen-releases/issues/25) Gate and benchmark REAP-288. Use REAP-384 as the fallback.
+- [#26](https://github.com/1architect/macqwen-releases/issues/26) Confirm and retain shared-buffer chunk-2 reads.
+- [#27](https://github.com/1architect/macqwen-releases/issues/27) Attribute the remaining FlashNext GPU layer cost.
+
+Closed exact-quality performance issues:
+
+- [#21](https://github.com/1architect/macqwen-releases/issues/21) Host-only idle windows. Only 4.16 ms/token qualifies after bulk movement is excluded.
+- [#22](https://github.com/1architect/macqwen-releases/issues/22) Routed `gather_qmm`. The measured path runs at 92.2 to 92.4 GB/s.
+- [#23](https://github.com/1architect/macqwen-releases/issues/23) Complete-runtime `mx.compile`. The bit-exact result saves about 1 ms/token and stays diagnostic.
 
 ### Standing decisions
 

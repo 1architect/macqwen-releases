@@ -62,6 +62,40 @@ COMPARISONS = {
         "pread": {"FLASHNEXT_READ": "pread"},
         "resident": {"FLASHNEXT_READ": "resident"},
     },
+    # The shared buffer removes the concatenate but is written by 16 workers
+    # scattering across it, where the concatenate was one sequential copy. The
+    # research log flags that difference as the unmeasured explanation for why
+    # its 35 ms saving came back as GPU time. Chunk 2 and 4 keep most of the
+    # queue depth while each worker writes a contiguous run, which is the
+    # point the two settings were never tested at together.
+    "buffer-chunk": {
+        "concat-chunk1": {
+            "FLASHNEXT_SHARED_READ_BUFFER": "0", "FLASHNEXT_PREAD_CHUNK": "1",
+        },
+        "buffer-chunk2": {
+            "FLASHNEXT_SHARED_READ_BUFFER": "1", "FLASHNEXT_PREAD_CHUNK": "2",
+        },
+        "buffer-chunk4": {
+            "FLASHNEXT_SHARED_READ_BUFFER": "1", "FLASHNEXT_PREAD_CHUNK": "4",
+        },
+    },
+    # The three-way sweep above cannot report a band or a sign test, so the
+    # winner is settled head to head against the current default.
+    "buffer-chunk2": {
+        "concat-chunk1": {
+            "FLASHNEXT_SHARED_READ_BUFFER": "0", "FLASHNEXT_PREAD_CHUNK": "1",
+        },
+        "buffer-chunk2": {
+            "FLASHNEXT_SHARED_READ_BUFFER": "1", "FLASHNEXT_PREAD_CHUNK": "2",
+        },
+    },
+    # Compile the elementwise chains around the matmuls. Bit-exact, checked
+    # with mx.array_equal before install. The probe's own per-call figures
+    # sum to about 1 ms per token, so expect this inside the band.
+    "compile": {
+        "plain": {"FLASHNEXT_COMPILE": "0"},
+        "compiled": {"FLASHNEXT_COMPILE": "1"},
+    },
     # Map every row the tracker believes is cached, not only the mlocked ones.
     # Run bench_residency.py first: below 78.5% precision this loses.
     "track-resident": {
@@ -195,6 +229,37 @@ LIVE_SETTINGS = {
             backend.store, "_track_residency", value == "1"
         ),
         lambda backend: backend.store._track_residency,
+        lambda value: value == "1",
+    ),
+    "FLASHNEXT_SHARED_READ_BUFFER": (
+        lambda backend, value: __import__(
+            "models.flashnext.expert_cache", fromlist=["set_shared_buffer"]
+        ).set_shared_buffer(value == "1"),
+        lambda backend: __import__(
+            "models.flashnext.expert_cache", fromlist=["shared_buffer"]
+        ).shared_buffer(),
+        lambda value: value == "1",
+    ),
+    "FLASHNEXT_PREAD_CHUNK": (
+        lambda backend, value: setattr(
+            backend.store, "_pread_chunk", int(value)
+        ),
+        lambda backend: backend.store._pread_chunk,
+        lambda value: int(value),
+    ),
+    "FLASHNEXT_COMPILE": (
+        lambda backend, value: (
+            __import__(
+                "models.flashnext.compiled", fromlist=["install"]
+            ).install()
+            if value == "1"
+            else __import__(
+                "models.flashnext.compiled", fromlist=["uninstall"]
+            ).uninstall()
+        ),
+        lambda backend: __import__(
+            "models.flashnext.compiled", fromlist=["installed"]
+        ).installed(),
         lambda value: value == "1",
     ),
     "FLASHNEXT_SWAP_EPSILON": (

@@ -23,6 +23,7 @@ import numpy as np
 
 from mlx_vlm.models.switch_layers import _gather_sort, _scatter_unsort
 
+from . import hostwindow
 from .store import SafeTensorStore
 
 
@@ -30,6 +31,18 @@ _POOL = ThreadPoolExecutor(
     max_workers=int(os.environ.get("FLASHNEXT_IO_WORKERS", "16")),
     thread_name_prefix="flashnext-io",
 )
+
+
+def _submit_read(*args):
+    """Hand one read to the pool, counted while `hostwindow` is on.
+
+    The counter is what lets a host window claim the drive was idle. Without
+    it the claim is an argument about the code rather than a measurement.
+    """
+    future = _POOL.submit(*args)
+    return hostwindow.track(future) if hostwindow.ENABLED else future
+
+
 _PARTS = ("weight", "scales", "biases")
 
 # Optional wall-clock split of a decode token. Off by default: the counters
@@ -96,7 +109,18 @@ _WARM_ON = os.environ.get("FLASHNEXT_WARM") == "1"
 # Read every chunk straight into one destination per part, so the main thread
 # never concatenates the pieces. With FLASHNEXT_PREAD_CHUNK=1 the old path
 # concatenated one array per expert, copying the whole layer again.
-_SHARED_BUFFER = os.environ.get("FLASHNEXT_SHARED_READ_BUFFER", "0") != "0"
+# A list so a benchmark can flip it on a live backend. Read through
+# `shared_buffer()`; the module constant could not be changed after import and
+# a comparison that cannot change its setting measures the same thing twice.
+_SHARED_BUFFER = [os.environ.get("FLASHNEXT_SHARED_READ_BUFFER", "0") != "0"]
+
+
+def shared_buffer() -> bool:
+    return _SHARED_BUFFER[0]
+
+
+def set_shared_buffer(enabled: bool) -> None:
+    _SHARED_BUFFER[0] = bool(enabled)
 _EARLY_SUBMIT_MODE = os.environ.get("FLASHNEXT_EARLY_SUBMIT", "0")
 _EARLY_SUBMIT = _EARLY_SUBMIT_MODE != "0"
 _WARM = ThreadPoolExecutor(max_workers=4, thread_name_prefix="flashnext-warm")
@@ -193,7 +217,7 @@ class ExpertLRU:
         """Queue reads so a whole layer flies at once, chunked to stay fast."""
         if bulk:
             return [
-                [_POOL.submit(self.store.whole_np, f"{self.prefix}.{part}")]
+                [_submit_read(self.store.whole_np, f"{self.prefix}.{part}")]
                 for part in _PARTS
             ]
         mode = self.store._read_mode
@@ -203,7 +227,7 @@ class ExpertLRU:
                 if len(experts) <= self.store._hybrid_cutoff
                 else "pread"
             )
-        if _SHARED_BUFFER:
+        if _SHARED_BUFFER[0]:
             return self._submit_shared(experts, mode)
         pending = []
         for part in _PARTS:
@@ -219,7 +243,7 @@ class ExpertLRU:
                 experts[i : i + chunk] for i in range(0, len(experts), chunk)
             ]
             pending.append([
-                _POOL.submit(
+                _submit_read(
                     self.store.rows_np,
                     f"{self.prefix}.{part}",
                     piece,
@@ -244,7 +268,7 @@ class ExpertLRU:
             name = f"{self.prefix}.{part}"
             buffer = self.store.empty_rows(name, len(experts))
             futures = [
-                _POOL.submit(
+                _submit_read(
                     self.store.rows_into,
                     name,
                     experts[start : start + chunk],
@@ -496,7 +520,8 @@ class StreamingSwitchGLU(nn.Module):
             _TIMERS["router_sync"] += time.perf_counter() - began
         else:
             mx.eval(flat)
-        routed = flat.tolist()
+        with hostwindow.window("route_tolist"):
+            routed = flat.tolist()
         observer = _PREFILL_PROGRESS
         if observer is not None and self.layer_id >= 0:
             observer(self.layer_id)
@@ -540,15 +565,20 @@ class StreamingSwitchGLU(nn.Module):
             ).reshape(indices.shape)
             weights = [sl.parts for sl in slabs]
         else:
-            wanted = list(dict.fromkeys(e for e in routed if mask is None or e in set(mask)))
-            if self.gate_proj.cache.store._sort_reads:
-                wanted.sort()
-            if not wanted:
-                wanted = [routed[0]]
-            order = {e: i for i, e in enumerate(wanted)}
-            local = mx.array(
-                [order.get(e, 0) for e in routed], dtype=mx.uint32
-            ).reshape(indices.shape)
+            with hostwindow.window("plan_host"):
+                wanted = list(
+                    dict.fromkeys(
+                        e for e in routed if mask is None or e in set(mask)
+                    )
+                )
+                if self.gate_proj.cache.store._sort_reads:
+                    wanted.sort()
+                if not wanted:
+                    wanted = [routed[0]]
+                order = {e: i for i, e in enumerate(wanted)}
+                local = mx.array(
+                    [order.get(e, 0) for e in routed], dtype=mx.uint32
+                ).reshape(indices.shape)
             prefetched = getattr(self, "_prefetch", None)
             self._prefetch = None
             if prefetched is not None and prefetched[0] == wanted:
@@ -557,15 +587,28 @@ class StreamingSwitchGLU(nn.Module):
                 pending = [p.cache.submit(wanted, False) for p in projections]
             if _PROFILE:
                 began = time.perf_counter()
-                raw = [_await_read(fs) for fs in pending]
+                with hostwindow.window("io_await"):
+                    raw = [_await_read(fs) for fs in pending]
                 _TIMERS["io_wait"] += time.perf_counter() - began
                 _TIMERS["io_calls"] += 1
                 began = time.perf_counter()
-                weights = [
-                    p.cache.to_mx(chunks)
-                    for p, chunks in zip(projections, raw)
-                ]
+                with hostwindow.window("to_mx_host"):
+                    weights = [
+                        p.cache.to_mx(chunks)
+                        for p, chunks in zip(projections, raw)
+                    ]
                 _TIMERS["to_mx"] += time.perf_counter() - began
+            elif hostwindow.ENABLED:
+                # Split the wait from the conversion so each lands in its own
+                # window. Production keeps the interleaved form below, so this
+                # reordering never reaches a normal run.
+                with hostwindow.window("io_await"):
+                    raw = [_await_read(fs) for fs in pending]
+                with hostwindow.window("to_mx_host"):
+                    weights = [
+                        p.cache.to_mx(chunks)
+                        for p, chunks in zip(projections, raw)
+                    ]
             else:
                 weights = [
                     p.cache.to_mx(_await_read(fs))
@@ -573,6 +616,16 @@ class StreamingSwitchGLU(nn.Module):
                 ]
 
         issue_began = time.perf_counter() if _PROFILE else 0.0
+        with hostwindow.window("moe_issue_host"):
+            return self._issue(
+                x, indices, projections, local, weights, mask, routed,
+                allow_sort, issue_began,
+            )
+
+    def _issue(
+        self, x, indices, projections, local, weights, mask, routed,
+        allow_sort, issue_began,
+    ):
         do_sort = indices.size >= 64 and allow_sort
         inv = None
         xs = x

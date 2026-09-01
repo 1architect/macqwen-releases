@@ -72,6 +72,7 @@ def _collect_tail_fit(layer_id, features, target) -> None:
 
 
 def _moe_call(self, x: mx.array) -> mx.array:
+    from models.flashnext import compiled, hostwindow
     from models.flashnext.expert_cache import (
         _EARLY_SUBMIT,
         _PROFILE,
@@ -83,11 +84,14 @@ def _moe_call(self, x: mx.array) -> mx.array:
 
     warm_layer(self.switch_mlp, getattr(self, "_flashnext_layer_id", None))
 
-    gates = mx.softmax(self.gate(x), axis=-1, precise=True)
     k = self.top_k
-    inds = mx.argpartition(gates, kth=-k, axis=-1)[..., -k:]
-    scores = mx.take_along_axis(gates, inds, axis=-1)
-    topk_mass = scores.sum(axis=-1, keepdims=True)
+    if compiled.installed():
+        inds, scores, topk_mass = compiled.router(self.gate(x), k)
+    else:
+        gates = mx.softmax(self.gate(x), axis=-1, precise=True)
+        inds = mx.argpartition(gates, kth=-k, axis=-1)[..., -k:]
+        scores = mx.take_along_axis(gates, inds, axis=-1)
+        topk_mass = scores.sum(axis=-1, keepdims=True)
 
     layer_id = getattr(self, "_flashnext_layer_id", None)
     threshold = getattr(
@@ -124,16 +128,19 @@ def _moe_call(self, x: mx.array) -> mx.array:
             1,
             min(k, _LAYER_MIN_KEEPS.get(layer_id, _MIN_KEEP[0])),
         )
-        for weights in scores.reshape(-1, k).tolist():
-            keep = _keep_for_mass(weights, threshold)
-            keeps.append(max(minimum, keep))
-            if _TAIL_MODE[0] == "collect" and layer_id is not None:
-                fit_threshold = (
-                    _TAIL_SENSITIVE[0]
-                    if layer_id in FAST_LAYERS
-                    else _TAIL_THRESHOLD[0]
-                )
-                fit_keeps.append(_keep_for_mass(weights, fit_threshold))
+        # `scores` was evaluated one line above, so this loop is a host copy
+        # and pure Python. No kernel runs and no read is in flight.
+        with hostwindow.window("keep_loop"):
+            for weights in scores.reshape(-1, k).tolist():
+                keep = _keep_for_mass(weights, threshold)
+                keeps.append(max(minimum, keep))
+                if _TAIL_MODE[0] == "collect" and layer_id is not None:
+                    fit_threshold = (
+                        _TAIL_SENSITIVE[0]
+                        if layer_id in FAST_LAYERS
+                        else _TAIL_THRESHOLD[0]
+                    )
+                    fit_keeps.append(_keep_for_mass(weights, fit_threshold))
 
         observer = _ROUTE_OBSERVER[0]
         expert_rows = None
@@ -186,6 +193,11 @@ def _moe_call(self, x: mx.array) -> mx.array:
         resident = _RESIDENT_EXPERTS.get(layer_id)
         if resident:
             if expert_rows is None:
+                # `inds` joined the sync above only when something asked for
+                # it. Otherwise this call forces its own, so the enclosing
+                # window is not host-only and must not be counted as free.
+                if not needed:
+                    hostwindow.note_eval()
                 expert_rows = inds.reshape(-1, k).tolist()
             masks = [
                 [position < keep or expert in resident
@@ -260,9 +272,12 @@ def _moe_call(self, x: mx.array) -> mx.array:
                 score_rows = scores.reshape(-1, k).tolist()
             observer(layer_id, rows, score_rows, [k] * rows_here)
 
-    selected_mass = scores.sum(axis=-1, keepdims=True)
-    normalizer = topk_mass + _RENORM_BLEND[0] * (selected_mass - topk_mass)
-    scores = scores / normalizer
+    if compiled.installed():
+        scores, normalizer = compiled.renorm(scores, topk_mass, _RENORM_BLEND[0])
+    else:
+        selected_mass = scores.sum(axis=-1, keepdims=True)
+        normalizer = topk_mass + _RENORM_BLEND[0] * (selected_mass - topk_mass)
+        scores = scores / normalizer
     shared_began = time.perf_counter() if _PROFILE else 0.0
     shared = self.shared_expert(x)
     shared_gate = mx.sigmoid(self.shared_expert_gate(x))

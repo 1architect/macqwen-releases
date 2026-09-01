@@ -2340,7 +2340,144 @@ for its stock Q4 control. It reports 92.1% for REAP-384. These are single runs
 without confidence intervals, and calibration used agentic-coding traffic.
 They do not replace this project's quality gate.
 
-### Quality warning from the REAP-288 discussion
+## Exact-quality performance sweep closed, 2026-09-01
+
+The three investigations opened from the 3 tok/s gap are now measured. Issues
+[#21](https://github.com/1architect/macqwen-releases/issues/21),
+[#22](https://github.com/1architect/macqwen-releases/issues/22), and
+[#23](https://github.com/1architect/macqwen-releases/issues/23) are closed.
+
+### GPU, SSD, and dependency timing
+
+The complete runtime was measured for 30 generated tokens on a cold machine.
+The token took 492.5 ms and read 381.2 MB physically:
+
+| State | ms/token | Share |
+|---|---:|---:|
+| GPU running | 197.4 | 40.1% |
+| SSD reading | 226.7 | 46.0% |
+| host only | 44.8 | 9.1% |
+| unaccounted | 23.5 | 4.8% |
+
+The GPU and SSD windows were disjoint. During a warm 2.713 tok/s run, the
+split moves to about 53% GPU, 41% SSD, and 6% host because fixed host work
+occupies less of the token. Neither device has spare capacity during the
+other device's required work.
+
+The dependency chain repeats 48 times per token:
+
+```text
+GPU scores -> host route -> SSD rows -> host assembly -> GPU expert matmul
+```
+
+The n-gram reads are independent because input IDs are known at token start.
+They take 6.2 ms. Starting them before layer 0 measured +1.5%, inside noise
+and close to the arithmetic ceiling. The shared expert also depends only on
+the layer input, but running it during SSD reads measured 2.59 against 2.68
+tok/s. Route prediction reached 59% accuracy and lost for the same reason.
+
+### Path 2 closed: host-only time is too small
+
+The host-window instrument measured 38.37 ms/token of exclusive host time:
+
+| Window | Exclusive ms/token | Meaning |
+|---|---:|---|
+| `to_mx_host` | 34.21 | bulk copy of the gathered layer |
+| `keep_loop` | 2.77 | Python threshold loop |
+| `moe_issue_host` | 0.79 | host-side issue work |
+| `plan_host` | 0.51 | route plan construction |
+| `route_tolist` | 0.09 | route conversion |
+| `io_await` | 0.00 | shared SSD wait, not exclusive |
+
+The low-bandwidth bookkeeping totals 4.16 ms/token. It cannot recover the
+15 to 20 ms required by Path 2. The 34.21 ms `to_mx_host` window copies the
+whole gathered layer and remains the largest addressable host item, but it
+belongs to bulk movement and stays excluded from this path. The independent
+read counter and the `io_await` control agree that the window classification
+is valid.
+
+### Path 4 closed: routed `gather_qmm` is not the missing block
+
+`models/flashnext/bench_gather_qmm.py` uses resident arrays, real checkpoint
+shapes, chained repetitions, and one evaluation per chain. It verifies output
+identity with `mx.array_equal`.
+
+| Slots | Gate | Up | Down | Three projections | Time/token |
+|---:|---:|---:|---:|---:|---:|
+| 8 | 102.8 GB/s | 112.0 | 73.4 | 92.4 GB/s | 12.8 ms |
+| 10 | 87.2 GB/s | 102.8 | 76.7 | 92.2 GB/s | 16.0 ms |
+
+The result follows the 105 GB/s branch, not the 20 GB/s branch. Expert gather
+costs 13 to 16 ms/token. It cannot explain a hidden 30 to 45 ms block.
+
+The test also reproduces the short-chain timing error. At eight repetitions,
+separate projection sums took 0.742 ms against 0.316 ms as one chain, a factor
+of 2.3. At 64 repetitions they measured 0.264 and 0.266 ms. Separate stages
+carry a synchronization cost and their times must not be added.
+
+### Compile sweep closed: bit-exact and too small
+
+`models/flashnext/compiled.py` compiles the retained router, QK normalization,
+PLE gate, and related chains. The complete benchmark compares four kept arms:
+
+```text
+plain      2.68 tok/s   559.1 MB/token
+compiled   2.66 tok/s   564.7 MB/token
+```
+
+Token IDs matched in every arm. The compiled median was 0.6% lower, and the
+paired sign test gave p = 0.812. The three useful chain savings total about
+1.0 ms/token, or 0.3%. Compilation stays available as a diagnostic and is
+not installed by default.
+
+### Layer attribution correction
+
+The first component split produced an invalid residual because independently
+timed chains allowed overlap. A dependency link fixed that error, but the
+parts still did not add to the whole. A whole-layer control shows the scale:
+
+| Measurement | ms/token |
+|---|---:|
+| individually timed component parts | 41.00 |
+| whole decoder layers, expert pages hot | 255.93 |
+| unexplained difference | 214.93 |
+
+The 41 ms includes GDN, attention, both hyper-connections, PLE, the router,
+and the shared expert. The remaining cost is MoE plumbing, dispatch, and
+evaluation behavior that the current split does not isolate. The chained split
+measures GDN at 18.25 ms/token. The earlier 57 ms in-situ figure used a
+different synchronization pattern and needs a new control before use.
+
+### Shared buffer plus chunk 2 is the first positive result
+
+The earlier shared-buffer test removed the 35 ms concatenate but returned the
+saving as GPU time. It used 16 workers that scattered writes across one
+destination. The crossed test keeps the shared buffer but uses chunk 2, so
+each worker writes a contiguous range while most of the SSD queue remains
+active.
+
+The final 12-arm comparison used 10 kept arms per condition:
+
+```text
+concat-chunk1  2.67 tok/s   467.7 MB/token
+buffer-chunk2  2.83 tok/s   457.7 MB/token
+```
+
+`buffer-chunk2` won 10 of 12 paired arms, used fewer physical bytes in 10 of
+12, and improved the generation median by 6.3%. The result resolves above a
+4.4% band. Token IDs matched in every arm. This is the first positive result
+from this sweep, and the 12-arm run started after a clean boot.
+Issue [#26](https://github.com/1architect/macqwen-releases/issues/26) tracks
+that change.
+
+The current 36 ms gap remains open. The new split shows that the missing cost
+is not routed expert matmul or small host bookkeeping. Issue
+[#27](https://github.com/1architect/macqwen-releases/issues/27) tracks a valid
+whole-layer GPU attribution method. Issue [#24](https://github.com/1architect/macqwen-releases/issues/24) remains open for Q4 group sizes, and issue
+[#25](https://github.com/1architect/macqwen-releases/issues/25) remains open
+for the REAP-288 gate.
+
+## Quality warning from the REAP-288 discussion
 
 In [discussion #5](https://huggingface.co/sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit/discussions/5), DarkJoney reported that one hard prompt
 entered reasoning loops under oMLX 0.6.4. The behavior remained with the MTP

@@ -57,6 +57,14 @@ long-context comparison stayed coherent, but the exact-quality answer was better
 - QSA chunking bounds large temporary masks.
 - Selective expert residency reduces runtime variance when RAM is available.
 - A local RMSNorm patch corrects an upstream checkpoint interpretation error.
+- The 2026-09-01 timing sweep closes host-only bookkeeping, routed
+  `gather_qmm`, and the complete-runtime compile estimate. They recover about
+  4.16 ms, measure 13 to 16 ms, and save about 1 ms per token respectively.
+- A 12-arm test gives `buffer-chunk2` a resolved 6.3% generation gain over the
+  current concatenate path. Token IDs match and physical bytes fall. The
+  default stays unchanged while issue #26 tracks adoption.
+- The GPU, SSD, host split on a cold 492.5 ms token is 197.4, 226.7, and
+  44.8 ms. The main remaining unknown is whole-layer GPU attribution.
 
 The reference machine is an M4 Mac with 16 GB of unified memory and a 256 GB SSD. Prefill and decode measurements are separate. Short
 prompts have lower prefill rates because fixed setup and streamed-read costs apply to fewer tokens. Performance also depends on prompt type,
@@ -95,4 +103,5 @@ Threshold `1.0` keeps the shipped router selection.
 ## Status
 
 The text runtime, six routing profiles, exact sessions, and shared chat integration are active. Cache-aware is optional. The production
-backend keeps the included MTP weights disabled.
+backend keeps the included MTP weights disabled. Current performance work is
+tracked by issues #24 through #27. Issues #21 through #23 are closed.
