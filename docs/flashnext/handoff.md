@@ -355,6 +355,10 @@ dependency-safe bookkeeping, not DMA.
 - Measure routed `gather_qmm` in situ on fixed resident expert sets.
 - Apply the measured bit-exact `mx.compile` candidates to the complete runtime.
 - Probe routed-expert Q4 group sizes 64 and 128 before building a checkpoint.
+- Treat REAP-288 Q4/G64 as the primary smaller-bank checkpoint candidate.
+  Add the `shard_N` and `shards.N` loader alias before downloading it.
+- Gate REAP-288 at `medium`, `high`, and mandatory `xhigh`, with sampling and
+  no repetition penalty first. Use REAP-384 as the fallback.
 
 ### Standing decisions
 

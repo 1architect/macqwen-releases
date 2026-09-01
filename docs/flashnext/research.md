@@ -2295,3 +2295,101 @@ a second machine. Use paired production arms, then run the quality gate at
 The most plausible stack is Q4/G128 plus the exact compile sweep. Their
 projected savings total 38 to 48 ms/token, enough to cross 3 tok/s if both
 effects survive the complete runtime.
+
+## Compatible checkpoint survey and REAP decision, 2026-09-01
+
+A shard-header scan found several MLX checkpoints with the Flash-Next text
+architecture. Each reports `model_type=qwen4_exp_text`, 48 layers, hidden size
+2560, top-10 routing, and the `language_model.model.` tensor prefix. Sizes
+below come from the real shard headers, not model-card summaries.
+
+| Checkpoint | Disk | Experts | Expert quant | Bytes/expert | Expert bank | Gathered/token |
+|---|---:|---:|---:|---:|---:|---:|
+| [`Vontra/Qwen3.8-Flash-Next-MLX-oQ4`](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ4), installed | 111.7 GB | 512 | Q4/G32 | 3,072,000 | 75.5 GB | 1,169 MB |
+| [`sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`](https://huggingface.co/sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit) | **73.5 GB** | **288** | **Q4/G64** | **2,764,800** | **38.2 GB** | **1,052 MB** |
+| [`sh0wie/Qwen3.8-Flash-Next-REAP-384-MLX-4bit`](https://huggingface.co/sh0wie/Qwen3.8-Flash-Next-REAP-384-MLX-4bit) | 86.3 GB | 384 | Q4/G64 | 2,764,800 | 51.0 GB | 1,052 MB |
+| [`Sawfwair/Qwen3.8-Flash-Next-MLX-Mixed-2bit`](https://huggingface.co/Sawfwair/Qwen3.8-Flash-Next-MLX-Mixed-2bit) | 73.1 GB | 512 | Q2/G128 | 1,382,400 | 34.0 GB | 526 MB |
+| [`Vontra/Qwen3.8-Flash-Next-MLX-oQ2`](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ2) | 67.7 GB | 512 | Q2/G32 | 1,843,200 | 45.3 GB | 702 MB |
+| `Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP` | 92.5 GB | 512 | Q3 mixed | about 2,457,600 | about 60 GB | about 935 MB |
+
+The header method reproduces oQ3-MTP at 92.5 GB, equal to the recorded 86.2
+GiB. This cross-check supports the table's decimal sizes.
+
+### Primary candidate: REAP-288
+
+REAP-288 cuts the routed-expert bank from 75.5 GB to 38.2 GB. The measured oQ4
+cold tail is about 154 distinct experts per layer and 21.7 GB. Proportional
+scaling puts the 288-expert tail near 87 experts per layer and about 11 GB.
+That could fit in the available page cache, but the earlier coverage mistake
+shows that this remains a hypothesis until `mincore` and physical reads prove
+it.
+
+Q4/G64 also reduces each routed record by 10% while keeping four-bit weight
+codes. The n-gram table remains Q4/G32. Two honest speed bounds follow:
+
+- With no hit-rate change, physical reads project from 390 to 351 MB/token,
+  or about 2.85 tok/s.
+- At a 75% hit rate on 1,052 MB gathered, physical reads project near 263
+  MB/token. That can put decode near 3.2 tok/s.
+
+The second bound is the reason to test REAP-288. It is not a prediction. The
+production harness must measure the new hit rate, physical bytes, and rate.
+
+The model card reports HumanEval pass@1 at 91.5% for REAP-288 against 93.9%
+for its stock Q4 control. It reports 92.1% for REAP-384. These are single runs
+without confidence intervals, and calibration used agentic-coding traffic.
+They do not replace this project's quality gate.
+
+### Quality warning from the REAP-288 discussion
+
+In [discussion #5](https://huggingface.co/sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit/discussions/5), DarkJoney reported that one hard prompt
+entered reasoning loops under oMLX 0.6.4. The behavior remained with the MTP
+drafter off and with n-grams moved from SSD to memory.
+
+The author later said the problem starts near `xhigh` effort. He described it
+as an inference-time REAP side effect. His current workaround is effort
+`high` or lower, or repetition penalty 1.05 to 1.10. He reported 1.08 as
+verified and plans a light default penalty in pMLX.
+
+This report is confounded, but it is not cleared. This project has reproduced
+the same loop shape on unpruned oQ4 at `xhigh` and under greedy decoding. Every
+recorded loop sat on a choice where both branches were correct. The external
+report does not state its sampler and has no controlled unpruned Q4 arm. At
+the same time, the author's response explicitly says REAP makes the behavior
+worse at high reasoning effort.
+
+A repetition penalty cannot serve as the first quality result. The oQ4
+SketchUp answer reached correct code by doubting and correcting itself. A
+penalty can hide repeated doubt without restoring that resolution. Qwen also
+warns that larger penalties can mix languages and reduce quality.
+
+### Required REAP-288 gate
+
+Run the checkpoint with Qwen's sampler and no repetition penalty at `medium`,
+`high`, and `xhigh`. `xhigh` is mandatory because the open report names that
+regime. Use the recorded oQ4 `xhigh` SketchUp transcript as the control. Then
+repeat REAP-288 at penalty 1.08 and judge the answer, not only loop removal.
+
+The gate must verify the complete SketchUp file, factual prompts, API recall,
+and long-context trajectory. Only after it passes should
+`bench_production.py` measure rate and physical reads. REAP-384 is the fallback
+when REAP-288 fails. It keeps Q4/G64 and still cuts the expert bank by 32%.
+
+The two-bit checkpoints are rejected as first candidates. The retained
+Q2/G32 probe measured 31.49% mean local error, and two-bit expert
+requantization is already closed. `ddalcu/Qwen3.8-Flash-Next-MLX-Serve-4bit`
+also stays excluded until its repository file count and stored size reconcile
+with a complete expert bank and n-gram table.
+
+### Loader compatibility and storage cost
+
+The current `_swap_ngram` loader builds prefixes as `shard_N`. REAP names the
+tensors `ngram_embedding.shards.N.*`. The loader needs a small compatibility
+change that accepts both forms. All routed `switch_mlp` tensor names already
+match. Add a focused loader test before any checkpoint download.
+
+Testing REAP-288 on this 256 GB machine still needs a storage decision. The
+standing rule keeps oQ4 immutable, and local free space cannot hold both.
+Deleting oQ4 makes a failed gate cost another 111.7 GB download. Do not start
+the checkpoint transfer until external storage is available or that restore
+cost is explicitly accepted.
