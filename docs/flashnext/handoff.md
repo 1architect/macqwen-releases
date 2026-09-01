@@ -347,6 +347,14 @@ Current work is tracked in the public issue tracker:
 - [#9](https://github.com/1architect/macqwen-releases/issues/9) Widen the cache-aware quality gate.
 - [#10](https://github.com/1architect/macqwen-releases/issues/10) Weight-preserving cache-aware swap. Measured and rejected in `research.md`.
 
+Open exact-quality performance experiments:
+
+- Instrument host-only intervals where both NVMe and GPU are idle. Move only
+dependency-safe bookkeeping, not DMA.
+- Measure routed `gather_qmm` in situ on fixed resident expert sets.
+- Apply the measured bit-exact `mx.compile` candidates to the complete runtime.
+- Probe routed-expert Q4 group sizes 64 and 128 before building a checkpoint.
+
 ### Standing decisions
 
 - `pin-parts` is rejected. Its positive isolated reading disappeared when
