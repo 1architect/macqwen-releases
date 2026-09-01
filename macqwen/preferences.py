@@ -71,9 +71,10 @@ SCHEMA = {
     # agent profile only, ignored by the plain profile
     "approval": _choice("ask", ("ask", "auto")),
     "spec_enabled": _boolean(False),
-    "workspace": _text("/Users/gioma/Developer/MACBAT"),
+    "workspace": _text(str(Path.cwd())),
     # what to start with
     "model": _text("flashnext"),
+    "flashnext_checkpoint": _string(""),
     "profile": _choice("plain", ("plain", "agent")),
 }
 

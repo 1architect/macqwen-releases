@@ -45,7 +45,7 @@ def main() -> int:
     parser.add_argument("--model", default="flashnext")
     parser.add_argument("--profile", default="agent", choices=("agent", "plain"))
     parser.add_argument("--workspace", default=os.getcwd())
-    parser.add_argument("--model-path", default="~/models/Qwen3.8-Flash-Next-MLX-oQ4")
+    parser.add_argument("--model-path", "--checkpoint", dest="model_path", default=None)
     parser.add_argument("--threshold", type=float, default=0.85)
     parser.add_argument("--resident-experts", type=int, default=32)
     parser.add_argument("--max-turns", type=int, default=8)

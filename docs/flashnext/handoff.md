@@ -5,12 +5,13 @@
 The launcher expects:
 
 ```text
-Python       ~/models/.venv-qwen4exp/bin/python
-Checkpoint   ~/models/Qwen3.8-Flash-Next-MLX-oQ4
+Python       .venv/bin/python
+Checkpoint   one compatible complete checkpoint under ~/models
 ```
 
+Run `./chat.sh setup` to create the environment.
 Override the interpreter with `MACQWEN_FLASHNEXT_PYTHON`.
-Override the checkpoint with `--model-path`.
+Override the checkpoint with `--checkpoint` or `MACQWEN_FLASHNEXT_MODEL`.
 
 ## Download
 
@@ -101,7 +102,7 @@ and both lost their complete-runtime controls.
 Run the model suite in its environment:
 
 ```bash
-~/models/.venv-qwen4exp/bin/python -m unittest discover \
+.venv/bin/python -m unittest discover \
   -s models/flashnext -p 'test_*.py' -q
 ```
 

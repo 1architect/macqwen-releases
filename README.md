@@ -1,5 +1,7 @@
 # MACQWEN
 
+[![CI](https://github.com/1architect/macqwen-releases/actions/workflows/ci.yml/badge.svg)](https://github.com/1architect/macqwen-releases/actions/workflows/ci.yml)
+
 MACQWEN is an experimental runtime for local LLM inference on low-memory Apple
 Silicon systems. The reference machine is an M4 Mac with 16 GB of unified
 memory and a 256 GB SSD.
@@ -130,18 +132,17 @@ Requirements:
 Clone the repository:
 
 ```bash
-git clone https://github.com/1architect/MACQWEN.git
-cd MACQWEN
+git clone https://github.com/1architect/macqwen-releases.git
+cd macqwen-releases
 ```
 
-Create the tested environment:
+Create the pinned environment:
 
 ```bash
-python3.12 -m venv "$HOME/models/.venv-qwen4exp"
-source "$HOME/models/.venv-qwen4exp/bin/activate"
-python -m pip install --upgrade pip
-python -m pip install -r requirements-flashnext.txt
+./chat.sh setup
 ```
+
+This command creates `.venv` and installs the pinned Flash-Next dependencies.
 
 Download the tested public checkpoint:
 
@@ -164,6 +165,24 @@ Run the default tuned profile:
 
 ```bash
 ./chat.sh
+```
+
+MACQWEN finds `.venv` automatically. It also finds the sole compatible
+checkpoint under `~/models`. Use `MACQWEN_MODEL_ROOT` for another model folder.
+
+When multiple compatible checkpoints exist, select one:
+
+```bash
+./chat.sh --checkpoint oq3
+./chat.sh --checkpoint oq4
+./chat.sh --checkpoint /path/to/checkpoint
+```
+
+You can also install the package in an existing Python 3.12 environment:
+
+```bash
+python -m pip install -e '.[flashnext]'
+macqwen --checkpoint /path/to/checkpoint
 ```
 
 This command always starts Flash-Next with `exact-quality`, threshold `0.85`,
@@ -550,7 +569,7 @@ python3 -m unittest discover -s macqwen -p 'test_*.py'
 Run Flash-Next tests:
 
 ```bash
-~/models/.venv-qwen4exp/bin/python -m unittest discover \
+.venv/bin/python -m unittest discover \
   -s models/flashnext -p 'test_*.py' -q
 ```
 

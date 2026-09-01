@@ -25,9 +25,8 @@ from pathlib import Path
 from macqwen.api_keys import sanitized_environment
 
 DEFAULT_MODEL = Path(
-    "/Users/gioma/.lmstudio/models/gioma/"
-    "Qwen3.8-27B-Apple-MLX-V3.1-Compact"
-)
+    os.environ.get("MACQWEN_TOKENIZER_MODEL", "~/models/Qwen3.8-27B")
+).expanduser()
 DEFAULT_CACHE_ROOT = Path.home() / "Library/Application Support/QwenRepoCache"
 MAX_FILE_BYTES = 2_000_000
 

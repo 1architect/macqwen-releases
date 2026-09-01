@@ -3,21 +3,28 @@
 from __future__ import annotations
 
 import argparse
-import json
+import importlib.util
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from macqwen import preferences
+from macqwen.checkpoints import resolve_qwen27b
 
 
-QWEN27B_PYTHON = "~/mlx-qwen38-kernel-lab/bin/python3"
-FLASHNEXT_PYTHON = "~/models/.venv-qwen4exp/bin/python"
-V4_ROOT = Path("~/.lmstudio/models/gioma").expanduser()
-V4_PREFIX = "Qwen3.8-27B-Apple-MLX-V4-"
+PYTHON_ENV = {
+    "flashnext": "MACQWEN_FLASHNEXT_PYTHON",
+    "qwen27b": "MACQWEN_QWEN27B_PYTHON",
+}
+REQUIRED_MODULES = {
+    "flashnext": ("mlx", "mlx_vlm", "transformers"),
+    "qwen27b": ("mlx",),
+}
 
 
 def _split_build(argv: list[str]) -> tuple[str | None, list[str]]:
@@ -26,40 +33,72 @@ def _split_build(argv: list[str]) -> tuple[str | None, list[str]]:
     return None, argv
 
 
-def _v4_path(build: str) -> Path:
-    path = V4_ROOT / f"{V4_PREFIX}{build}"
-    if not path.is_dir():
-        raise SystemExit(f"no such V4 build: {path}")
-    return _validate_qwen27b(path)
-
-
-def _validate_qwen27b(path: Path) -> Path:
-    try:
-        config = json.loads((path / "config.json").read_text())
-    except (OSError, TypeError, ValueError) as exc:
-        raise SystemExit(f"invalid model config: {path / 'config.json'}: {exc}") from exc
-    if config.get("vocab_size") != 248320:
-        raise SystemExit(
-            "refusing: the BF16 embedding and head require Qwen3.8-27B "
-            "with vocab 248320"
-        )
-    return path
-
-
 def _qwen27b_path(requested: str | None, build: str | None) -> Path:
-    if build:
-        return _v4_path(build)
-    value = requested or os.environ.get("MACQWEN_MODEL")
-    if value:
-        path = Path(value).expanduser()
-        if path.is_dir():
-            return _validate_qwen27b(path)
-        raise SystemExit(f"no such model: {path}")
-    builds = sorted(V4_ROOT.glob(f"{V4_PREFIX}*"))
-    choices = "\n".join(
-        f"  ./chat.sh {path.name[len(V4_PREFIX):]}" for path in builds if path.is_dir()
+    try:
+        return resolve_qwen27b(requested or build or os.environ.get("MACQWEN_MODEL"))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _supports_current_python(model: str) -> bool:
+    return all(importlib.util.find_spec(name) is not None for name in REQUIRED_MODULES[model])
+
+
+def _supports_python(path: Path, model: str) -> bool:
+    imports = "; ".join(f"import {name}" for name in REQUIRED_MODULES[model])
+    try:
+        result = subprocess.run(
+            [str(path), "-c", imports],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _interpreter(model: str) -> Path:
+    override = os.environ.get(PYTHON_ENV[model])
+    if override:
+        path = Path(override).expanduser()
+        if path.is_file():
+            return path
+        raise SystemExit(f"missing Python environment: {path}")
+
+    candidates = []
+    if os.environ.get("VIRTUAL_ENV"):
+        candidates.append(Path(os.environ["VIRTUAL_ENV"]) / "bin" / "python")
+    candidates.append(ROOT / (".venv-qwen27b" if model == "qwen27b" else ".venv") / "bin" / "python")
+    for path in candidates:
+        if path.is_file() and _supports_python(path, model):
+            return path
+    if _supports_current_python(model):
+        return Path(sys.executable)
+    variable = PYTHON_ENV[model]
+    raise SystemExit(
+        f"no compatible Python environment found for {model}; run './chat.sh setup' "
+        f"or set {variable}"
     )
-    raise SystemExit("choose a 27B build:\n" + (choices or "  no V4 builds found"))
+
+
+def setup_environment(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="macqwen setup")
+    parser.add_argument("--venv", type=Path, default=ROOT / ".venv")
+    args = parser.parse_args(argv)
+    target = args.venv.expanduser().resolve()
+    creator = sys.executable
+    if sys.version_info < (3, 12):
+        creator = shutil.which("python3.12") or ""
+    if not creator:
+        raise SystemExit("Python 3.12 is required; install it, then run setup again")
+    subprocess.check_call([creator, "-m", "venv", str(target)])
+    python = target / "bin" / "python"
+    subprocess.check_call([str(python), "-m", "pip", "install", "--upgrade", "pip"])
+    subprocess.check_call([str(python), "-m", "pip", "install", "-e", f"{ROOT}[flashnext]"])
+    print(f"MACQWEN environment ready: {target}")
+    return 0
 
 
 def command(argv: list[str]) -> tuple[list[str], dict[str, str]]:
@@ -68,20 +107,13 @@ def command(argv: list[str]) -> tuple[list[str], dict[str, str]]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--model", choices=("flashnext", "qwen27b"))
     parser.add_argument("--profile", choices=("plain", "agent"))
-    parser.add_argument("--model-path")
+    parser.add_argument("--model-path", "--checkpoint", dest="model_path")
     parser.add_argument("--preferences-file", default=preferences.DEFAULT_PATH)
     parser.add_argument("--v4", action="store_true")
     known, remaining = parser.parse_known_args(argv)
 
     model = known.model or ("qwen27b" if build else "flashnext")
-    python = (
-        os.environ.get("MACQWEN_QWEN27B_PYTHON", QWEN27B_PYTHON)
-        if model == "qwen27b"
-        else os.environ.get("MACQWEN_FLASHNEXT_PYTHON", FLASHNEXT_PYTHON)
-    )
-    interpreter = Path(python).expanduser()
-    if not interpreter.is_file():
-        raise SystemExit(f"missing Python environment: {interpreter}")
+    interpreter = _interpreter(model)
 
     chat_args = [
         str(interpreter), "-u", str(ROOT / "macqwen" / "session.py"),
@@ -120,6 +152,8 @@ def command(argv: list[str]) -> tuple[list[str], dict[str, str]]:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "setup":
+        return setup_environment(sys.argv[2:])
     executable, environment = command(sys.argv[1:])
     os.execvpe(executable[0], executable, environment)
     return 0

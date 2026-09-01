@@ -265,8 +265,7 @@ def build_backend(name: str, args, prefs: dict):
         from macqwen.backends.flashnext import FlashNextBackend
 
         backend = FlashNextBackend(
-            model_path=(args.model_path or
-                        "~/models/Qwen3.8-Flash-Next-MLX-oQ4"),
+            model_path=args.model_path,
             threshold=args.threshold,
             resident_experts=args.resident_experts,
             pin_budget_gb=args.pin_budget_gb,
@@ -322,7 +321,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default=None, choices=("flashnext", "qwen27b"))
     parser.add_argument("--profile", default=None, choices=("plain", "agent"))
-    parser.add_argument("--model-path", default=None)
+    parser.add_argument("--model-path", "--checkpoint", dest="model_path", default=None)
     parser.add_argument(
         "--threshold", type=float, default=FLASHNEXT_DEFAULTS["threshold"]
     )
@@ -483,6 +482,18 @@ def main() -> int:
             prefs["show_thinking"] = True
     if args.show_thinking is not None:
         prefs["show_thinking"] = args.show_thinking
+    if prefs["model"] == "flashnext":
+        from macqwen.checkpoints import resolve_flashnext
+
+        environment_checkpoint = os.environ.get("MACQWEN_FLASHNEXT_MODEL")
+        choice = args.model_path or environment_checkpoint \
+            or prefs["flashnext_checkpoint"] or None
+        try:
+            args.model_path = str(resolve_flashnext(choice))
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.model_path and not environment_checkpoint:
+            prefs["flashnext_checkpoint"] = args.model_path
     if args.benchmark_json and prefs["profile"] != "plain":
         parser.error("--benchmark-json requires --profile plain")
     # A benchmark uses temporary command-line conditions. It must not change

@@ -2,23 +2,23 @@
 
 ## Environment
 
-The launcher expects the custom Python environment at:
+Set the custom Python environment:
 
 ```text
-~/mlx-qwen38-kernel-lab/bin/python3
+MACQWEN_QWEN27B_PYTHON=/path/to/compatible/python
 ```
 
-Override it with `MACQWEN_QWEN27B_PYTHON`.
+The launcher also uses an active compatible environment or `.venv-qwen27b`.
 
 ## Model selection
 
-Place V4 builds under:
+Place compatible builds under `MACQWEN_MODEL_ROOT`, which defaults to:
 
 ```text
-~/.lmstudio/models/gioma/Qwen3.8-27B-Apple-MLX-V4-BUILD
+~/models/
 ```
 
-Run a build by suffix:
+Run a build by directory name:
 
 ```bash
 ./chat.sh BUILD --profile plain
@@ -52,14 +52,14 @@ vocabulary.
 Run backend and parser tests in the 27B environment:
 
 ```bash
-~/mlx-qwen38-kernel-lab/bin/python3 -m unittest \
+$MACQWEN_QWEN27B_PYTHON -m unittest \
   macqwen.test_qwen27b_backend macqwen.test_tools
 ```
 
 Run the lightweight import check:
 
 ```bash
-~/mlx-qwen38-kernel-lab/bin/python3 -c \
+$MACQWEN_QWEN27B_PYTHON -c \
   'from models.qwen27b.frankenstein_engine import FrankensteinEngine'
 ```
 

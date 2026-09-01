@@ -1,5 +1,16 @@
 # Changelog
 
+## MACQWEN 0.3.2 - 2026-09-01
+
+### Distribution
+
+- Use the public `macqwen-releases` URL in Quick Start and package metadata.
+- Add a Python package, the `macqwen` command, and `macqwen setup`.
+- Discover project environments and compatible checkpoints without user-specific paths.
+- Add Apple Silicon CI for shared and Flash-Next tests.
+- Publish future version tags as GitHub Releases after CI passes.
+- Add dependency update checks and repository identity regression tests.
+
 ## MACQWEN 0.3.1 - 2026-08-31
 
 ### Added

@@ -13,11 +13,11 @@ import time
 import mlx.core as mx
 
 from macqwen.backends.base import DecodeTimer
+from macqwen.checkpoints import resolve_flashnext
 from macqwen.conversation import Conversation
 from macqwen.model_settings import FLASHNEXT_DEFAULTS
 from macqwen.text import stream_decode
 
-DEFAULT_MODEL = "~/models/Qwen3.8-Flash-Next-MLX-oQ4"
 DEFAULT_FUSION_MODEL = FLASHNEXT_DEFAULTS["fusion_model"]
 
 
@@ -59,7 +59,7 @@ class Stats:
 
 
 class FlashNextBackend(Conversation):
-    def __init__(self, model_path: str = DEFAULT_MODEL,
+    def __init__(self, model_path: str | None = None,
                  threshold: float = FLASHNEXT_DEFAULTS["threshold"],
                  resident_experts: int = FLASHNEXT_DEFAULTS["resident_experts"],
                  pin_budget_gb: float = FLASHNEXT_DEFAULTS["pin_budget_gb"],
@@ -80,7 +80,10 @@ class FlashNextBackend(Conversation):
 
         load_threshold = 0.20 if routing_profile == "fast" else threshold
         os.environ["FLASHNEXT_TOPK_THRESHOLD"] = str(load_threshold)
-        path = os.path.expanduser(model_path)
+        try:
+            path = str(resolve_flashnext(model_path))
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         model, _, self.store = load_streaming(
             path, expert_capacity=0, verbose=False, keep_vision=False,
             use_mtp=False)

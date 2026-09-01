@@ -38,6 +38,26 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("flashnext", command)
         self.assertIn("agent", command)
 
+    def test_flashnext_forwards_checkpoint_alias(self):
+        with tempfile.TemporaryDirectory() as root:
+            python = Path(root, "python")
+            python.touch()
+            with patch.dict(
+                os.environ, {"MACQWEN_FLASHNEXT_PYTHON": str(python)}, clear=False
+            ):
+                command, _ = cli.command(["--checkpoint", "oq4"])
+        index = command.index("--model-path")
+        self.assertEqual(command[index + 1], "oq4")
+
+    def test_setup_installs_the_pinned_extra_in_a_local_environment(self):
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root, ".venv")
+            with patch("macqwen.cli.subprocess.check_call") as check_call:
+                cli.setup_environment(["--venv", str(target)])
+        commands = check_call.call_args_list
+        self.assertEqual(commands[0].args[0][-2:], ["venv", str(target.resolve())])
+        self.assertIn("[flashnext]", commands[-1].args[0][-1])
+
     def test_slash_server_alias_starts_server_mode(self):
         with tempfile.TemporaryDirectory() as root:
             python = Path(root, "python")
@@ -62,7 +82,8 @@ class LauncherTests(unittest.TestCase):
             }
             with patch.dict(os.environ, environment, clear=False):
                 command, child_env = cli.command(["--model", "qwen27b"])
-        self.assertIn(str(model), command)
+        selected = Path(command[command.index("--model-path") + 1])
+        self.assertEqual(selected, model.resolve())
         self.assertIn("--bf16-ends", command)
         self.assertEqual(child_env["MLX_QMM_BK"], "32")
 
