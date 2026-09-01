@@ -169,6 +169,6 @@ Flash-Next session validation errors use English. Their schema and payload forma
 
 ## Current next work
 
-- Replace model-specific launcher assumptions with documented configuration.
-- Add a supported installation flow for both environments.
-- Keep Flash-Next as the primary optimization target. Expert reads set its decode rate. See [Flash-Next research](../flashnext/research.md).
+Current setup work is tracked in [#11](https://github.com/1architect/macqwen-releases/issues/11).
+
+Flash-Next remains the primary optimization target. Expert reads set its decode rate. See [Flash-Next research](../flashnext/research.md).

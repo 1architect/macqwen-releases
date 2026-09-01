@@ -77,6 +77,11 @@ The research file contains the measurements. Do not retry these without a new me
 
 ## Next work
 
-- Install or rebuild one compatible V4 checkpoint for live regression tests.
-- Compare a pure allocator build with a bit-floor build at equal size.
-- Revisit sensitivity calibration only with a controlled quality benchmark.
+Current work is tracked in the public issue tracker:
+
+- [#12](https://github.com/1architect/macqwen-releases/issues/12) Install a compatible Qwen27B V4 checkpoint for live regression.
+- [#13](https://github.com/1architect/macqwen-releases/issues/13) Compare pure-knapsack and bit-floor builds at equal size.
+- [#14](https://github.com/1architect/macqwen-releases/issues/14) Calibrate bit allocation with output-loss sensitivity.
+- [#15](https://github.com/1architect/macqwen-releases/issues/15) Validate sparse paged-attention gather performance and quality.
+- [#16](https://github.com/1architect/macqwen-releases/issues/16) Run an interleaved fp16 versus Q4 decode benchmark.
+- [#17](https://github.com/1architect/macqwen-releases/issues/17) Extend the SketchUp code guard checks.

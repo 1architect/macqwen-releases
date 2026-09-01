@@ -335,46 +335,15 @@ work only exists here. Don't delete any of the three to free space.
 
 The checkpoint question is settled. oQ4 is the baseline and is installed. oQ3-MTP is gone from the reference machine.
 
-### Redo the gate now that the sampler exists
+Current work is tracked in the public issue tracker:
 
-- Run the SketchUp Ruby task on both routing profiles with sampling on, at
-`high`, and again at `medium`. Keep the sampler and the effort identical on both sides. The existing result used greedy decoding, which
-causes repetition on its own, so it says more about greedy than about routing.
-- Give reasoning its own budget for those runs. Both earlier runs had
-`think_budget` off, so the loops came out of the answer allowance.
-
-### Pending measurements
-
-- Measure the prefill recovery from `FLASHNEXT_SWAP_MAX_ROWS`. One cache-aware
-turn prefilled at 35.1 tok/s against 45.0 exact before the fix. Nothing has measured it since.
-- Run cache-aware on a long generation. Sixty-token arms can't see whether
-preferring resident experts shrinks the working set or settles routing onto a subset. The harness flagged r = -0.71 against elapsed time,
-but over a 1.2% range on four points, so it settled nothing.
-- Run cache-aware at a context near 5,000 tokens. Every harness arm uses about
-  50. One long turn gained 7.1% on `tail`.
-- Re-run `bench_draft_contention.py` warm. Both runs sat near 1013 MB/token
-against a 390 MB baseline, so the premise gate refused their absolute projection. The retention figure is fine; the absolute rate isn't.
-
-### Open defects
-
-- Track down the missing spaces at chunk joins in streamed replies.
-`o focodeixa` and `resgatarou` show up under both routing profiles, so it's probably the word animator rather than routing.
-
-### Quality gates
-
-- Widen the cache-aware quality gate. Four factual prompts is too narrow to
-promote a routing change that alters expert choices. Add long generations, reasoning, Portuguese, code, and factual prompts.
-- Keep `exact-quality` as the default until a wider gate says otherwise.
-
-### Open experiments
-
-- Try the weight-preserving swap. `swap_row` currently exchanges the expert
-index and its weight together, so the kept mass drops by up to epsilon per swapped slot and `scores / selected_mass` scales every kept
-expert up to refill it, about 1.4 swaps per layer across 48 layers. Swapping the index and leaving the weight alone keeps the router's mass
-for that slot and leaves renormalization untouched. Two lines in `adaptive_topk.swap_row`. It might keep the 16.2% byte reduction without
-the trajectory cost.
-- Consider lower-bit published checkpoints only with the code gate attached.
-oQ3-MTP was 21% faster and produced a broken SketchUp extension at both effort levels. Speed alone doesn't qualify a checkpoint.
+- [#4](https://github.com/1architect/macqwen-releases/issues/4) Re-run the cache-aware quality and trajectory gate with sampling.
+- [#5](https://github.com/1architect/macqwen-releases/issues/5) Measure cache-aware routing at long generation and 5K context.
+- [#6](https://github.com/1architect/macqwen-releases/issues/6) Measure prefill recovery after `FLASHNEXT_SWAP_MAX_ROWS`.
+- [#7](https://github.com/1architect/macqwen-releases/issues/7) Confirm draft contention with a warm page cache.
+- [#8](https://github.com/1architect/macqwen-releases/issues/8) Fix missing spaces at streamed chunk joins.
+- [#9](https://github.com/1architect/macqwen-releases/issues/9) Widen the cache-aware quality gate.
+- [#10](https://github.com/1architect/macqwen-releases/issues/10) Test a weight-preserving cache-aware swap.
 
 ### Standing decisions
 
