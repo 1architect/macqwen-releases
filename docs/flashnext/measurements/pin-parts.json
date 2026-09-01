@@ -1,0 +1,195 @@
+{
+  "comparison": "pin-parts",
+  "conditions": [
+    {
+      "condition": "whole-experts",
+      "arms_run": 8,
+      "arms_kept": 6,
+      "gen_median": 2.464,
+      "gen_min": 2.406,
+      "gen_max": 2.602,
+      "gen_sd": 0.078,
+      "tail_median": 2.442,
+      "mb_per_token_median": 417.2,
+      "free_mb_first": 126.0,
+      "thermal_drift": -0.57,
+      "arms": [
+        {
+          "elapsed_s": 45.284,
+          "gen_tokens": 75,
+          "gen_rate": 2.065,
+          "tail_rate": 2.14,
+          "mb_per_token": 436.405,
+          "pinned_gb": 4.519,
+          "free_mb_before": 85.547,
+          "wall": 42.147
+        },
+        {
+          "elapsed_s": 123.632,
+          "gen_tokens": 75,
+          "gen_rate": 2.287,
+          "tail_rate": 2.261,
+          "mb_per_token": 425.149,
+          "pinned_gb": 4.519,
+          "free_mb_before": 118.266,
+          "wall": 38.434
+        },
+        {
+          "elapsed_s": 193.954,
+          "gen_tokens": 75,
+          "gen_rate": 2.602,
+          "tail_rate": 2.551,
+          "mb_per_token": 400.241,
+          "pinned_gb": 4.519,
+          "free_mb_before": 125.891,
+          "wall": 34.24
+        },
+        {
+          "elapsed_s": 265.187,
+          "gen_tokens": 75,
+          "gen_rate": 2.43,
+          "tail_rate": 2.379,
+          "mb_per_token": 413.38,
+          "pinned_gb": 4.519,
+          "free_mb_before": 127.141,
+          "wall": 36.569
+        },
+        {
+          "elapsed_s": 339.544,
+          "gen_tokens": 75,
+          "gen_rate": 2.567,
+          "tail_rate": 2.531,
+          "mb_per_token": 421.006,
+          "pinned_gb": 4.519,
+          "free_mb_before": 114.406,
+          "wall": 34.977
+        },
+        {
+          "elapsed_s": 409.654,
+          "gen_tokens": 75,
+          "gen_rate": 2.457,
+          "tail_rate": 2.428,
+          "mb_per_token": 409.133,
+          "pinned_gb": 4.519,
+          "free_mb_before": 77.188,
+          "wall": 36.016
+        },
+        {
+          "elapsed_s": 481.385,
+          "gen_tokens": 75,
+          "gen_rate": 2.406,
+          "tail_rate": 2.404,
+          "mb_per_token": 476.464,
+          "pinned_gb": 4.519,
+          "free_mb_before": 79.141,
+          "wall": 37.138
+        },
+        {
+          "elapsed_s": 552.687,
+          "gen_tokens": 75,
+          "gen_rate": 2.471,
+          "tail_rate": 2.456,
+          "mb_per_token": 455.393,
+          "pinned_gb": 4.519,
+          "free_mb_before": 120.734,
+          "wall": 36.093
+        }
+      ]
+    },
+    {
+      "condition": "scales-only",
+      "arms_run": 8,
+      "arms_kept": 6,
+      "gen_median": 2.551,
+      "gen_min": 2.221,
+      "gen_max": 2.636,
+      "gen_sd": 0.15,
+      "tail_median": 2.489,
+      "mb_per_token_median": 403.9,
+      "free_mb_first": 115.0,
+      "thermal_drift": 0.05,
+      "arms": [
+        {
+          "elapsed_s": 85.174,
+          "gen_tokens": 75,
+          "gen_rate": 2.184,
+          "tail_rate": 2.126,
+          "mb_per_token": 413.582,
+          "pinned_gb": 1.0,
+          "free_mb_before": 125.375,
+          "wall": 39.86
+        },
+        {
+          "elapsed_s": 159.69,
+          "gen_tokens": 75,
+          "gen_rate": 2.473,
+          "tail_rate": 2.382,
+          "mb_per_token": 386.303,
+          "pinned_gb": 1.0,
+          "free_mb_before": 92.359,
+          "wall": 36.036
+        },
+        {
+          "elapsed_s": 228.589,
+          "gen_tokens": 75,
+          "gen_rate": 2.567,
+          "tail_rate": 2.494,
+          "mb_per_token": 396.295,
+          "pinned_gb": 1.0,
+          "free_mb_before": 114.969,
+          "wall": 34.598
+        },
+        {
+          "elapsed_s": 304.545,
+          "gen_tokens": 75,
+          "gen_rate": 2.221,
+          "tail_rate": 2.127,
+          "mb_per_token": 398.881,
+          "pinned_gb": 1.0,
+          "free_mb_before": 140.859,
+          "wall": 39.325
+        },
+        {
+          "elapsed_s": 373.61,
+          "gen_tokens": 75,
+          "gen_rate": 2.636,
+          "tail_rate": 2.582,
+          "mb_per_token": 394.503,
+          "pinned_gb": 1.0,
+          "free_mb_before": 129.938,
+          "wall": 34.033
+        },
+        {
+          "elapsed_s": 444.23,
+          "gen_tokens": 75,
+          "gen_rate": 2.57,
+          "tail_rate": 2.486,
+          "mb_per_token": 409.01,
+          "pinned_gb": 1.0,
+          "free_mb_before": 123.812,
+          "wall": 34.544
+        },
+        {
+          "elapsed_s": 516.57,
+          "gen_tokens": 75,
+          "gen_rate": 2.535,
+          "tail_rate": 2.491,
+          "mb_per_token": 439.022,
+          "pinned_gb": 1.0,
+          "free_mb_before": 107.562,
+          "wall": 35.138
+        },
+        {
+          "elapsed_s": 589.137,
+          "gen_tokens": 75,
+          "gen_rate": 2.424,
+          "tail_rate": 2.403,
+          "mb_per_token": 444.335,
+          "pinned_gb": 1.0,
+          "free_mb_before": 121.797,
+          "wall": 36.42
+        }
+      ]
+    }
+  ]
+}

@@ -1,27 +1,12 @@
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-build/
-dist/
-*.egg-info/
-
-# Local configuration and secrets
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-
-# Model data and generated state
-*.safetensors
-*.gguf
-models/
+# logs and run output. `logs/` is scratch: nothing there backs a published
+# number. Evidence for a published claim goes in docs/flashnext/measurements/.
+*.log
+*.stdout
+logs/
+# saved sessions, spilled KV pages, context images
 sessions/
-*.partial
-
-# macOS and editors
+*.safetensors
+# python
+__pycache__/
+*.pyc
 .DS_Store
-.idea/
-.vscode/
