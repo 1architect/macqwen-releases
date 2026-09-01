@@ -2158,3 +2158,140 @@ default. This project defaults to `medium`, a step below.
 insufficient analysis, more failures, and repeated retries". That matches `medium` shipping without the `Face#valid?` guard.
 - Reasoning and final output are meant to have separate allowances, 262,144 and
 131,072 tokens. Running with `think_budget` off puts reasoning inside the answer allowance, which is the opposite of the intent.
+
+## Weight-preserving cache-aware swap rejected, 2026-09-01
+
+Issue #10 proposed swapping the expert index while keeping the selected
+expert's weight. This keeps selected route mass unchanged. It still changes
+the expert function, so exact token identity remained the acceptance check.
+
+The prototype used a separate environment switch. It did not change the
+current cache-aware implementation. Six paired production-harness arms used
+epsilon 0.02 and 60 tokens. The first two arms per condition were dropped:
+
+| Condition | Gen median | Tail | Physical MB/token |
+|---|---:|---:|---:|
+| current cache-aware | 2.211 | 2.213 | 386.5 |
+| weight-preserving | 2.142 | 2.103 | 379.2 |
+
+The weight-preserving median was 3.1 percent lower. The run resolved only
+differences above 11.1 percent, so the speed result is unresolved. It led in
+three of six pairs. Physical reads fell in five of six pairs and by 1.9
+percent at the median.
+
+The seven-prompt exactness gate compared exact routing with the
+weight-preserving variant. Three replies were identical. Four diverged at
+generated tokens 43, 23, 37, and 31. No checkable answer was lost, but the
+variant was not bit-perfect.
+
+Decision: reject this variant for `exact-quality`. Keeping a route weight does
+not preserve output when the expert index changes. The prototype was removed,
+and the current cache-aware implementation remains unchanged.
+
+## Open pathways from exact-quality to 3 tok/s, 2026-09-01
+
+The retained production baseline is 2.713 tok/s, or 369 ms/token. Reaching
+3 tok/s needs about 36 ms/token. The following paths remain open. Treat every
+number below as a projection until the production harness measures it.
+
+### Path 2: deschedule host work, not DMA
+
+Every rejected overlap experiment moved SSD DMA into GPU work. That invokes
+the measured unified-memory contention. Moving small host bookkeeping can be
+different because it does not start storage traffic.
+
+`cProfile` reports these current costs:
+
+| Function | Reported time/token |
+|---|---:|
+| `to_mx` | 31 ms |
+| `expert_cache.__call__` | 22 ms |
+| `_rows_pread` | 25 ms |
+
+These timings overlap through caller and callee stacks, so they are not an
+additive 78 ms budget. `to_mx` and `_rows_pread` also move bulk data. Only the
+bookkeeping part qualifies as low-bandwidth host work.
+
+The early-submit control added `mx.eval(scores, inds)`, `tolist()`, and host
+list work without DMA. It measured 498.5 ms/token against a 499.3 ms/token
+baseline. This is evidence that small host work can fit outside the critical
+path.
+
+First instrument each interval with three states: NVMe requests pending, GPU
+work pending, and host function active. Count only host intervals where both
+devices are idle. If that exclusive window holds 15 to 20 ms/token, move one
+dependency-safe bookkeeping block into an existing device wait. Do not move
+DMA. Token IDs must match. This path does not need a quality gate.
+
+### Path 4: measure `gather_qmm` in situ
+
+The bandwidth record prices GDN at 67 GB/s and a small Q4 matvec at 105 GB/s.
+It does not isolate the routed-expert gather inside the complete model. The
+model gathers about 1,152 MB of expert data per token. At 105 GB/s this costs
+about 11 ms. At 20 GB/s it costs about 58 ms.
+
+Use fixed resident expert sets and the real gate, up, and down projection
+shapes. Prebuild the exact arrays and routed indices. Time the three
+`gather_qmm` calls, activation, gather sorting, and scatter restoration with
+explicit evaluation boundaries. Verify every compared output with
+`mx.array_equal`.
+
+If the gather stays near 105 GB/s, close this GPU block. If it stays near
+20 GB/s, about 30 to 45 ms of real GPU work becomes a focused optimization
+target. This benchmark changes no model behavior and needs no quality gate.
+
+### Exact compile sweep
+
+`mx.compile` is bit-exact in the retained probes. It improved the PLE gate
+chain by 28%, the router chain by 2.6%, and `_normalize_qk` by 5.7%. The
+research estimate is 10 to 20 ms/token when applied to every suitable
+elementwise chain. That estimate has not been tested in the complete runtime.
+
+Add one experimental switch that compiles the router, QK normalization, PLE
+gate, and other suitable chains. Do not duplicate compilation already present
+inside upstream GDN. Exclude first-call compilation from steady-state timing,
+but report its interactive cost separately. Require `mx.array_equal` at each
+compiled boundary and identical greedy token IDs. Then use paired production
+arms. This path needs no quality gate.
+
+### Routed-expert Q4 group-size sweep
+
+The oQ4 base uses four-bit affine quantization with group size 32. Its 228
+protected modules are resident `shared_expert` and `linear_attn.out_proj`
+modules. The streamed routed experts use plain Q4/G32.
+
+One routed expert record is 3,072,000 bytes:
+
+| Part | Bytes | Share |
+|---|---:|---:|
+| four-bit weights | 2,457,600 | 80% |
+| BF16 scales and biases | 614,400 | 20% |
+
+Larger groups keep four-bit codes and reduce only metadata:
+
+| Group size | Bytes/expert | Projected physical MB/token | Saved |
+|---:|---:|---:|---:|
+| 32, current | 3,072,000 | 390 | 0% |
+| 64 | 2,764,800 | 351 | 10% |
+| 128 | 2,611,200 | 332 | 15% |
+
+The physical-byte projection assumes the current cache hit rate stays fixed.
+At about 185 ms of expert-read wait, G128 projects to 28 ms saved. That gives
+about 341 ms/token, or 2.93 tok/s, before any compile gain.
+
+This is lower risk than changing the base bit width. The routed weights stay
+at four bits. All protected dense modules remain unchanged. The checkpoint
+already uses group size 128 for some protected five-bit and eight-bit modules.
+However, requantization changes weight values. This path is not bit-perfect
+and must pass the complete quality gate.
+
+Run a distributed in-memory G64 and G128 error probe before a full build. If
+the local MoE error is acceptable, dequantize one Q4/G32 tensor at a time to
+BF16 and requantize it to Q4/G128. Keep the installed oQ4 checkpoint immutable.
+The projected output is about 101 GB, so the build needs external storage or
+a second machine. Use paired production arms, then run the quality gate at
+`medium` and `high` with sampling enabled.
+
+The most plausible stack is Q4/G128 plus the exact compile sweep. Their
+projected savings total 38 to 48 ms/token, enough to cross 3 tok/s if both
+effects survive the complete runtime.
