@@ -51,6 +51,13 @@ Flash-Next routing changes apply through `/config model`. This includes
 The terminal shows measured prefill progress. It streams complete words with separate answer and reasoning colors. Tool protocol stays
 hidden. Tool states and execution time remain visible.
 
+## FlashNext research boundary
+
+The next FlashNext performance work stays in the FlashNext runtime. It does
+not change shared chat behavior. The active fronts are the pre-load wired-limit
+test (#43), Metal barrier and fence instrumentation (#45), and expert working
+set tests (#24 and #25).
+
 Answer allowance and reasoning capacity use separate settings. Request statistics combine all generation segments.
 
 ## Local data

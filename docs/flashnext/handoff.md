@@ -89,11 +89,11 @@ What changed in the code recently:
   Metal trace, context decay, resident working set, wired limits, GPU capture,
   and RMSNorm compilation.
 
-Next work starts with "Redo the gate now that the sampler exists" under Next
-work. Cache-aware's gate result was measured under greedy decoding, which
-causes repetition on its own, so it says more about greedy than about routing.
-That comparison decides whether cache-aware can become the default and whether
-the 2.91 against 2.73 result holds with the recommended sampler.
+The cache-aware quality comparison remains open under Next work. Its gate result
+was measured under greedy decoding, which causes repetition on its own, so it
+says more about greedy than about routing. That comparison decides whether
+cache-aware can become the default and whether the 2.91 against 2.73 result
+holds with the recommended sampler.
 
 ## Environment
 
@@ -106,6 +106,19 @@ Checkpoint   one complete compatible Flash-Next directory
 
 Override the interpreter with `MACQWEN_FLASHNEXT_PYTHON`. Select the checkpoint with `--checkpoint`, `--model-path`, or
 `MACQWEN_FLASHNEXT_MODEL`. The launcher saves an explicit selection. Set `MACQWEN_MODEL_ROOT` to change the automatic search directory.
+
+## Revised performance direction
+
+The next performance work has three fronts:
+
+1. Finish the pre-load `wired_limit` comparison in [#43](https://github.com/1architect/macqwen-releases/issues/43). The standalone 2 GB sweep was 13.5% faster by median. The live post-load harness was -0.4% inside a 7.6% band. The standalone result is unresolved.
+2. Isolate Metal barrier and fence cost under mixed residency in [#45](https://github.com/1architect/macqwen-releases/issues/45). Use custom MLX or Metal instrumentation. Keep bytes, dispatches, shapes, command-buffer count, and token IDs fixed.
+3. Test physical working-set changes through [#24](https://github.com/1architect/macqwen-releases/issues/24) and [#25](https://github.com/1architect/macqwen-releases/issues/25). Measure physical MB/token and GPU span before rate.
+
+The clean-boot baseline is 2.83 tok/s. The practical target is about 20 ms per
+token, from about 353 to 333 ms. If the first two fronts do not expose that
+scale of path, stop high-level optimisation work and continue with the
+structural working-set tests.
 
 ## Download
 
@@ -423,6 +436,10 @@ Open exact-quality performance experiments:
 - [#23](https://github.com/1architect/macqwen-releases/issues/23) Recheck the bit-exact RMSNorm compile with the zero-drive gate and production arms.
 - [#24](https://github.com/1architect/macqwen-releases/issues/24) Probe routed-expert Q4 group sizes 64 and 128.
 - [#25](https://github.com/1architect/macqwen-releases/issues/25) Gate and benchmark REAP-288. Use REAP-384 as the fallback.
+
+Open unexplained-cost experiment:
+
+- [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under mixed residency.
 
 Closed exact-quality performance issues:
 
