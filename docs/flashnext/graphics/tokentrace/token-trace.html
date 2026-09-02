@@ -1,0 +1,1242 @@
+<title>Flash-Next Token Trace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+:root {
+  --ground: #F4F6F7;
+  --panel: #FFFFFF;
+  --panel-2: #EAEEF0;
+  --rule: #D2DADE;
+  --rule-soft: #E3E9EC;
+  --text: #131B20;
+  --text-dim: #55666E;
+  --text-faint: #84969D;
+
+  --gpu: #C97C16;
+  --gpu-fill: #F0D2A4;
+  --gpu-edge: #B06B0E;
+  --ssd: #1B8A9A;
+  --ssd-fill: #B6E0E5;
+  --ssd-edge: #14707E;
+  --host: #7B52B8;
+  --host-fill: #DCCCF2;
+  --host-edge: #6A43A3;
+  --dead: #67787F;
+  --dead-fill: #DCE3E6;
+
+  --warn: #B3401F;
+  --warn-soft: #F6DED6;
+  --ok: #1F7A4C;
+
+  --shadow: 0 1px 2px rgba(19,27,32,.10), 0 6px 18px rgba(19,27,32,.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0F1519;
+    --panel: #161E23;
+    --panel-2: #1D262C;
+    --rule: #2C383F;
+    --rule-soft: #222C32;
+    --text: #E4EBEE;
+    --text-dim: #9BAEB6;
+    --text-faint: #6B7E86;
+
+    --gpu: #E0952F;
+    --gpu-fill: #4A3413;
+    --gpu-edge: #E0952F;
+    --ssd: #37A8B8;
+    --ssd-fill: #123A40;
+    --ssd-edge: #37A8B8;
+    --host: #9C79CE;
+    --host-fill: #2E2340;
+    --host-edge: #9C79CE;
+    --dead: #67787F;
+    --dead-fill: #1E272C;
+
+    --warn: #E97551;
+    --warn-soft: #3A1D13;
+    --ok: #4FBF87;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.28);
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground: #0F1519;
+  --panel: #161E23;
+  --panel-2: #1D262C;
+  --rule: #2C383F;
+  --rule-soft: #222C32;
+  --text: #E4EBEE;
+  --text-dim: #9BAEB6;
+  --text-faint: #6B7E86;
+
+  --gpu: #E0952F;
+  --gpu-fill: #4A3413;
+  --gpu-edge: #E0952F;
+  --ssd: #37A8B8;
+  --ssd-fill: #123A40;
+  --ssd-edge: #37A8B8;
+  --host: #9C79CE;
+  --host-fill: #2E2340;
+  --host-edge: #9C79CE;
+  --dead: #67787F;
+  --dead-fill: #1E272C;
+
+  --warn: #E97551;
+  --warn-soft: #3A1D13;
+  --ok: #4FBF87;
+
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.28);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 40px 28px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* ---- masthead ---- */
+
+.mast { display: flex; flex-direction: column; gap: 10px; }
+
+.eyebrow {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(28px, 4vw, 42px);
+  font-weight: 700;
+  letter-spacing: -.022em;
+  text-wrap: balance;
+}
+
+.sub {
+  margin: 0;
+  max-width: 66ch;
+  color: var(--text-dim);
+}
+
+/* ---- duty strip ---- */
+
+.duty {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.duty-cell {
+  background: var(--panel);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.duty-label {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.duty-value {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 24px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.02em;
+}
+
+.duty-note { font-size: 12px; color: var(--text-dim); }
+
+.bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--rule-soft);
+  overflow: hidden;
+  margin-top: 4px;
+}
+.bar span { display: block; height: 100%; }
+
+/* ---- controls ---- */
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+button {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  padding: 7px 13px;
+  cursor: pointer;
+}
+button:hover { background: var(--panel-2); }
+button:focus-visible { outline: 2px solid var(--ssd); outline-offset: 2px; }
+button.primary { border-color: var(--ssd-edge); color: var(--ssd); }
+
+.zoom { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.zoom label {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+input[type=range] { accent-color: var(--ssd); width: 140px; }
+
+/* ---- trace ---- */
+
+.trace-shell {
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.trace-scroll { overflow-x: auto; overflow-y: hidden; }
+
+.trace {
+  position: relative;
+  min-width: 100%;
+  /* A drag that starts a fraction outside a block would otherwise select the
+     page text underneath it. */
+  user-select: none;
+}
+
+.axis {
+  position: relative;
+  height: 30px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--panel-2);
+}
+.tick {
+  position: absolute;
+  top: 0; bottom: 0;
+  border-left: 1px solid var(--rule);
+}
+.tick i {
+  position: absolute;
+  top: 8px; left: 5px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.lane {
+  position: relative;
+  height: 64px;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.lane:last-child { border-bottom: 0; }
+.lane.drop { background: var(--panel-2); }
+
+.lane-tag {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  float: left;
+  height: 100%;
+  width: 84px;
+  display: flex;
+  align-items: center;
+  padding-left: 14px;
+  background: var(--panel);
+  border-right: 1px solid var(--rule);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.lane-tag.gpu { color: var(--gpu); }
+.lane-tag.ssd { color: var(--ssd); }
+.lane-tag.host { color: var(--host); }
+.lane-tag.dead { color: var(--dead); }
+
+.gridline {
+  position: absolute;
+  top: 0; bottom: 0;
+  border-left: 1px solid var(--rule-soft);
+  pointer-events: none;
+}
+
+.blk {
+  position: absolute;
+  top: 12px;
+  height: 40px;
+  border-radius: 5px;
+  border: 1px solid;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  padding: 0 7px;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+/* A block too narrow to carry a label must also drop its padding. With
+   border-box, 7px of padding each side clamps the painted box to 16px no
+   matter how small the width is, which put two 5px blocks 10px into each
+   other even after the spacing pass. */
+.blk.narrow { padding: 0; }
+
+.blk:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.blk.dragging { cursor: grabbing; z-index: 20; box-shadow: var(--shadow); }
+.blk.sel { box-shadow: 0 0 0 2px var(--text); }
+
+.blk-name {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.blk.gpu  { background: var(--gpu-fill);  border-color: var(--gpu-edge);  color: var(--gpu); }
+.blk.ssd  { background: var(--ssd-fill);  border-color: var(--ssd-edge);  color: var(--ssd); }
+.blk.host { background: var(--host-fill); border-color: var(--host-edge); color: var(--host); }
+.blk.dead {
+  background: var(--dead-fill);
+  border-color: var(--dead);
+  color: var(--dead);
+  border-style: dashed;
+  cursor: default;
+}
+
+.blk.floored::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    135deg, transparent 0 3px, currentColor 3px 4px
+  );
+  opacity: .34;
+  pointer-events: none;
+}
+
+/* Drawn to the right of its true time so it does not sit under its
+   neighbour. The inspector always carries the real start. */
+.blk.shifted { border-style: dotted; }
+
+.blk.violation {
+  border-color: var(--warn);
+  border-width: 2px;
+}
+.blk.free {
+  border-style: dashed;
+  border-width: 2px;
+}
+
+.overlap-flag {
+  position: absolute;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--warn);
+  opacity: .5;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* ---- lower grid ---- */
+
+.lower {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
+}
+@media (max-width: 860px) { .lower { grid-template-columns: 1fr; } }
+
+.card {
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card h2 {
+  margin: 0;
+  font-size: 12px;
+  font-family: "IBM Plex Mono", monospace;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.insp-name {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+.insp-figs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--rule-soft);
+  border: 1px solid var(--rule-soft);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.insp-fig {
+  background: var(--panel);
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.insp-fig b {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.insp-fig span {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9.5px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.insp-body { margin: 0; color: var(--text-dim); font-size: 14px; }
+.insp-body code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12.5px;
+  background: var(--panel-2);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--text);
+}
+
+.bd-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+  gap: 1px;
+  background: var(--rule-soft);
+}
+.bd-bar i { display: block; height: 100%; }
+
+.bd {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 2px 10px;
+  align-items: baseline;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11.5px;
+}
+.bd .nm { color: var(--text); white-space: nowrap; overflow: hidden;
+          text-overflow: ellipsis; }
+.bd .ms { font-variant-numeric: tabular-nums; color: var(--text); }
+.bd .pc { font-variant-numeric: tabular-nums; color: var(--text-faint); }
+.bd .note {
+  grid-column: 1 / -1;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  margin: -1px 0 5px;
+}
+.bd .k { opacity: .55; font-size: 10px; letter-spacing: .06em; }
+
+.needs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+.chip {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 2px 7px;
+  color: var(--text-dim);
+}
+.chip.free { border-color: var(--ok); color: var(--ok); }
+
+.status {
+  border-radius: 8px;
+  padding: 11px 13px;
+  font-size: 13.5px;
+  border: 1px solid var(--rule);
+  background: var(--panel-2);
+  color: var(--text-dim);
+}
+.status.bad { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+
+ul.notes { margin: 0; padding-left: 18px; color: var(--text-dim); font-size: 13.5px; }
+ul.notes li { margin-bottom: 7px; }
+ul.notes li:last-child { margin-bottom: 0; }
+ul.notes code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.legend { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+.key { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-dim); }
+.swatch { width: 13px; height: 13px; border-radius: 3px; border: 1px solid; }
+.swatch.gpu  { background: var(--gpu-fill);  border-color: var(--gpu-edge); }
+.swatch.ssd  { background: var(--ssd-fill);  border-color: var(--ssd-edge); }
+.swatch.host { background: var(--host-fill); border-color: var(--host-edge); }
+.swatch.dead { background: var(--dead-fill); border-color: var(--dead); border-style: dashed; }
+.swatch.free { background: transparent; border-color: var(--ok); border-style: dashed; border-width: 2px; }
+
+footer {
+  border-top: 1px solid var(--rule);
+  padding-top: 18px;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+footer code { font-family: "IBM Plex Mono", monospace; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .blk { transition: box-shadow .12s ease; }
+}
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="eyebrow">oQ4 &middot; exact-quality &middot; one decode token</div>
+    <h1>Flash-Next Token Trace</h1>
+    <p class="sub">
+      Every measured activity in one decode token, on its own resource lane.
+      Drag any block sideways to change when it starts, or up and down to move
+      it to another device. The trace recomputes the token length and flags
+      dependencies you have broken.
+    </p>
+  </header>
+
+  <section class="duty" id="duty"></section>
+
+  <div class="controls">
+    <button class="primary" id="btn-measured">Measured order</button>
+    <button id="btn-pack">Pack by dependency</button>
+    <button id="btn-ideal">Ignore dependencies</button>
+    <div class="zoom">
+      <label for="zoom">Scale</label>
+      <input type="range" id="zoom" min="1.4" max="14" step="0.2" value="2.6">
+      <span class="duty-label" id="zoom-read"></span>
+    </div>
+  </div>
+
+  <section class="trace-shell">
+    <div class="trace-scroll">
+      <div class="trace" id="trace"></div>
+    </div>
+  </section>
+
+  <div class="legend">
+    <div class="key"><span class="swatch gpu"></span>GPU running</div>
+    <div class="key"><span class="swatch ssd"></span>Drive reading</div>
+    <div class="key"><span class="swatch host"></span>Host, both devices idle</div>
+    <div class="key"><span class="swatch dead"></span>Unaccounted</div>
+    <div class="key"><span class="swatch free"></span>No upstream dependency</div>
+    <div class="key"><span style="font-family:'IBM Plex Mono',monospace">&#9640;</span>Hatched: drawn at minimum width, true length in the inspector</div>
+    <div class="key"><span class="swatch" style="border-style:dotted;border-color:var(--text-faint);background:transparent"></span>Dotted: nudged right to clear the block before it, true start in the inspector</div>
+  </div>
+
+  <div class="lower">
+    <section class="card" id="inspector"></section>
+
+    <section class="card">
+      <h2>What the trace can and cannot tell you</h2>
+      <div class="status" id="verdict"></div>
+      <ul class="notes">
+        <li>
+          Two blocks side by side on one lane is a real serial cost. Two blocks
+          overlapping across lanes is <em>not</em> free on this machine. Concurrent
+          SSD traffic and GPU work contend for one memory controller, measured
+          three ways: early submit <code>-8.2%</code>, warm prefetch
+          <code>-15.4%</code>, shared read buffer neutral with the saving taken
+          back by the GPU drain.
+        </li>
+        <li>
+          Only two blocks have no upstream dependency. <code>ngram_wait</code>
+          needs the input IDs, known at token start. <code>shared_expert</code>
+          needs the layer input, not the routed experts. Everything else is a
+          true chain: the route needs the GPU, the bytes need the route, the MoE
+          needs the bytes, the next layer needs the MoE.
+        </li>
+        <li>
+          Both free blocks were already tried. Issuing the n-gram reads early
+          gained <code>1.5%</code>, inside noise. Overlapping the shared expert
+          measured <code>2.59</code> against <code>2.68 tok/s</code>.
+        </li>
+        <li>
+          Blocks are per-token totals across all 48 layers. The inspector gives
+          the per-layer figure and the call count.
+        </li>
+        <li>
+          <code>score_sync</code> and <code>router_sync</code> are not stages.
+          Each is the main thread blocked at an <code>mx.eval</code>, so it
+          holds whatever GPU work was still outstanding at that moment, and it
+          shrinks when the host does more work in front of it. Subtracting
+          measured components from either one prices scheduling, not a missing
+          stage. Five candidates for the difference were measured and none of
+          them is it: the layer glue is <code>1.56 ms</code>, distinct layers
+          cost <code>0.93x</code> a repeated one, page faults during the drain
+          are <code>0.00 MB</code>, the mask and renormalisation together are
+          <code>1.36 ms</code>, and the write pattern is
+          <code>-0.3%</code>.
+        </li>
+        <li>
+          That last one settles an open question in the research log, which
+          blamed the shared read buffer's absorbed saving on 16 workers
+          scattering writes where the concatenate copied sequentially, and
+          said the GPU might read memory in a different coherency state.
+          Measured on the same bytes and the same kernel:
+          <code>99.8 GB/s</code> concatenated against
+          <code>100.1 GB/s</code> scattered, byte-identical. The write
+          pattern does not matter and that explanation can be withdrawn.
+        </li>
+        <li>
+          Splitting every eval into <code>async_eval</code> then
+          <code>eval</code> separates CPU-side scheduling from waiting.
+          Scheduling is <code>14 ms</code> per token across 98 calls, about
+          <code>143 us</code> each. The remaining <code>151 to 156 ms</code>
+          is the main thread waiting after Metal already holds the work,
+          while the GPU counter reports <code>26 ms</code> of shader time.
+        </li>
+        <li>
+          The idle window will accept real work, within limits that were
+          measured rather than assumed. <code>12,288</code> extra graph
+          nodes per token are free. Arithmetic is free to about
+          <code>5.4 GFLOP</code> per token: a 384x384 matmul in every layer
+          cost <code>+0.1 ms</code> across three alternating passes. Memory
+          is not free. A <code>640 MB</code> resident bank cost
+          <code>+71 MB</code> per token of extra expert reads and
+          <code>+39 ms</code>, because every byte it holds is a byte the
+          page cache cannot use.
+        </li>
+      <li>
+          <b>Corrected.</b> Earlier versions of this page put the GPU at about
+          <code>9%</code> busy and called the remainder not work. That came
+          from the IOKit <code>Device Utilization %</code> counter, which a
+          Metal System Trace shows undercounts by <code>3.2x</code>. Measured
+          by Instruments over 16,554 intervals, the GPU is busy
+          <code>12,278 ms</code> of a <code>44,306 ms</code> span, which is
+          <code>27.7%</code>, or about <code>149 ms</code> per token. Two
+          independent estimates predicted that factor before the trace existed:
+          an injected-matmul sweep fitted <code>2.9x</code>, and a saturating
+          matmul calibration read <code>32%</code> where it should approach 100.
+        </li>
+        <li>
+          A token is now fully accounted: roughly <code>257 ms</code> of drive,
+          <code>149 ms</code> of real GPU compute, <code>14 ms</code> of
+          CPU-side scheduling, <code>4 ms</code> of host bookkeeping, and the
+          rest CPU to GPU submission latency. Nothing in it is unexplained, and
+          nothing in it is obviously removable.
+        </li>
+      </ul>
+    </section>
+  </div>
+
+  <footer>
+    <div>
+      Source: <code>bench_host_window.py --tokens 24 --passes 2</code> with
+      <code>FLASHNEXT_HOST_WINDOW=1 FLASHNEXT_PROFILE_IO=1</code>, second pass.
+      Token IDs identical across passes.
+    </div>
+    <div>
+      Machine cold: 125 MB free, 389.9 MB physical read per token, 468.5 ms per
+      token, 2.13 tok/s against the 2.713 warm harness baseline. Shares shift
+      warm; the dependency structure does not.
+    </div>
+    <div>
+      Drive time cross-checked by two instruments: profile timer 228.46 ms
+      against read-counter window 228.35 ms.
+    </div>
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+const TOKEN_MS = 468.5;
+const TARGET_MS = 333.0;   // 3 tok/s
+const LAYERS = 48;
+
+// Every block is a measured quantity. `ms` is the per-token total; `each` is
+// the per-call figure; `calls` is how many times it runs in a token.
+const BLOCKS = [
+  {
+    id: "score_sync", lane: "gpu", ms: 142.91, calls: LAYERS,
+    label: "score_sync",
+    title: "Router and attention drain",
+    needs: [],
+    parts: [
+      { n: "GatedDeltaNet",        ms: 18.51, k: "m", note: "36 layers x 0.5143 ms" },
+      { n: "gather_qmm",           ms: 14.40, k: "m", note: "previous layer's MoE drains here; 92 GB/s" },
+      { n: "attn_hyper_connection",ms:  6.52, k: "m", note: "48 x 0.1359 ms" },
+      { n: "eval round trips",     ms:  5.40, k: "d", note: "48 of the token's 96, at 0.113 ms" },
+      { n: "QSA attention",        ms:  5.26, k: "m", note: "12 layers x 0.4387 ms" },
+      { n: "mlp_hyper_connection", ms:  4.27, k: "m", note: "48 x 0.0890 ms" },
+      { n: "PLE layer",            ms:  1.34, k: "m", note: "runs once per token" },
+      { n: "MoE output combine",   ms:  1.02, k: "m", note: "48 x 0.0213 ms, measured directly" },
+      { n: "router gate",          ms:  0.94, k: "m", note: "48 x 0.0196 ms" },
+      { n: "injection combine",    ms:  0.69, k: "m", note: "96 x 0.0071 ms, measured directly" },
+      { n: "GPU work and submission latency", ms: 84.56, k: "d", note: "This was labelled unexplained through nine failed hypotheses. A Metal System Trace settled it: the IOKit utilisation counter undercounts by 3.2x. Real GPU busy is 149 ms per token, 27.7 percent of it, against the 46.4 ms the counter reported. At 149 ms of compute inside 237.7 ms of eval block, the remainder is CPU to GPU submission latency, which the trace measures at about 1.6 ms across each of 16,554 intervals. Derived rather than measured, because the split between the two comes from the trace total and not from a reading on this block." }
+    ],
+    desc: "<code>mx.eval(scores)</code> in <code>_moe_call</code>. Blocks the main thread while MLX drains its one stream, so this is the GPU actually running: the previous layer's MoE gather, then this layer's attention, GatedDeltaNet, hyper-connections and the router. The largest single GPU item in a token. It does depend on the previous layer's <code>moe_issue</code>, but that edge wraps around 48 times and cannot be drawn in a collapsed one-token view, so it is not enforced here."
+  },
+  {
+    id: "router_sync", lane: "gpu", ms: 22.81, calls: LAYERS,
+    label: "router_sync",
+    title: "Top-k mask drain",
+    needs: ["topk_python"],
+    parts: [
+      { n: "GPU work and submission latency", ms: 13.31, k: "d", note: "the same mix as in score_sync, on a smaller bucket: real GPU compute plus the CPU to GPU latency the Metal trace measures at about 1.6 ms per interval" },
+      { n: "eval round trips",     ms:  5.40, k: "d", note: "48 of the token's 96, at 0.113 ms" },
+      { n: "shared expert graph",  ms:  2.74, k: "m", note: "48 x 0.0571 ms; issued before switch_mlp, so it drains here" },
+      { n: "renormalisation",      ms:  0.90, k: "m", note: "48 x 0.0187 ms, measured directly" },
+      { n: "mask from Python list",ms:  0.26, k: "m", note: "48 x 0.0054 ms. The pinned path hands MLX a list of bools every layer; it is not the cost it looks like." },
+      { n: "keep mask",            ms:  0.20, k: "m", note: "48 x 0.0043 ms: the slice, the arange compare and the two wheres" }
+    ],
+    desc: "<code>mx.eval(flat)</code> in <code>StreamingSwitchGLU.__call__</code>. Drains the mask and renormalisation graph the adaptive top-k built, so the routed expert indices exist on the device and can be copied to the host."
+  },
+  {
+    id: "final_eval", lane: "gpu", ms: 6.70, calls: 1,
+    label: "final_eval",
+    title: "Language head",
+    needs: ["moe_issue"],
+    desc: "The final <code>mx.eval(token)</code>. Runs the language head over the last hidden row plus whatever the layer loop left unevaluated. Once per token, not per layer."
+  },
+  {
+    id: "io_wait", lane: "ssd", ms: 228.46, calls: LAYERS,
+    label: "io_wait",
+    title: "Routed expert reads",
+    needs: ["plan_host"],
+    parts: [
+      { n: "device reads",   ms: 160.5, k: "d", note: "390 MB at 2.43 GB/s, the measured rate for this burst pattern" },
+      { n: "cached reads",   ms:  45.0, k: "d", note: "779 MB at 17.3 GB/s; two thirds of the gather never reaches the drive" },
+      { n: "queue drain",    ms:  23.0, k: "r", note: "48 bursts with a GPU window between them; continuous would be 2.87 GB/s" }
+    ],
+    desc: "Positioned <code>pread</code> of the routed expert rows: about 8 experts per layer, 9 byte ranges each (three weight rows at 819,200 B and six scale and bias rows at 102,400 B), 16 worker threads. Serves roughly 1,169 MB gathered of which 390 MB reaches the device; the rest is page cache. Half the token."
+  },
+  {
+    id: "ngram_wait", lane: "ssd", ms: 6.31, calls: 1, free: true,
+    label: "ngram_wait",
+    title: "PLE n-gram rows",
+    needs: [],
+    desc: "48 small reads into the 29.8 GiB hashed n-gram table, 100 bytes per row. Latency-bound, not bandwidth-bound. Depends only on the input IDs, which are known before layer 0 runs, so this is one of two blocks with no upstream dependency. Issuing it early was measured at +1.5%, inside noise."
+  },
+  {
+    id: "to_mx", lane: "host", ms: 35.87, calls: LAYERS,
+    label: "to_mx",
+    title: "Assemble the layer's weights",
+    needs: ["io_wait"],
+    desc: "Concatenates the per-expert reads into one array per projection and wraps it through DLPack. Bulk data movement, not bookkeeping, and by far the largest host block. Both known ways to remove it are already rejected: the shared read buffer had its 35 ms saving taken back by the GPU drain, and reading in chunks of 8 measured 8% worse from reduced NVMe queue depth."
+  },
+  {
+    id: "topk_python", lane: "host", ms: 3.38, calls: LAYERS,
+    label: "topk_python",
+    title: "Adaptive top-k decision",
+    needs: ["score_sync"],
+    desc: "Copies the scores to the host and walks them to find how many experts clear the 0.85 mass threshold, then builds the resident mask and the keep width. Pure Python over a few hundred floats. This is where the route stops being a GPU result and becomes a read list."
+  },
+  {
+    id: "shared_expert", lane: "host", ms: 1.96, calls: LAYERS, free: true,
+    label: "shared_expert",
+    title: "Shared expert graph",
+    needs: ["score_sync"],
+    desc: "Builds the shared expert and its sigmoid gate. Depends only on the layer input, never on the routed experts, so it is the second block with no dependency on the drive. Overlapping it with the expert reads was measured at 2.59 against 2.68 tok/s and rejected."
+  },
+  {
+    id: "moe_issue", lane: "host", ms: 0.72, calls: LAYERS,
+    label: "moe_issue",
+    title: "Build the MoE graph",
+    needs: ["to_mx"],
+    desc: "Issues the three <code>gather_qmm</code> calls, the SwiGLU activation and the output combine. Lazy graph construction only; no kernel runs until the next eval. The gather itself was measured separately at 92 GB/s, or 13 to 16 ms of GPU per token, and lives inside the next score_sync."
+  },
+  {
+    id: "plan_host", lane: "host", ms: 0.51, calls: LAYERS,
+    label: "plan_host",
+    title: "Build the read plan",
+    needs: ["route_tolist"],
+    desc: "Deduplicates the routed experts, orders them, and builds the local index array the gather will use. This is the last host step before any byte is requested from the drive."
+  },
+  {
+    id: "route_tolist", lane: "host", ms: 0.08, calls: LAYERS,
+    label: "route_tolist",
+    title: "Routed indices to host",
+    needs: ["router_sync"],
+    desc: "<code>flat.tolist()</code>. Copies about ten integers per layer from device to host. The smallest measured block in the token, and the exact point where a GPU result becomes a storage address."
+  },
+  {
+    id: "unaccounted", lane: "dead", ms: 18.79, calls: 0, fixed: true,
+    label: "unaccounted",
+    title: "Not attributed",
+    needs: [],
+    desc: "Token time minus every instrumented block: Python dispatch between layers, allocator work, and the parts of the decode loop no timer brackets. Kept visible so the arithmetic closes rather than hiding a residual inside another bar."
+  }
+];
+
+const LANES = [
+  { id: "gpu",  name: "GPU"  },
+  { id: "ssd",  name: "SSD"  },
+  { id: "host", name: "Host" },
+  { id: "dead", name: "Other"}
+];
+
+const LANE_TAG_W = 84;
+const MIN_PX = 5;
+
+let pxPerMs = 2.6;
+let selected = "io_wait";
+let state = {};   // id -> { lane, start }
+
+const traceEl   = document.getElementById("trace");
+const dutyEl    = document.getElementById("duty");
+const inspEl    = document.getElementById("inspector");
+const verdictEl = document.getElementById("verdict");
+const zoomEl    = document.getElementById("zoom");
+const zoomRead  = document.getElementById("zoom-read");
+
+const byId = Object.fromEntries(BLOCKS.map(b => [b.id, b]));
+
+/* ---------- layouts ---------- */
+
+// The order the runtime actually runs, laid end to end. Within a layer the
+// chain is fixed; per-token blocks are placed where they occur.
+function layoutMeasured() {
+  const perLayer = ["score_sync","topk_python","shared_expert","router_sync",
+                    "route_tolist","plan_host","io_wait","to_mx","moe_issue"];
+  const out = {};
+  let t = 0;
+  out.ngram_wait = { lane: "ssd", start: 0 };
+  t = byId.ngram_wait.ms;
+  for (const id of perLayer) {
+    out[id] = { lane: byId[id].lane, start: t };
+    t += byId[id].ms;
+  }
+  out.final_eval  = { lane: "gpu",  start: t };
+  t += byId.final_eval.ms;
+  out.unaccounted = { lane: "dead", start: t };
+  return out;
+}
+
+// Earliest start given the dependency graph, with one block at a time per
+// lane. This is the best a scheduler could do if overlap across lanes were
+// free, which on this machine it is not.
+function layoutPacked() {
+  const out = {};
+  const done = new Set();
+  const laneFree = { gpu: 0, ssd: 0, host: 0, dead: 0 };
+  const order = ["ngram_wait","score_sync","topk_python","shared_expert",
+                 "router_sync","route_tolist","plan_host","io_wait","to_mx",
+                 "moe_issue","final_eval","unaccounted"];
+  for (const id of order) {
+    const b = byId[id];
+    let earliest = 0;
+    for (const need of b.needs) {
+      if (done.has(need)) earliest = Math.max(earliest, out[need].start + byId[need].ms);
+    }
+    const start = Math.max(earliest, laneFree[b.lane]);
+    out[id] = { lane: b.lane, start };
+    laneFree[b.lane] = start + b.ms;
+    done.add(id);
+  }
+  return out;
+}
+
+// Every lane starts at zero. Physically impossible here; it shows the floor a
+// perfectly overlapped machine would hit, which is the longest single lane.
+function layoutIdeal() {
+  const out = {};
+  const laneFree = { gpu: 0, ssd: 0, host: 0, dead: 0 };
+  for (const b of BLOCKS) {
+    out[b.id] = { lane: b.lane, start: laneFree[b.lane] };
+    laneFree[b.lane] += b.ms;
+  }
+  return out;
+}
+
+/* ---------- measurement of the current arrangement ---------- */
+
+function makespan() {
+  let end = 0;
+  for (const b of BLOCKS) end = Math.max(end, state[b.id].start + b.ms);
+  return end;
+}
+
+function violations() {
+  const out = [];
+  for (const b of BLOCKS) {
+    for (const need of b.needs) {
+      const needEnd = state[need].start + byId[need].ms;
+      if (state[b.id].start + 1e-9 < needEnd) {
+        out.push({ id: b.id, need, by: needEnd - state[b.id].start });
+      }
+    }
+  }
+  return out;
+}
+
+function crossDeviceOverlap() {
+  const gpu = BLOCKS.filter(b => state[b.id].lane === "gpu");
+  const ssd = BLOCKS.filter(b => state[b.id].lane === "ssd");
+  let total = 0;
+  for (const g of gpu) {
+    const gs = state[g.id].start, ge = gs + g.ms;
+    for (const s of ssd) {
+      const ss = state[s.id].start, se = ss + s.ms;
+      total += Math.max(0, Math.min(ge, se) - Math.max(gs, ss));
+    }
+  }
+  return total;
+}
+
+function laneBusy(lane) {
+  return BLOCKS
+    .filter(b => state[b.id].lane === lane)
+    .reduce((a, b) => a + b.ms, 0);
+}
+
+/* ---------- render ---------- */
+
+function fmt(v, d = 1) { return v.toFixed(d); }
+
+function renderDuty() {
+  const span = makespan();
+  const cells = [
+    { label: "GPU running",   ms: laneBusy("gpu"),  color: "var(--gpu)",
+      note: "eval blocks, one MLX stream" },
+    { label: "Drive reading", ms: laneBusy("ssd"),  color: "var(--ssd)",
+      note: "expert rows plus n-gram" },
+    { label: "Host only",     ms: laneBusy("host"), color: "var(--host)",
+      note: "both devices idle" },
+    { label: "Unaccounted",   ms: laneBusy("dead"), color: "var(--dead)",
+      note: "residual, kept visible" }
+  ];
+  let html = "";
+  for (const c of cells) {
+    const pct = (c.ms / span) * 100;
+    html += `<div class="duty-cell">
+      <div class="duty-label">${c.label}</div>
+      <div class="duty-value" style="color:${c.color}">${fmt(c.ms)}<span style="font-size:13px;color:var(--text-faint)"> ms</span></div>
+      <div class="duty-note">${fmt(pct)}% of the token</div>
+      <div class="bar"><span style="width:${Math.min(100, pct)}%;background:${c.color}"></span></div>
+    </div>`;
+  }
+  const delta = span - TOKEN_MS;
+  const rate = 1000 / span;
+  html += `<div class="duty-cell">
+    <div class="duty-label">Token length</div>
+    <div class="duty-value">${fmt(span)}<span style="font-size:13px;color:var(--text-faint)"> ms</span></div>
+    <div class="duty-note">${fmt(rate, 2)} tok/s &middot; ${delta >= 0 ? "+" : ""}${fmt(delta)} ms vs measured</div>
+    <div class="bar"><span style="width:${Math.min(100, (TARGET_MS / span) * 100)}%;background:${rate >= 3 ? "var(--ok)" : "var(--text-faint)"}"></span></div>
+  </div>`;
+  dutyEl.innerHTML = html;
+}
+
+function renderTrace() {
+  const span = Math.max(makespan(), TOKEN_MS);
+  const width = LANE_TAG_W + span * pxPerMs + 40;
+  const viol = new Set(violations().map(v => v.id));
+
+  let html = `<div class="axis" style="width:${width}px">`;
+  const step = pxPerMs > 7 ? 20 : pxPerMs > 4 ? 50 : 100;
+  for (let t = 0; t <= span; t += step) {
+    html += `<div class="tick" style="left:${LANE_TAG_W + t * pxPerMs}px"><i>${t} ms</i></div>`;
+  }
+  html += `</div>`;
+
+  for (const lane of LANES) {
+    html += `<div class="lane" data-lane="${lane.id}" style="width:${width}px">`;
+    html += `<div class="lane-tag ${lane.id}">${lane.name}</div>`;
+    for (let t = 0; t <= span; t += step) {
+      html += `<div class="gridline" style="left:${LANE_TAG_W + t * pxPerMs}px"></div>`;
+    }
+    // A block thinner than MIN_PX is drawn at MIN_PX so it stays visible and
+    // grabbable. Two such blocks a fraction of a millisecond apart would then
+    // be painted on top of each other: plan_host at 0.51 ms and route_tolist
+    // at 0.08 ms are 0.2 px apart and both 5 px wide. Walk the lane in time
+    // order and push a block right only when its box would collide with the
+    // one before it. Nothing moves unless it has to, and anything that does
+    // is marked, because its drawn position is no longer its true one.
+    const inLane = BLOCKS
+      .filter(b => state[b.id].lane === lane.id)
+      .sort((a, b) => state[a.id].start - state[b.id].start);
+    let cursor = -Infinity;
+    for (const b of inLane) {
+      const s = state[b.id];
+      const trueW = b.ms * pxPerMs;
+      const w = Math.max(MIN_PX, trueW);
+      const trueLeft = LANE_TAG_W + s.start * pxPerMs;
+      const left = Math.max(trueLeft, cursor);
+      const shifted = left - trueLeft > 0.5;
+      const showLabel = w > 62;
+      cursor = left + w + 1;
+      const cls = [
+        "blk", lane.id,
+        showLabel ? "" : "narrow",
+        trueW < MIN_PX ? "floored" : "",
+        shifted ? "shifted" : "",
+        viol.has(b.id) ? "violation" : "",
+        b.free ? "free" : "",
+        selected === b.id ? "sel" : ""
+      ].filter(Boolean).join(" ");
+      html += `<div class="${cls}" data-id="${b.id}" tabindex="0" role="button"
+        aria-label="${b.label}, ${fmt(b.ms, 2)} milliseconds"
+        title="${b.label} &mdash; ${fmt(b.ms, 2)} ms at ${fmt(s.start)} ms"
+        style="left:${left}px;width:${w}px">
+        ${showLabel ? `<span class="blk-name">${b.label}</span>` : ""}
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  traceEl.innerHTML = html;
+  traceEl.style.width = width + "px";
+}
+
+// A bucket is not a stage. `score_sync`, `router_sync` and `io_wait` are each
+// the main thread blocked on something, and what is inside them was measured
+// separately. Every row says how it was obtained, because a derived row and a
+// remainder are not evidence in the way a measured one is.
+const KIND = { m: "measured", d: "derived", r: "unexplained" };
+
+function breakdown(b, lane) {
+  if (!b.parts) return "";
+  const total = b.parts.reduce((a, p) => a + p.ms, 0);
+  const bar = b.parts.map(p => {
+    const w = (p.ms / total) * 100;
+    const style = p.k === "m"
+      ? `background:var(--${lane})`
+      : p.k === "d"
+        ? `background:var(--${lane});opacity:.5`
+        : "background:var(--warn);opacity:.28";
+    return `<i style="width:${w}%;${style}" title="${p.n}"></i>`;
+  }).join("");
+  const rows = b.parts.map(p => `
+    <span class="nm">${p.n} <span class="k">${KIND[p.k]}</span></span>
+    <span class="ms">${p.ms.toFixed(2)}</span>
+    <span class="pc">${((p.ms / total) * 100).toFixed(0)}%</span>
+    <span class="note">${p.note}</span>`).join("");
+  return `
+    <h2 style="margin-top:4px">Inside this block</h2>
+    <div class="bd-bar">${bar}</div>
+    <div class="bd">${rows}</div>`;
+}
+
+function renderInspector() {
+  const b = byId[selected];
+  const s = state[selected];
+  const needs = b.needs.length
+    ? b.needs.map(n => `<span class="chip">after ${byId[n].label}</span>`).join("")
+    : `<span class="chip free">no upstream dependency</span>`;
+  const per = b.calls > 1
+    ? `${fmt(b.ms / b.calls, 3)} <span style="font-size:11px;color:var(--text-faint)">ms</span>`
+    : "&mdash;";
+  const calls = b.calls > 1 ? `${b.calls}&times;` : b.calls === 1 ? "1&times;" : "&mdash;";
+  inspEl.innerHTML = `
+    <h2>Block</h2>
+    <div class="insp-name" style="color:var(--${s.lane})">${b.label}</div>
+    <div style="font-size:15px;font-weight:600;margin-top:-6px">${b.title}</div>
+    <div class="insp-figs">
+      <div class="insp-fig"><b>${fmt(b.ms, 2)}</b><span>ms per token</span></div>
+      <div class="insp-fig"><b>${per}</b><span>per call</span></div>
+      <div class="insp-fig"><b>${calls}</b><span>calls</span></div>
+    </div>
+    <p class="insp-body">${b.desc}</p>
+    ${breakdown(b, s.lane)}
+    <div class="needs">${needs}</div>
+    <div class="insp-body" style="font-size:12.5px">
+      Starts at ${fmt(s.start)} ms on the ${s.lane.toUpperCase()} lane.
+    </div>`;
+}
+
+function renderVerdict() {
+  const v = violations();
+  const ov = crossDeviceOverlap();
+  const span = makespan();
+  if (v.length) {
+    const worst = v[0];
+    verdictEl.className = "status bad";
+    verdictEl.innerHTML =
+      `<b>${v.length} broken ${v.length === 1 ? "dependency" : "dependencies"}.</b>
+       ${byId[worst.id].label} starts ${fmt(worst.by)} ms before ${byId[worst.need].label}
+       has produced what it needs. This arrangement cannot run.`;
+    return;
+  }
+  verdictEl.className = "status";
+  if (ov > 0.5) {
+    verdictEl.innerHTML =
+      `Dependencies hold, and ${fmt(ov)} ms of drive traffic now runs beside GPU
+       work. On this machine that is the case measured to lose: the drive would
+       reach a better rate and the GPU would slow by more. The ${fmt(span)} ms
+       shown is a scheduling floor, not a predicted token time.`;
+  } else {
+    verdictEl.innerHTML =
+      `Dependencies hold and no drive traffic overlaps GPU work, which is the
+       arrangement this hardware rewards. Token length ${fmt(span)} ms,
+       ${fmt(1000 / span, 2)} tok/s.`;
+  }
+}
+
+function render() {
+  renderTrace();
+  renderDuty();
+  renderInspector();
+  renderVerdict();
+  zoomRead.textContent = pxPerMs.toFixed(1) + " px/ms";
+}
+
+/* ---------- interaction ---------- */
+
+let drag = null;
+
+traceEl.addEventListener("pointerdown", (e) => {
+  const el = e.target.closest(".blk");
+  if (!el) return;
+  const id = el.dataset.id;
+  selected = id;
+  if (byId[id].fixed) { render(); return; }
+
+  const rect = el.getBoundingClientRect();
+  drag = { id, grabX: e.clientX - rect.left, el };
+  el.classList.add("dragging");
+  // Mark the selection by hand. A full render here would rebuild the trace
+  // and replace this node, leaving the drag holding a detached element: the
+  // block would stop following the pointer and reappear in the wrong place.
+  for (const n of traceEl.querySelectorAll(".blk.sel")) n.classList.remove("sel");
+  el.classList.add("sel");
+  el.setPointerCapture(e.pointerId);
+  renderInspector();
+  renderVerdict();
+});
+
+traceEl.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const traceRect = traceEl.getBoundingClientRect();
+  const x = e.clientX - traceRect.left - drag.grabX - LANE_TAG_W;
+  state[drag.id].start = Math.max(0, x / pxPerMs);
+
+  const laneEl = document.elementFromPoint(e.clientX, e.clientY)?.closest(".lane");
+  if (laneEl && laneEl.dataset.lane !== "dead" &&
+      laneEl.dataset.lane !== state[drag.id].lane) {
+    state[drag.id].lane = laneEl.dataset.lane;
+    drag.el.classList.remove("gpu", "ssd", "host");
+    drag.el.classList.add(laneEl.dataset.lane);
+    laneEl.appendChild(drag.el);
+  }
+  // Move the element in place. A full re-render here would replace the node
+  // the pointer is captured on and the drag would stop on its first move.
+  drag.el.style.left = (LANE_TAG_W + state[drag.id].start * pxPerMs) + "px";
+  renderDuty();
+  renderInspector();
+  renderVerdict();
+});
+
+function endDrag() {
+  if (!drag) return;
+  drag = null;
+  render();
+}
+traceEl.addEventListener("pointerup", endDrag);
+traceEl.addEventListener("pointercancel", endDrag);
+// Re-parenting a node can drop its pointer capture. Without this the drag
+// would keep running against a pointer the block no longer receives.
+traceEl.addEventListener("lostpointercapture", endDrag);
+
+traceEl.addEventListener("keydown", (e) => {
+  const el = e.target.closest(".blk");
+  if (!el) return;
+  const id = el.dataset.id;
+  if (byId[id].fixed) return;
+  const step = e.shiftKey ? 10 : 1;
+  if (e.key === "ArrowLeft")  { state[id].start = Math.max(0, state[id].start - step); e.preventDefault(); }
+  if (e.key === "ArrowRight") { state[id].start += step; e.preventDefault(); }
+  if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    const order = ["gpu", "ssd", "host"];
+    const i = order.indexOf(state[id].lane);
+    if (i >= 0) {
+      const next = e.key === "ArrowUp" ? i - 1 : i + 1;
+      if (next >= 0 && next < order.length) state[id].lane = order[next];
+    }
+    e.preventDefault();
+  }
+  selected = id;
+  render();
+  requestAnimationFrame(() => {
+    const again = traceEl.querySelector(`.blk[data-id="${id}"]`);
+    if (again) again.focus();
+  });
+});
+
+traceEl.addEventListener("click", (e) => {
+  const el = e.target.closest(".blk");
+  if (!el) return;
+  selected = el.dataset.id;
+  render();
+});
+
+document.getElementById("btn-measured").addEventListener("click", () => {
+  state = layoutMeasured(); render();
+});
+document.getElementById("btn-pack").addEventListener("click", () => {
+  state = layoutPacked(); render();
+});
+document.getElementById("btn-ideal").addEventListener("click", () => {
+  state = layoutIdeal(); render();
+});
+zoomEl.addEventListener("input", () => {
+  pxPerMs = parseFloat(zoomEl.value);
+  render();
+});
+
+state = layoutMeasured();
+render();
+</script>
+
