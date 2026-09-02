@@ -65,6 +65,43 @@ def load_experts(store, prefix, rows):
     return packs
 
 
+def load_experts_scattered(store, prefix, rows, chunk):
+    """Build the same arrays the way the shared read buffer does.
+
+    One destination per part, filled by pool workers each writing a disjoint
+    contiguous run of `chunk` rows. The concatenate path above produces the
+    same bytes through one sequential copy on the main thread.
+
+    The research log flagged this difference as the unmeasured explanation for
+    why the shared buffer's 35 ms saving came back as GPU drain: the GPU may
+    read memory in a different coherency state. Same bytes, same kernel, only
+    the write pattern differs, so a throughput gap here is that effect and
+    nothing else.
+    """
+    from models.flashnext.expert_cache import _POOL
+
+    packs = {}
+    for projection in PROJECTIONS:
+        parts = []
+        for part in PARTS:
+            name = f"{prefix}.{projection}.{part}"
+            buffer = store.empty_rows(name, len(rows))
+            futures = [
+                _POOL.submit(
+                    store.rows_into, name,
+                    rows[start:start + chunk],
+                    buffer[start:start + chunk], "pread",
+                )
+                for start in range(0, len(rows), chunk)
+            ]
+            for future in futures:
+                future.result()
+            parts.append(store.to_mx(name, buffer))
+        packs[projection] = tuple(parts)
+    mx.eval([array for pack in packs.values() for array in pack])
+    return packs
+
+
 def expert_bytes(store, prefix, width):
     """Bytes one gather touches per projection, from the checkpoint header."""
     per = {}
@@ -185,6 +222,12 @@ def main() -> int:
     parser.add_argument("--group-size", type=int, default=32)
     parser.add_argument("--bits", type=int, default=4)
     parser.add_argument("--layers", type=int, default=48)
+    parser.add_argument("--write-pattern", choices=("concat", "scatter", "both"),
+                        default="both",
+                        help="how the weight arrays were written before the "
+                             "gather reads them")
+    parser.add_argument("--chunk", type=int, default=2,
+                        help="rows per worker in the scatter arm")
     args = parser.parse_args()
 
     model = args.model or str(resolve_flashnext())
@@ -323,6 +366,54 @@ def main() -> int:
         ok = False
     if not ok:
         return 1
+
+    # --- write pattern: does the GPU care how the weights were written? ----
+    if args.write_pattern == "both":
+        print(f"\nwrite pattern, {width} slots, same bytes, same kernel:")
+        arms = {}
+        for label, builder in (
+            ("concat, main thread", lambda: load_experts(store, prefix, rows)),
+            ("scatter, %d workers" % ((len(rows) + args.chunk - 1) // args.chunk),
+             lambda: load_experts_scattered(store, prefix, rows, args.chunk)),
+        ):
+            built = builder()
+            pack = {
+                n: tuple(part[:width] for part in pk) for n, pk in built.items()
+            }
+            mx.eval([a for pk in pack.values() for a in pk])
+            runs = []
+            for _ in range(args.arms):
+                runs.append(chained(
+                    lambda x, pk=pack: moe_block(
+                        x, pk, local, args.group_size, args.bits, False
+                    ),
+                    xs,
+                ))
+            per = statistics.median(runs) / args.reps
+            arms[label] = per
+            rate = block_bytes / (per / 1000.0) / 1e9
+            print(f"  {label:26s} {per:7.3f} ms  {rate:7.1f} GB/s  "
+                  f"{per * args.layers:7.1f} ms/token")
+            # the two paths must produce identical weights
+            first = pack["gate_proj"][0]
+            if label.startswith("concat"):
+                reference_weights = first
+            else:
+                mx.eval(first, reference_weights)
+                same = bool(mx.array_equal(first, reference_weights))
+                print(f"  {'bytes identical':26s} {same}")
+                if not same:
+                    print("  REFUSED: the two write paths produced different "
+                          "bytes, so this compares nothing")
+                    return 1
+        names = list(arms)
+        delta = (arms[names[1]] - arms[names[0]]) / arms[names[0]] * 100.0
+        gap = (arms[names[1]] - arms[names[0]]) * args.layers
+        print(f"  {'scatter vs concat':26s} {delta:+6.1f}%  "
+              f"{gap:+6.1f} ms/token")
+        print("  A gap here is the coherency effect the research log named and")
+        print("  never measured. No gap means the shared buffer is innocent and")
+        print("  score_sync's remainder is scheduling, not work.")
 
     print(f"\nreading:")
     print(f"  gather at {block_bytes/ (block/1000.0) / 1e9:.1f} GB/s puts the "

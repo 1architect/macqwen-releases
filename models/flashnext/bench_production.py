@@ -89,6 +89,14 @@ COMPARISONS = {
             "FLASHNEXT_SHARED_READ_BUFFER": "1", "FLASHNEXT_PREAD_CHUNK": "2",
         },
     },
+    # A token blocks on 98 evals for about 200 ms while the shaders are 9%
+    # busy. This builds the routed list on the host instead of fetching it
+    # with a second round trip, which halves the count to 50. Bit-exact:
+    # identical token_sha256 on a real chat turn.
+    "one-sync": {
+        "two-syncs": {"FLASHNEXT_ONE_SYNC": "0"},
+        "one-sync": {"FLASHNEXT_ONE_SYNC": "1"},
+    },
     # Compile the elementwise chains around the matmuls. Bit-exact, checked
     # with mx.array_equal before install. The probe's own per-call figures
     # sum to about 1 ms per token, so expect this inside the band.
@@ -246,6 +254,15 @@ LIVE_SETTINGS = {
         ),
         lambda backend: backend.store._pread_chunk,
         lambda value: int(value),
+    ),
+    "FLASHNEXT_ONE_SYNC": (
+        lambda backend, value: __import__(
+            "models.flashnext.adaptive_topk", fromlist=["set_one_sync"]
+        ).set_one_sync(value == "1"),
+        lambda backend: __import__(
+            "models.flashnext.adaptive_topk", fromlist=["one_sync"]
+        ).one_sync(),
+        lambda value: value == "1",
     ),
     "FLASHNEXT_COMPILE": (
         lambda backend, value: (

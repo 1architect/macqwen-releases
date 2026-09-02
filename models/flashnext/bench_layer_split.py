@@ -113,6 +113,11 @@ def find_components(language):
         counts["attn_hyper_connection"] = counts.get("attn_hyper_connection", 0) + 1
         found.setdefault("mlp_hyper_connection", layer.mlp_hyper_connection)
         counts["mlp_hyper_connection"] = counts.get("mlp_hyper_connection", 0) + 1
+        # The whole MoE block, so the layer glue can be found by subtraction.
+        # Its arm streams experts, but the same layer is called repeatedly, so
+        # after the first rep the rows are page-cache hot. Read its MB/call.
+        found.setdefault("moe_block", layer.mlp)
+        counts["moe_block"] = counts.get("moe_block", 0) + 1
         found.setdefault("router_gate", layer.mlp.gate)
         counts["router_gate"] = counts.get("router_gate", 0) + 1
         found.setdefault("shared_expert", layer.mlp.shared_expert)
@@ -317,6 +322,30 @@ def main() -> int:
               f"{counts[name]:6d} {per_token:9.2f} "
               f"{reads.get(name, 0)/1e6:8.2f}{mark}")
     print(f"  {'PARTS TOTAL':24s} {'':8} {'':8} {'':6} {total:9.2f}")
+
+    # A layer is: ple + attn_hyper + attention + injection glue + mlp_hyper +
+    # moe_block + injection glue. Everything but the glue is measured above,
+    # so the glue is the whole minus the named parts.
+    named = ("ple", "attn_hyper_connection", "mlp_hyper_connection",
+             "moe_block", "linear_attn", "self_attn")
+    per_linear = sum(
+        results[n] for n in ("attn_hyper_connection", "mlp_hyper_connection",
+                             "moe_block", "linear_attn") if n in results
+    )
+    per_attn = sum(
+        results[n] for n in ("attn_hyper_connection", "mlp_hyper_connection",
+                             "moe_block", "self_attn") if n in results
+    )
+    if "LAYER_linear" in results:
+        glue_l = results["LAYER_linear"] - per_linear
+        print(f"\n  glue per linear layer   {glue_l:8.4f} ms  "
+              f"({glue_l * counts['LAYER_linear']:6.2f} ms/token)")
+    if "LAYER_attn" in results:
+        glue_a = results["LAYER_attn"] - per_attn
+        print(f"  glue per attn layer     {glue_a:8.4f} ms  "
+              f"({glue_a * counts['LAYER_attn']:6.2f} ms/token)")
+    print("  glue is the two injection combines, the PLE residual add and the")
+    print("  MoE output combine, none of which has its own timer.")
     whole = sum(
         results[n] * counts[n] for n in results if n.startswith("LAYER_")
     )

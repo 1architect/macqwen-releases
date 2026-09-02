@@ -1279,7 +1279,7 @@ queue, and a realistic 3 ms gap takes 2.87 down to 2.43, about 15%. Larger burst
 | removing the burst gaps | 25 ms | requires overlap, which loses |
 
 Best case without overlap is **362 ms, or 2.76 tok/s**. The GPU's 152 ms and the bytes themselves are the rest. 3 tok/s on one stream still
-needs a smaller checkpoint. oQ3 projects to 2.68 at today's hit rate and 2.91 to 3.18 as the smaller working set improves it.
+needs lower expert-read cost. oQ3 projects to 2.68 at today's hit rate and 2.91 to 3.18 as the working set improves.
 
 
 ## Mapping pinned rows instead of copying them, 2026-08-31
@@ -1396,8 +1396,10 @@ day. The first arm was always slowest. A two-arm A/B cannot resolve the change o
 | longer warmup, 8 to 40 | no measured gain; two-arm means differ by -3.7% |
 | synthetic fixed-route all-resident reads | **5.33 tok/s ceiling** |
 
-The tested byte-layout changes did not move the pinned tail. A smaller checkpoint remains an open direction. Do not use 2.83 tok/s as its
-baseline. That number is the mean of two warmup-eight arms. A complete-chat projection must also include warmup and pinning time.
+The tested byte-layout changes did not move the pinned tail. Do not use the
+2.83 tok/s value as a complete-chat baseline. It is the mean of two
+warmup-eight arms. A complete-chat projection must also include warmup and
+pinning time.
 
 
 ## Residency tracking, measured 2026-08-31
@@ -2543,3 +2545,614 @@ This report does not measure standard oQ4, and it does not replace our local
 quality gate. It supports the existing decision to keep MTP disabled in the
 production backend. It also adds a long-agentic-run failure mode to the
 checkpoint review record.
+## Session continuation: eval cost and GPU accounting, 2026-09-02
+
+This section records the next research session. It updates the attribution
+work. It does not change the quality gate or the shipped read default.
+
+### GPU meter and main-thread wait
+
+\`gpustat.py\` reads IOKit \`Device Utilization %\` through \`ctypes\`. It needs no
+sudo and no child process. A sample takes 59 microseconds and the meter can
+sample at 17 kHz.
+
+Three real-decode runs produced these lower-bound GPU readings:
+
+| Run | Token time | GPU busy | Eval block time |
+|---|---:|---:|---:|
+| Loaded machine | 530.6 ms | 49.4 ms, 9.3% | 249.3 ms, 47.0% |
+| Clean boot | 449.4 ms | 30.9 ms, 6.9% | 197.0 ms, 43.8% |
+| Stack sampling | 481.1 ms | 38.3 ms, 8.0% | 212.0 ms, 44.1% |
+
+The meter samples every 4 ms while kernels run for 0.02 to 0.5 ms. Its
+counter reads 0 or 100 in two bands. A saturating matmul measured 32.4% when
+it should approach 100%, so the meter undercounts short bursts by about 3x.
+Treat its absolute GPU values as lower bounds.
+
+During steady decode, \`sample <pid> 30\` collected 826 main-thread samples:
+
+| Samples | Share | Frame |
+|---:|---:|---|
+| 299 | 36.2% | \`iokit_user_client_trap\` |
+| 277 | 33.5% | \`__psynch_cvwait\` |
+| 54 | 6.5% | \`iokit_user_client_trap\` |
+| 28 | 3.4% | \`iokit_user_client_trap\` |
+| 13 | 1.6% | \`pread\` |
+
+The recorded call chains are:
+
+\`\`\`text
+mlx::core::eval -> array::wait() -> Event::wait()
+  -> [IOSurfaceSharedEvent waitUntilSignaledValue:] -> iokit_user_client_trap
+lock_PyThread_acquire_lock -> acquire_timed -> PyThread_acquire_lock_timed
+  -> _pthread_cond_wait -> __psynch_cvwait
+\`\`\`
+
+About 46% of main-thread samples wait on a Metal completion event. About 35%
+wait on read-pool futures. Those waits account for the token schedule.
+
+### Eval cost
+
+\`bench_eval_cost.py\` timed every \`mx.eval\` call in a real decode:
+
+\`\`\`text
+token                       470.9 ms
+evals per token              98.0
+blocked in eval             236.7 ms   50.3% of the token
+mean per eval                 2.415 ms
+median per eval               1.278 ms
+GPU busy, IOKit               50.6 ms  10.7%
+\`\`\`
+
+| Eval duration | Evals/token | ms/token | Share |
+|---|---:|---:|---:|
+| 0 to 0.5 ms | 40.7 | 15.2 | 6.4% |
+| 0.5 to 1 ms | 8.2 | 5.8 | 2.5% |
+| 1 to 2 ms | 0.3 | 0.4 | 0.2% |
+| 2 to 5 ms | 43.3 | 179.1 | 75.7% |
+| 5 to 20 ms | 5.5 | 36.2 | 15.3% |
+
+The earlier estimate of 11 ms for 96 evals used an empty eval in isolation.
+In situ, eval blocks account for 236.7 ms per token.
+
+### One-sync comparison
+
+\`FLASHNEXT_ONE_SYNC\` makes \`_moe_call\` evaluate \`scores\` and \`inds\` in one
+round trip. It builds the routed expert list from host values and removes the
+unused device \`where\` over \`inds\`.
+
+The flag is bit-exact on a real chat turn. Both settings produced token digest
+\`429d4df086bbb87e\`.
+
+| Setting | Evals/token | Blocked in eval | Mean eval |
+|---|---:|---:|---:|
+| Two syncs | 98.0 | 198.6 ms | 2.027 ms |
+| One sync | 50.0 | 236.0 ms | 4.721 ms |
+
+The eight-arm production comparison gives one-sync a -11.4% generation median.
+It resolves above an 8.3% band, leads in 0 of 6 pairs, and has sign-test
+\`p = 1.000\`. The eval count halves, but graph work joins the remaining evals.
+Per-eval cost is not fixed overhead. The flag remains off by default.
+
+### Tests of the unattributed \`score_sync\` cost
+
+\`score_sync\` was 142.91 ms in the earlier split, with named components near
+58 ms. Six candidates do not account for the remainder:
+
+| Candidate | Instrument | Result |
+|---|---|---:|
+| Layer glue | \`bench_glue.py\` | 1.56 ms |
+| Cross-layer locality | \`bench_layer_locality.py\` | 0.93x |
+| Dense-weight faulting | \`score_sync_bytes\` | 0.00 MB |
+| Mask and renormalisation | \`bench_glue.py\` | 1.36 ms |
+| Write-pattern coherency | \`bench_gather_qmm.py\` | -0.3% |
+| Fixed eval round trip | \`FLASHNEXT_ONE_SYNC\` | -11.4%, refuted |
+
+The write-pattern test measured 99.8 GB/s for concatenated writes and
+100.1 GB/s for scattered writes. Outputs were byte-identical. The earlier
+write-pattern explanation for the shared-buffer result is withdrawn.
+
+Removing 33 ms of host copy with the shared buffer moved \`score_sync\` from
+142.91 to 187.37 ms. GPU work stayed unchanged and the drain had zero page
+faults. Subtracting separately timed components from \`score_sync\` measures
+scheduling, not a removable stage.
+
+### Layer component costs
+
+\`bench_layer_split.py\` rebuilt the dependency with \`x + sum(y) * 0\` and
+subtracted the link. Chained serial and independent runs produced:
+
+\`\`\`text
+component                  serial    indep  count  ms/token  MB/call
+LAYER_linear               5.9907   4.5697     36    215.66     0.09
+moe_block                  2.8431   3.1243     48    136.47     0.00
+LAYER_attn                 3.8672   4.2797     12     46.41     0.04
+linear_attn                0.5143   0.4839     36     18.51     0.00
+attn_hyper_connection      0.1359   0.1027     48      6.52     0.00
+self_attn                  0.4387   0.4051     12      5.26     0.00
+mlp_hyper_connection       0.0890   0.0850     48      4.27     0.00
+shared_expert              0.0571   0.0519     48      2.74     0.00
+ple                         1.3443   1.3259      1      1.34     0.01
+router_gate                 0.0196   0.0189     48      0.94     0.00
+PARTS TOTAL                                         176.07
+WHOLE LAYERS                                        262.07
+\`\`\`
+
+Whole layers cost 262 ms/token with expert pages hot. This cross-checks the
+earlier independent all-RAM ceiling of 235 ms/token from another tool.
+
+GDN measures 18.51 ms/token here. Earlier records gave 34 ms isolated and
+about 57 ms in situ. Those records used one eval per stage and need another
+controlled run before anyone changes the log.
+
+### Chat versus harness
+
+The chat is not slower because of the settings display change. Commit
+\`d3423f7\` only changes \`_settings_text()\`.
+
+With context reset for each turn, as in the harness, the chat produced:
+
+\`\`\`text
+gen 74 @ 2.5 t/s | tail 65 @ 2.5 | ctx 131
+gen 79 @ 2.6 t/s | tail 70 @ 2.6 | ctx 136
+gen 74 @ 2.5 t/s | tail 65 @ 2.5 | ctx 131
+gen 82 @ 2.5 t/s | tail 73 @ 2.5 | ctx 139
+\`\`\`
+
+| Condition | Tail rate |
+|---|---:|
+| Fresh context, thinking off, effort medium | 2.5 to 2.6 |
+| Context near 313 tokens | 1.9 to 2.0 |
+| Thinking on, effort xhigh | 1.4 to 1.5 |
+
+The investigation ruled out animation, greedy versus sampled decoding,
+\`stream_answers\`, missing pinning, and page-cache warmth alone. The harness
+uses a hand-built prompt with no system prompt and about 20 context tokens, so
+it does not measure the same workload.
+
+### Buffer-chunk2 caveat
+
+The shipped \`buffer-chunk2\` setting remains bit-exact and does not change
+prefill. Two results do not agree on its performance effect:
+
+- Clean-boot 12-arm comparison: +6.3% generation median above a 4.4% band.
+- Cold instrumented run: \`to_mx\` fell from 35.87 to 3.04 ms, while
+  \`score_sync\` rose from 142.91 to 187.37 ms. Token time stayed near 504 ms.
+
+The GPU absorbed the host-copy saving because the copy was already overlapped.
+The clean-boot gain is workload-dependent, not a general proof of lower token
+time.
+
+### Open items
+
+1. \`expert_cache.py\` calls \`self.cache.fetch(experts)\`, but \`ExpertLRU\` has no
+   such method. The path stays latent because \`_one_pass\` always passes
+   \`weights=\`.
+2. \`fetch_np\` and \`plan_missing\` are unreachable. Every caller passes
+   \`expert_capacity=0\`.
+3. The handoff validation command is unbounded. \`generation_limit\` equals
+   answer plus thinking capacity, so \`--max-tokens 32\` with a 4096-token
+   thinking budget requests 4,128 tokens and can run for about 24 minutes.
+   Use \`--think-budget=-1\` for the short check.
+4. The GDN record needs a controlled recheck.
+5. \`fast\` and \`fast-quality\` remain unmeasured with the shared buffer and stay
+   excluded from the default.
+6. Chunk 4 remains unsettled against chunk 2. The three-way sweep tied them,
+   with chunk 4 noisier.
+7. The IOKit meter undercounts short kernels by about 3x under the matmul
+   calibration.
+
+### Tools added in this session
+
+| File | Measurement |
+|---|---|
+| \`gpustat.py\` | GPU busy from IOKit through \`ctypes\`, 59 microseconds per sample |
+| \`bench_eval_cost.py\` | Eval count and block-time distribution per token |
+| \`bench_glue.py\` | Elementwise operations across both sync buckets |
+| \`bench_layer_locality.py\` | One layer repeated against 36 distinct layers |
+
+New \`bench_production.py\` comparisons are \`one-sync\`, \`buffer-chunk\`,
+\`buffer-chunk2\`, and \`compile\`.
+
+### Current position
+
+\`exact-quality\` measures 2.83 generation tokens per second on a clean boot
+with the shipped default. The drive is busy for about half a token. The other
+half is mainly the main thread blocked in \`mx.eval\`. Six tested explanations
+do not identify a stage that can be removed. Merging evals makes the result
+slower. REAP-288 still needs its quality gate.
+## Session continuation: Metal trace and overnight experiments, 2026-09-02
+
+Part 3 replaces the IOKit GPU estimate from the previous session. Metal System
+Trace measures GPU spans directly.
+
+### Metal System Trace result
+
+The trace covered the launched process and used the union of GPU spans, without
+double counting nested intervals:
+
+| Measure | Value |
+|---|---:|
+| GPU busy, union of spans | 12,278 ms |
+| Wall span covered | 44,306 ms |
+| GPU busy share | 27.7% |
+| CPU-to-GPU latency, 16,554 intervals | 26,564 ms |
+| Compute channel | 12,473 ms |
+| Fragment channel | 3.1 ms |
+| Vertex channel | 0.0 ms |
+
+The traced run took 539.4 ms per token:
+
+| Measure | ms/token | Share |
+|---|---:|---:|
+| GPU busy, Metal trace | 149 | 27.7% |
+| GPU busy, IOKit counter | 46.4 | 8.6% |
+| Eval block time | 237.7 | 44.1% |
+
+The IOKit counter undercounts by about 3.2x. The injected-matmul sweep
+predicted 2.9x, and the saturating-matmul calibration predicted about 3x.
+`gpustat.py` remains useful for relative comparisons, but its absolute values
+must not be quoted.
+
+The corrected token shape is:
+
+```text
+drive reading        about 257 ms
+GPU executing        about 149 ms, Metal compute channel
+CPU-to-GPU latency   most of the remaining eval block
+CPU scheduling       about 14 ms, async_eval split
+host bookkeeping     about 4 ms
+```
+
+The earlier 86 ms unexplained term was GPU work in that trace. The afternoon
+clean-boot comparison shows that GPU busy is not a fixed model cost: production
+decode measured 182.5 ms/token, while zero-drive decode measured 86.1 ms/token.
+The 149 ms trace value is a state reading between those runs, not a constant
+term. CPU-to-GPU latency overlaps eval work, so its accumulated value is not a
+serial cost.
+
+This also explains the one-sync result from the previous session. It reduced
+the number of round trips but kept the same submission latency and moved real
+GPU work into the merged eval. It was 11.4% slower and remains disabled.
+
+### Running a Metal System Trace
+
+Xcode-beta is installed, but `xcode-select` points to CommandLineTools.
+`DEVELOPER_DIR` selects Xcode-beta without sudo:
+
+```bash
+export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
+xcrun xctrace record --template "Metal System Trace" \
+  --output metal.trace --time-limit 75s \
+  --target-stdout run.log --env FLASHNEXT_PROFILE_IO=1 \
+  --launch -- ~/models/.venv-qwen4exp/bin/python \
+    models/flashnext/bench_eval_cost.py --tokens 60
+```
+
+`--attach <pid>` failed with `Cannot find process for provided pid`.
+`--launch` works. The trace was 256 MB for 46 seconds.
+
+Export the tables with:
+
+```bash
+xcrun xctrace export --input metal.trace --toc
+xcrun xctrace export --input metal.trace \
+  --xpath "/trace-toc/run[@number='1']/data/table[@schema='metal-gpu-intervals']"
+```
+
+Use `metal-gpu-intervals` for duration, CPU-to-GPU latency, channel, and nesting
+level. Use `metal-application-command-buffer-submissions` for command-buffer
+submission data.
+
+Three export details caused incorrect first-pass results:
+
+1. Rows are positional. Tags describe engineering types, not mnemonics. Each
+   row has two `duration` children. The first is duration; the second is
+   CPU-to-GPU latency.
+2. Repeated values use `ref=` to point to an earlier `id=`. An unresolved
+   reference becomes empty, which caused missing channels and zero latency.
+3. The trace covers every process and intervals nest. Raw duration sums across
+   processes are invalid. Filter to the launched process and take the union of
+   spans.
+
+### Overnight experiments
+
+The machine was quiet. The cache sweep established about +/-10% noise for
+single runs, so no single row below proves a change.
+
+#### MLX buffer cache
+
+| Limit | Token | Eval block | MLX cache |
+|---|---:|---:|---:|
+| Default | 398.4 ms | 184.7 ms | 45.7 MB |
+| 0 MB | 470.4 ms | 240.3 ms | 0.0 MB |
+| 512 MB | 392.8 ms | 178.2 ms | 45.7 MB |
+| 2048 MB | 429.6 ms | 207.0 ms | 45.7 MB |
+
+MLX settles at 45.7 MB, about two layers of expert arrays, regardless of the
+limit. Disabling the cache costs 18%. Raising the limit does nothing.
+
+#### Injected GPU work
+
+A cancelled matmul per layer, `y + sum(D @ D) * 0`, preserved token IDs:
+
+| Dummy size | GFLOP/token | Token | Eval block | GPU counter |
+|---|---:|---:|---:|---:|
+| None | 0 | 321.4 ms | 119.0 ms | 11.4 ms |
+| 256 squared | 1.6 | 332.9 ms | 126.4 ms | 12.4 ms |
+| 512 squared | 12.9 | 367.3 ms | 152.6 ms | 19.7 ms |
+| 1024 squared | 103.1 | 434.0 ms | 218.2 ms | 45.5 ms |
+
+The fitted relation is `eval block = 86 ms + 2.9 x counter`. The trace later
+measured a 3.2x counter error.
+
+#### Graph-node cost
+
+In isolation, a chained add costs 3.37 microseconds at 8 elements and
+5.93 microseconds at 25,600 elements. A one-node eval costs 145 to
+185 microseconds at every width.
+
+In the model, 12,288 added nodes per token cost nothing across three
+alternating passes. With zero added operations, token times were 380.3, 353.3,
+and 394.2 ms. With 256 added operations, they were 351.3, 386.8, and
+364.9 ms. The added chain overlaps the real layer kernels.
+
+A Python count of `mx.*` calls gives 3,027 per token, or 63 per layer. This is
+a floor because operators and C++ operations are not visible.
+
+#### Idle-window capacity
+
+Three alternating passes measured:
+
+| Added arithmetic | GFLOP/token | Median token | Change |
+|---|---:|---:|---:|
+| None | 0 | 335.8 ms | baseline |
+| 384 squared per layer | 5.4 | 335.9 ms | +0.1 ms |
+| 512 squared per layer | 12.9 | 343.5 ms | +7.7 ms |
+
+A resident bank swept once per token measured:
+
+| Bank | Read MB/token | Token |
+|---|---:|---:|
+| None | 312.4 | 355.5 ms |
+| 256 MB | 322.4 | 338.0 ms |
+| 640 MB | 383.7 | 394.9 ms |
+
+The 640 MB bank adds 71 MB of expert reads per token and 39 ms. It evicts
+page-cache data. It does not slow the GPU.
+
+The idle-window limits are:
+
+| Resource | Result |
+|---|---|
+| Dispatches | Free; 12,288 per token cost nothing |
+| Arithmetic | Free to about 5.4 GFLOP/token |
+| Resident weights to about 256 MB | Probably free; unresolved |
+| Resident weights at 640 MB | Not free |
+| Extra SSD reads | Never free in four prior results |
+
+The 0.8B draft used in the research log is 627 MB. It falls into the
+39 ms arm. The binding constraint is RAM, not GPU arithmetic.
+
+#### CPU scheduling
+
+Splitting each eval into `async_eval` and `eval` gave:
+
+| Component | ms/token | Share |
+|---|---:|---:|
+| `async_eval`, CPU side | 13.8 to 14.1 | 3.6% |
+| Following eval wait | 151.3 to 156.2 | 39.4% |
+
+Scheduling costs about 143 microseconds per call. This matches the isolated
+one-node eval cost.
+
+### Direction
+
+Prompt tokens cost 40 to 60 tokens per second. Generated tokens cost 2 to
+2.8 tokens per second. Prefill amortises expert reads, while decode does not.
+Generation is the expensive part.
+
+Settings have a larger effect than the runtime changes measured so far:
+
+| Setting | Tail rate |
+|---|---:|
+| Thinking off, effort medium | 2.5 to 2.6 |
+| Thinking on, effort medium | 1.6 |
+| Thinking on, effort xhigh | 1.4 |
+
+The 79% range exceeds the cache-aware gain of 6.5% and the buffer-chunk2 gain
+of 6.3%.
+
+A loop detector was proposed and withdrawn. The repetition must be addressed
+by the model, not hidden by a monitor. Current model-level controls are the
+`/effort high` stopping rule, Qwen's sampler with a presence penalty instead
+of greedy decoding, and checkpoint selection.
+
+### Open items from this session
+
+1. `gpustat.py` absolute values are wrong by about 3.2x. Use Metal trace values
+   for absolute GPU claims.
+2. GPU busy still varies between clean-boot conditions. The production and
+   zero-drive pair measured 182.5 and 86.1 ms/token. The cause is open.
+3. The 256 MB resident arm is inside measurement noise. Test that boundary if
+   work must use the idle window.
+4. `expert_cache.py` calls `self.cache.fetch(experts)`, but `ExpertLRU` has no
+   such method. The path stays latent because `_one_pass` always passes
+   `weights=`.
+5. `fetch_np` and `plan_missing` are unreachable. Every caller uses
+   `expert_capacity=0`.
+6. The handoff validation command is unbounded. With a 4,096-token thinking
+   budget, `--max-tokens 32` requests 4,128 tokens. Use
+   `--think-budget=-1` for the short check.
+7. The GDN record needs a controlled recheck. The latest result is
+   18.51 ms/token against earlier isolated 34 ms and in-situ 57 ms values.
+8. `fast` and `fast-quality` remain unmeasured with the shared buffer.
+9. Chunk 4 remains unsettled against chunk 2.
+10. REAP-288 still needs its quality gate and has an open `xhigh` reasoning-loop
+   report.
+11. The context-decay result is valid only for the unpinned harness. Its first
+    40 tokens can run at 2.9 to 3.2 tok/s before the working set widens.
+
+### Tools and comparisons
+
+This session added or extended:
+
+| File | Purpose |
+|---|---|
+| `gpustat.py` | Cheap relative GPU-busy signal from IOKit through `ctypes` |
+| `bench_eval_cost.py` | Eval count, block-time distribution, cache-limit, dummy-work, resident-bank, and async-split tests |
+| `bench_glue.py` | Elementwise operations across both sync buckets |
+| `bench_layer_locality.py` | One layer repeated against 36 distinct layers |
+
+New `bench_production.py` comparisons are `one-sync`, `buffer-chunk`,
+`buffer-chunk2`, and `compile`.
+
+### Current position
+
+`exact-quality` measures 2.83 generation tokens per second on a clean boot with
+the shipped default. The trace measured about 257 ms of drive reading and
+149 ms of GPU execution in one state. The afternoon interleaving measured
+182.5 ms on production decode and 86.1 ms with zero drive, so GPU busy is not a
+fixed model cost. Submission latency overlaps eval work and is not a serial
+explanation. REAP-288 still needs its quality gate.
+
+## Session continuation: clean-boot GPU variance and context decay, 2026-09-02
+
+This record resumes the afternoon session from the external handoff. The
+measurements use a clean boot and keep runtime defaults unchanged.
+
+### GPU busy is not a fixed model cost
+
+The run used three arms per condition, interleaved as
+`prod, ram, prod, ram, prod, ram`, with 30 tokens per arm. The decode window
+was isolated from load and prefill with `metal_trace.py --last-ms`.
+
+| Condition | ms/token | GPU busy/token | buffers/token | mean buffer | CPU to GPU latency |
+|---|---:|---:|---:|---:|---:|
+| production decode | 505.7, 488.3, 502.8 | 180.8, 185.1, **182.5** | 250 | 739 us | 1404 us |
+| zero drive, 32 resident | 246.3, 236.6, 225.5 | 87.1, **86.1**, 77.0 | 202 | 427 us | 904 us |
+
+Production GPU busy varies 2.4% across its three arms. The same 48-layer
+decode uses 86 ms of GPU when experts are resident and 182 ms when they
+stream. The earlier 149 ms reading sits between them and is a state reading.
+
+The 96 ms gap contains about 35 ms of extra command buffers. Production uses
+adaptive top-k, routing, and residency bookkeeping that the synthetic arm
+patches out. The identical remainder accounts for about 61 ms of stretch.
+
+Untraced arms bracket the traced arms. Production measured 478.8 ms before and
+388.0 ms after. Zero-drive measured 206.5 ms before and 203.5 ms after.
+Tracing costs about 5%, and production warms across the session, so 182.5 ms
+is an upper reading.
+
+Free memory stayed between 82 and 128 MB in every arm, including after reboot.
+Free RAM does not explain the difference.
+
+### Resident working-set size
+
+Both arms pin the same 32 experts per layer, 4.95 GB, with zero drive. One
+routes the same eight experts each token. The other draws eight from the full
+32-expert pool. The arms were interleaved, with order reversed each pass, for
+40 tokens.
+
+| Arm | touched/layer | arms | median |
+|---|---:|---|---:|
+| touch 8 | 8 | 203.3, 225.8, 272.2 | 225.8 |
+| touch 32 | 32 | 235.5, 200.2, 194.6 | 200.2 |
+
+The larger touched set leads in two of three pairs. Locality inside RAM does
+not explain the GPU stretch. The all-resident ceiling still holds with a
+realistic 32-expert pool.
+
+### `MLX_MAX_OPS_PER_BUFFER`
+
+MLX reads this variable when it creates the Metal device. Each arm therefore
+ran in a separate process.
+
+| Setting | buffers/token | mean buffer | CPU to GPU latency | GPU busy/token |
+|---|---:|---:|---:|---:|
+| default | 249.8 | 691 us | 1294 us | 170.1 ms |
+| 120 | 155.4 | 1250 us | 625 us | 190.9 ms |
+
+The setting took effect. Buffers fell 38%, and latency per buffer fell 52%.
+
+Six plain arms were interleaved, with order reversed each pass:
+
+```text
+default   422.8  347.0  375.0    median 375.0
+cap 120   449.2  440.6  454.0    median 449.2
+```
+
+Default led in all three pairs. The cap-120 arms clustered within 3%.
+Eval-block time rose from 130 to 196 ms at default to 211 to 220 ms at 120.
+Fewer, larger submissions coarsen serialization. The main thread waits
+longer per buffer, and expert reads wait for the router result.
+
+The setting is rejected. It belongs on the do-not-retry list.
+
+### Submission latency
+
+Accumulated CPU-to-GPU latency was 323 ms/token at default and 97 ms/token at
+cap 120. Removing 226 ms of accumulated latency made the token slower. The
+latency overlaps GPU and eval work and is not on the critical path by itself.
+
+### Context length
+
+The first 24-token run is withdrawn because it timed only the warm-up. A
+60-token run split into three windows of 20 tokens gave this result:
+
+| context | overall | window 1 | window 2 | window 3 | experts/layer |
+|---:|---:|---|---|---|---:|
+| 128 | 2.54 | 2.88 / 239 MB | 3.21 / 248 MB | **1.91 / 502 MB** | 7.90 |
+| 1024 | 1.83 | 1.84 / 504 MB | 1.77 / 558 MB | **1.89 / 522 MB** | 7.90 |
+| 4096 | 1.93 | 1.80 / 431 MB | 2.17 / 407 MB | **1.85 / 452 MB** | 7.85 |
+
+The last window is the same at every context. Routing does not move. A short
+prompt keeps a narrow expert set hot for about 40 tokens, then the generation
+working set widens from about 240 MB to about 500 MB. Long-context arms have no
+transient.
+
+`bench_production.py` decodes 60 tokens from a 20-token prompt. Its published
+number mixes the warm-up transient with the steady state. The 2.83 harness
+figure and the 2.0 to 2.2 chat figures are different points on this curve,
+not different context lengths.
+
+This benchmark calls the language model directly. It does not run chat
+warm-up or 32-expert pinning. The 1.9 tok/s result is the unpinned steady
+state. The flatness across context is the result; the absolute level is not.
+
+### Per-kernel names
+
+MLX leaves compute encoders unlabelled. `metal-gpu-intervals` resolves to
+command buffers. `metal-shader-profiler-intervals` and
+`gpu-shader-profiler-interval` are empty under this trace template.
+`gpu-counter-info` defines only `RT Unit Active` on this M4. This template
+cannot provide per-kernel GPU attribution.
+
+### Open findings
+
+- GPU busy at zero drive measured 164 ms/token yesterday and 77 to 87 ms/token
+  today after clean boot. The same code and settings produced both results.
+- A 640 MB resident bank added 71 MB of reads and 39 ms/token. The 256 MB arm
+  stayed inside measurement noise. Test 128, 256, 384, and 512 MB with paired
+  runs if the idle window matters.
+- GDN remains unresolved at 18.51 ms/token in the dependency-correct split,
+  against earlier isolated 34 ms and in-situ 57 ms records.
+
+### Instruments added by this session
+
+The branch contains three research instruments. They change no runtime path,
+default, or quality gate:
+
+| File | Purpose |
+|---|---|
+| `models/flashnext/metal_trace.py` | Export and union Metal GPU spans. Report per-token GPU busy, command-buffer count, mean interval, CPU-to-GPU latency, and duration histogram. `--last-ms` isolates decode. |
+| `models/flashnext/bench_context_decay.py` | Measure decode rate by context in windows and count kept experts per layer. |
+| `models/flashnext/bench_read_ceiling.py` | Add `--pool` and `--route-fixed` to separate resident working-set size from drive traffic at zero drive. |
+
+`--pool 0` preserves the original fixed-route behavior. The focused test suite
+passes all 98 tests.
+
+The recording left multi-gigabyte `instruments*.ktrace` files in `TMPDIR`.
+Free space fell to 1.1 GB. About 11 GB was reclaimed, and the volume now has
+15 GB free. Clear trace scratch between recorded arms.

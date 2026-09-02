@@ -112,11 +112,19 @@ def _moe_call(self, x: mx.array) -> mx.array:
             _SWAP_RESIDENT[0] is not None
             and scores.size // k <= _SWAP_MAX_ROWS[0]
         )
-        needed = _EARLY_SUBMIT or _WARM_ON or swap_active
+        needed = _EARLY_SUBMIT or _WARM_ON or swap_active or _ONE_SYNC
         if _PROFILE:
+            # Count physical bytes across the drain as well as time. The dense
+            # core is file-backed and this machine runs near zero free memory,
+            # so a GPU drain that is really a page fault storm would look the
+            # same on the clock and completely different here.
+            from models.flashnext.diskio import disk_bytes_read
+
+            read_before = disk_bytes_read()
             began = time.perf_counter()
             mx.eval(scores, inds) if needed else mx.eval(scores)
             _TIMERS["score_sync"] += time.perf_counter() - began
+            _TIMERS["score_sync_bytes"] += disk_bytes_read() - read_before
             python_began = time.perf_counter()
         elif needed:
             mx.eval(scores, inds)
@@ -237,6 +245,28 @@ def _moe_call(self, x: mx.array) -> mx.array:
                 if prefetch is not None:
                     prefetch(wanted)
 
+        if _ONE_SYNC:
+            # `expert_rows` is already here; `masks` or `keeps` says which
+            # slots survive. Padded slots reuse the row's first expert, which
+            # is exactly what the device `where` below does.
+            if expert_rows is None:
+                expert_rows = inds.reshape(-1, k).tolist()
+            if masks is None:
+                routed_host = [
+                    row[position] if position < keep else row[0]
+                    for row, keep in zip(expert_rows, keeps)
+                    for position in range(width)
+                ]
+            else:
+                routed_host = [
+                    row[position] if mask[position] else row[0]
+                    for row, mask in zip(expert_rows, masks)
+                    for position in range(width)
+                ]
+            self.switch_mlp._routed_host = (
+                routed_host, (*scores.shape[:-1], width)
+            )
+
         inds = inds[..., :width]
         scores = scores[..., :width]
         if masks is None:
@@ -248,7 +278,10 @@ def _moe_call(self, x: mx.array) -> mx.array:
                 [row[:width] for row in masks], dtype=mx.bool_
             ).reshape(scores.shape)
         # Reuse the first routed expert in padded slots. This avoids extra I/O.
-        inds = mx.where(active, inds, inds[..., :1])
+        # With one-sync the routed list is already on the host and nothing
+        # downstream reads `inds`, so the kernel is skipped entirely.
+        if not _ONE_SYNC:
+            inds = mx.where(active, inds, inds[..., :1])
         scores = mx.where(active, scores, 0)
         if _PROFILE:
             _TIMERS["topk_python"] += time.perf_counter() - python_began
@@ -359,6 +392,28 @@ _TAIL_THRESHOLD = [0.20]
 _TAIL_SENSITIVE = [0.40]
 FAST_LAYERS = (24, 12, 10, 21, 7, 18, 33, 22, 15, 5, 26, 16)
 _OVERLAP = os.environ.get("FLASHNEXT_OVERLAP", "1") == "1"
+# A token blocks on 98 `mx.eval` calls for 236.7 ms, half the token, while the
+# IOKit counter puts the shaders at 10.7% busy. 43 of those evals cost 2 to 5
+# ms each and carry 75.7% of the block time, which is a fixed round-trip cost,
+# not work. Two of them are per layer: `mx.eval(scores)` here, and
+# `mx.eval(flat)` in StreamingSwitchGLU.
+#
+# The second one exists only to bring the routed expert list to the host. That
+# list is a function of `inds`, `keeps` and the resident mask, and every one of
+# those is already on the host by then. With this on, `scores` and `inds` are
+# evaluated in one round trip, the routed list is built in Python, and the
+# device `where` over `inds` is dropped because nothing downstream reads it.
+# One sync per layer instead of two, and the same bytes read in the same order.
+_ONE_SYNC = os.environ.get("FLASHNEXT_ONE_SYNC", "0") == "1"
+
+
+def one_sync() -> bool:
+    return _ONE_SYNC
+
+
+def set_one_sync(enabled: bool) -> None:
+    global _ONE_SYNC
+    _ONE_SYNC = bool(enabled)
 _RENORM_BLEND = [float(os.environ.get(
     "FLASHNEXT_RENORM_BLEND",
     "1" if os.environ.get("FLASHNEXT_RENORM", "1") == "1" else "0",
