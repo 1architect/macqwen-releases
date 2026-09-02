@@ -50,6 +50,10 @@ PROMPT = ("<|im_start|>user\nExplique a fotossintese em duas frases."
 
 COMPARISONS = {
     "none": {"baseline": {}},
+    "wired": {
+        "wired0": {"FLASHNEXT_WIRED_GB": "0"},
+        "wired2": {"FLASHNEXT_WIRED_GB": "2"},
+    },
     # `empty_rows` allocates a fresh numpy block for every part of every layer,
     # about 1.18 GB of transient host memory per token across 432 allocations.
     # The ring reuses a handful instead. The 2x2 against the read-ceiling
@@ -226,6 +230,17 @@ LIVE_SETTINGS = {
             "models.flashnext.expert_cache", fromlist=["buffer_arena"]
         ).buffer_arena(),
         lambda value: int(value),
+    ),
+    "FLASHNEXT_WIRED_GB": (
+        # MLX wires nothing by default, so every buffer handed to the GPU is
+        # evictable. The setter reads the limit back through Metal itself.
+        lambda backend, value: __import__(
+            "models.flashnext.loader", fromlist=["set_wired_gb"]
+        ).set_wired_gb(value),
+        lambda backend: __import__(
+            "models.flashnext.loader", fromlist=["wired_gb"]
+        ).wired_gb(),
+        lambda value: float(value),
     ),
     "FLASHNEXT_SORT_READS": (
         lambda backend, value: setattr(

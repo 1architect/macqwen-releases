@@ -42,6 +42,53 @@ def _is_streamed(key: str) -> bool:
     return any(marker in key for marker in STREAMED)
 
 
+_WIRED_GB = [0.0]
+
+
+def set_wired_gb(value) -> None:
+    """Set the Metal wired limit and prove it took.
+
+    `set_wired_limit` returns the previous value, so calling it twice reads
+    back what actually applied. Metal clamps above the device maximum, and a
+    clamped arm would measure the wrong thing silently.
+    """
+    target = int(float(value) * 1e9)
+    mx.set_wired_limit(target)
+    got = mx.set_wired_limit(target)
+    if got != target:
+        raise SystemExit(
+            f"wired limit clamped to {got} from {target}; refusing to report "
+            f"an arm whose setting did not apply"
+        )
+    _WIRED_GB[0] = float(value)
+
+
+def wired_gb() -> float:
+    return _WIRED_GB[0]
+
+
+def apply_wired_limit() -> None:
+    """Ask Metal to keep some allocations GPU-resident.
+
+    MLX wires nothing by default: `wired_limit_` is 0 in the allocator, and
+    `MLX_RESIDENCY_SET_MAX_PCT` only partitions that budget rather than
+    setting it. So every buffer this runtime hands the GPU is evictable, on a
+    machine that sits at 80 to 135 MB free. When a residency set loses
+    residency under pressure its allocations have to be made resident again,
+    and Metal locks a command buffer's residency at commit, so that cost lands
+    inside the GPU spans.
+
+    Wired memory competes with the page cache the expert stream depends on, so
+    a limit that is too high should show up as more physical reads per token.
+    Off by default.
+    """
+    want = os.environ.get("FLASHNEXT_WIRED_GB")
+    if not want:
+        return
+    set_wired_gb(want)
+    print(f"wired limit: {float(want):.2f} GB", flush=True)
+
+
 def load_streaming(
     model_dir: str,
     expert_capacity: int = 32,
@@ -50,6 +97,7 @@ def load_streaming(
     keep_vision: bool = True,
     use_mtp: bool = True,
 ) -> Tuple[nn.Module, dict, SafeTensorStore]:
+    apply_wired_limit()
     apply_rmsnorm_fix()
     apply_adaptive_topk()
     apply_qsa_chunk()

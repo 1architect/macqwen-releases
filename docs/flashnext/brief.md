@@ -57,9 +57,9 @@ long-context comparison stayed coherent, but the exact-quality answer was better
 - QSA chunking bounds large temporary masks.
 - Selective expert residency reduces runtime variance when RAM is available.
 - A local RMSNorm patch corrects an upstream checkpoint interpretation error.
-- The 2026-09-01 timing sweep closes host-only bookkeeping, routed
-  `gather_qmm`, and the complete-runtime compile estimate. They recover about
-  4.16 ms, measure 13 to 16 ms, and save about 1 ms per token respectively.
+- The 2026-09-01 timing sweep closes host-only bookkeeping and routed
+  `gather_qmm`. It recovers about 4.16 ms and measures 13 to 16 ms of expert
+  gather. Issue #23 is open again for the corrected zero-drive RMSNorm gate.
 - A 12-arm test gives `buffer-chunk2` a resolved 6.3% generation gain over the
   concatenate path. Token IDs match and physical bytes fall. Issue #26 is
   closed.
@@ -77,8 +77,17 @@ long-context comparison stayed coherent, but the exact-quality answer was better
 - VM counters show page-ins at about 33 pages/MB, with flat reclaim,
   compression, and swap during decode. Read-ahead off is 1.3% faster, but the
   result does not clear a band.
-- The default Metal residency set is 750 MB. Raising it fivefold changes
-  neither token time nor VM counters.
+- The default Metal per-set cap is 750 MB, but the total wired budget is zero.
+  Raising the cap fivefold changes neither token time nor VM counters because
+  no allocation is wired by default.
+- A standalone 2 GB wired-limit sweep looked 13.5% faster. The live harness
+  measured -0.4% inside a 7.6% band because it applied the limit after loading.
+  Issue #43 tracks the controlled comparison.
+- A GPU capture measured 5,778 dispatches in 86.99 ms without drive traffic.
+  The Compute Shader Launch Limiter stayed near 100%, with low occupancy and
+  ALU use. The zero-drive GPU is launch-bound.
+- A controlled RMSNorm compile is bit-exact and 1.7% faster at zero drive, but
+  remains unresolved in production. Keep it disabled by default.
 
 The reference machine is an M4 Mac with 16 GB of unified memory and a 256 GB SSD. Prefill and decode measurements are separate. Short
 prompts have lower prefill rates because fixed setup and streamed-read costs apply to fewer tokens. Performance also depends on prompt type,
@@ -96,7 +105,7 @@ oQ3-MTP has lost some recall of external APIs. Asked for a SketchUp extension, o
 files at both `low` and `xhigh`. At `xhigh` it called `Sketchup::Face#extrude`, which doesn't exist, and never mentioned the real method
 across 34,203 characters of reasoning. At `low` it used the right method with the wrong second argument.
 
-An external [oQ4-MTP report](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ4/discussions/2) describes a different failure on long agentic and coding turns. The model entered a repetition loop, reached `max_tokens`, and cut off an open tool call. The report did not reproduce the failure with oQ3-MTP under matching settings. It used oMLX on an M5 Max, so it does not replace our local gate. The maintainer is investigating. MACQWEN keeps MTP disabled in production.
+An external [oQ4-MTP report](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ4/discussions/2) describes a different failure on long tool-use and coding turns. The model entered a repetition loop, reached `max_tokens`, and cut off an open tool call. The report did not reproduce the failure with oQ3-MTP under matching settings. It used oMLX on an M5 Max, so it does not replace our local gate. The maintainer is investigating. MACQWEN keeps MTP disabled in production.
 
 Prose did not expose this loss. Long Portuguese analysis stayed coherent on both checkpoints. A code task that requires a real API exposed
 it.
@@ -120,5 +129,5 @@ Threshold `1.0` keeps the shipped router selection.
 
 The text runtime, six routing profiles, exact sessions, and shared chat integration are active. Cache-aware is optional. The production
 backend keeps the included MTP weights disabled. Current performance work is
-tracked by issues #24, #25, and #33 through #39, plus #41 and #42. Issues #21 through #23 and
-#26 through #27 are closed.
+tracked by issues #23 through #25, #33 through #39, and #43. Issues #21, #22,
+#26 through #27, and #41 through #42 are closed.

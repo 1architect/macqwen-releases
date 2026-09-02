@@ -21,3 +21,11 @@ MACQWEN keeps the same three active documents for each component.
 
 The [archive](archive/README.md) contains superseded runbooks and historical records.
 Active documents contain current instructions.
+
+## Supporting material
+
+| Path | Purpose |
+|---|---|
+| [`MLX/`](MLX/) | MLX 0.32.2 Metal backend source notes. The report contains file and line references. Treat it as reference material, not workflow instructions. |
+| [`flashnext/measurements/`](flashnext/measurements/) | Published FlashNext measurement records. |
+| [`flashnext/graphics/`](flashnext/graphics/) | FlashNext trace graphics, including the token trace view, Xcode capture view, and miss-sweep residual plot. |
