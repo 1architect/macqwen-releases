@@ -108,7 +108,9 @@ router-first scheduling all tie or lose against the control.
 - Selective layer protection improves the fast response but still emits
 lexical errors, while speed falls from 2.64-2.85 to 2.19-2.43 tok/s.
 - Post-cut score renormalization makes the low-I/O profiles incoherent.
-- `F_RDAHEAD=0` is about 13% slower than the default.
+- The earlier `F_RDAHEAD=0` result had the wrong sign. The order-corrected
+  result is 1.3% faster than the default in 8 of 8 pairs, flat across miss
+  levels, and does not clear a resolution band.
 - `F_RDADVISEV` averages 0.89 tok/s against 0.98 for direct `pread`, 10%
 slower. Its `NOAGE` flag returns `EPERM` on this checkpoint filesystem.
 - A 1024-row cache per n-gram shard has only a 4.9% hit rate. It averages
@@ -1686,7 +1688,7 @@ interleaved benchmark, with a paired mean gain of 8.3 percent.
 
 ## oQ3-MTP failed the SketchUp Ruby test on 2026-09-01
 
-The gate requested a SketchUp extension that extrudes selected faces to a user-specified height. The reply had to be a complete `.rb` file.
+The gate requested a SketchUp extension that extrudes selected faces to a height supplied in the prompt. The reply had to be a complete `.rb` file.
 Each file was loaded in SketchUp.
 
 ```text
@@ -1766,7 +1768,7 @@ The three long-context dream replies use the same dream text. An earlier section
 transcripts in full doesn't support that for the Lacanian section. The cache-aware reply tracks the object across both dreams, moving from
 the flight in the first to the kitten and then to the designer clothes. The exact reply makes one claim and stops. The oQ3-MTP reply is
 still listing concepts where the transcript ends. Two things limit the comparison. The exact conversation had an earlier Jung frame, so its
-Lacan turn had to pivot. All three runs hit the 120-token cap and were continued by hand, so coverage depends on how often the user pressed
+Lacan turn had to pivot. All three runs hit the 120-token cap and were continued by hand, so coverage depends on how often the operator pressed
 continue. None of the three showed incoherence, factual drift, a repetition loop, or language slippage. The cache-aware run repeated one
 heading after a continue, which is stitching. Missing spaces show up in both oQ4 profiles at what look like chunk joins: `o focodeixa` in
 exact, `resgatarou` in cache-aware. It appears under both profiles, so routing isn't the cause. The word animator probably is. Still open.
@@ -1775,7 +1777,7 @@ exact, `resgatarou` in cache-aware. It appears under both profiles, so routing i
 
 No oQ3-MTP run went through `bench_production`. Everything below is a single chat turn read off the terminal stat line, under conditions
 that differ between runs. Treat it as directional. The three runs analyse the same Portuguese dream text at a context near 5,000 tokens.
-Each turn generates up to 120 tokens and the user continues by hand.
+Each turn generates up to 120 tokens and the operator continues by hand.
 
 ```text
 oQ3-MTP, exact-quality
@@ -2156,7 +2158,7 @@ treating the repetition collapse as a property of either routing profile.
 
 - Supported effort levels are `xhigh`, `medium`, and `low`, with `xhigh` the
 default. This project defaults to `medium`, a step below.
-- Lower effort is warned against for agentic work: it "can also lead to
+- Lower effort is warned against for tool-use work: it "can also lead to
 insufficient analysis, more failures, and repeated retries". That matches `medium` shipping without the `Face#valid?` guard.
 - Reasoning and final output are meant to have separate allowances, 262,144 and
 131,072 tokens. Running with `think_budget` off puts reasoning inside the answer allowance, which is the opposite of the intent.
@@ -2339,15 +2341,16 @@ production harness must measure the new hit rate, physical bytes, and rate.
 
 The model card reports HumanEval pass@1 at 91.5% for REAP-288 against 93.9%
 for its stock Q4 control. It reports 92.1% for REAP-384. These are single runs
-without confidence intervals, and calibration used agentic-coding traffic.
+without confidence intervals, and calibration used tool-use coding traffic.
 They do not replace this project's quality gate.
 
-## Exact-quality performance sweep closed, 2026-09-01
+## Exact-quality performance sweep, 2026-09-01
 
 The three investigations opened from the 3 tok/s gap are now measured. Issues
-[#21](https://github.com/1architect/macqwen-releases/issues/21),
-[#22](https://github.com/1architect/macqwen-releases/issues/22), and
-[#23](https://github.com/1architect/macqwen-releases/issues/23) are closed.
+[#21](https://github.com/1architect/macqwen-releases/issues/21) and
+[#22](https://github.com/1architect/macqwen-releases/issues/22) are closed.
+Issue [#23](https://github.com/1architect/macqwen-releases/issues/23) was
+reopened after Session 4 found a better zero-drive compile gate.
 
 ### GPU, SSD, and dependency timing
 
@@ -2417,7 +2420,7 @@ separate projection sums took 0.742 ms against 0.316 ms as one chain, a factor
 of 2.3. At 64 repetitions they measured 0.264 and 0.266 ms. Separate stages
 carry a synchronization cost and their times must not be added.
 
-### Compile sweep closed: bit-exact and too small
+### Initial compile sweep: bit-exact and too small
 
 `models/flashnext/compiled.py` compiles the retained router, QK normalization,
 PLE gate, and related chains. The complete benchmark compares four kept arms:
@@ -2429,8 +2432,10 @@ compiled   2.66 tok/s   564.7 MB/token
 
 Token IDs matched in every arm. The compiled median was 0.6% lower, and the
 paired sign test gave p = 0.812. The three useful chain savings total about
-1.0 ms/token, or 0.3%. Compilation stays available as a diagnostic and is
-not installed by default.
+1.0 ms/token, or 0.3%. Compilation stays available as a diagnostic and is not
+installed by default. Session 4 tested the RMSNorm chain with the zero-drive
+gate and reopened issue
+[#23](https://github.com/1architect/macqwen-releases/issues/23).
 
 ### Layer attribution correction
 
@@ -2473,9 +2478,10 @@ Issue [#26](https://github.com/1architect/macqwen-releases/issues/26) tracks
 that change.
 
 The current 36 ms gap remains open. The new split shows that the missing cost
-is not routed expert matmul or small host bookkeeping. Issue
-[#27](https://github.com/1architect/macqwen-releases/issues/27) tracks a valid
-whole-layer GPU attribution method. Issue [#24](https://github.com/1architect/macqwen-releases/issues/24) remains open for Q4 group sizes, and issue
+is not routed expert matmul or small host bookkeeping. Metal System Trace
+closed issue [#27](https://github.com/1architect/macqwen-releases/issues/27)
+for device-level attribution. Issue [#24](https://github.com/1architect/macqwen-releases/issues/24)
+remains open for Q4 group sizes, and issue
 [#25](https://github.com/1architect/macqwen-releases/issues/25) remains open
 for the REAP-288 gate.
 
@@ -2535,7 +2541,7 @@ cost is explicitly accepted.
 
 ## External oQ4-MTP repetition report
 
-The [Vontra oQ4-MTP discussion](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ4/discussions/2) reports a failure during long agentic and coding turns. The model entered a degenerate repetition loop, reached `max_tokens`, and ended with an unclosed tool-call envelope. The report describes two failures on an M5 Max with oMLX and matched sampling settings. One run reached 28,383 generated tokens after 12,487 MTP cycles. Another reached the limit after 14,684 tokens.
+The [Vontra oQ4-MTP discussion](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ4/discussions/2) reports a failure during long tool-use and coding turns. The model entered a degenerate repetition loop, reached `max_tokens`, and ended with an unclosed tool-call envelope. The report describes two failures on an M5 Max with oMLX and matched sampling settings. One run reached 28,383 generated tokens after 12,487 MTP cycles. Another reached the limit after 14,684 tokens.
 
 The report compares oQ4-MTP with oQ3-MTP under the same server settings. It reports two truncated oQ4-MTP requests out of eight and no truncated oQ3-MTP requests across 177 requests. The author identifies the quantized checkpoint as the main variable, but the environment and MTP runtime differ from this project.
 
@@ -2543,7 +2549,7 @@ The same report mentions a secondary `QSAKVCache` failure on oQ4-MTP. The cache 
 
 This report does not measure standard oQ4, and it does not replace our local
 quality gate. It supports the existing decision to keep MTP disabled in the
-production backend. It also adds a long-agentic-run failure mode to the
+production backend. It also adds a long tool-use run failure mode to the
 checkpoint review record.
 ## Session continuation: eval cost and GPU accounting, 2026-09-02
 
@@ -3156,3 +3162,503 @@ passes all 98 tests.
 The recording left multi-gigabyte `instruments*.ktrace` files in `TMPDIR`.
 Free space fell to 1.1 GB. About 11 GB was reclaimed, and the volume now has
 15 GB free. Clear trace scratch between recorded arms.
+
+## Session continuation: miss fraction, VM counters, and destination ring, 2026-09-02
+
+This record resumes the second afternoon session. It keeps the shipped runtime
+defaults unchanged and adds diagnostics only.
+
+### Reusable destination ring
+
+`empty_rows` allocates a new NumPy block for every part of every layer. This is
+432 host allocations and about 1.18 GB of transient memory per token. The
+`FLASHNEXT_BUFFER_ARENA` ring replaces those blocks with pools keyed by
+projection and part. One pool covers all 48 layers and uses about 150 MB.
+
+The production harness used `--compare buffer-arena --arms 8`:
+
+```text
+fresh   gen median 2.94   sd 0.106   tail 2.86   397.9 MB/token   n=5
+ring3   gen median 2.91   sd 0.051   tail 2.81   397.4 MB/token   n=4
+-0.9 percent gen median, resolves above 3.7 percent, unresolved
+ring3 ahead in 4 of 6 pairs, sign test p = 0.344
+```
+
+The byte result is 397.9 against 397.4 MB/token, a 0.1% difference. An
+earlier cross-process run showed 10% to 48% fewer bytes, but each process
+started from the previous process's page cache. The sequence warmed throughout,
+so process start state was confounded with the condition.
+
+Keep `FLASHNEXT_BUFFER_ARENA=0` as the default. The path is bit-exact at
+depths 2, 3, and 4 and uses less allocation work, so it remains a diagnostic
+  beside `FLASHNEXT_SHARED_READ_BUFFER`. Issue #41 was closed after the
+  follow-up comparison found no resolved performance benefit.
+
+Two implementation errors were found:
+
+- A ring keyed by layer holds about 9 GB and swaps. It ran 8 times slower.
+- A ring keyed only by shape is not bit-exact. `gate_proj` and `up_proj` share
+  a shape, so the ring wraps before the GPU reads the earlier block. The token
+  digest changed from `5c3d84d8b2020912` to `37f821a34805788b`.
+
+The digest check caught the second error. The path did not crash.
+
+### GPU busy against drive share
+
+`bench_read_ceiling.py --miss F` routes a set share of each layer outside the
+pinned pool. It sweeps physical reads from zero to all-cold in one benchmark,
+with the same code, route width, and dispatch count. Runs were traced forward
+and reverse, with 30 tokens per arm.
+
+| miss | MB/token | ms/token | GPU busy/token | buffers/token | mean span | CPU to GPU |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0.2 | 217 | 69.5 ms | 201.5 | 345 us | 788 us |
+| 0.125 | 152 | 278 | 93.8 ms | 201.6 | 466 us | 977 us |
+| 0.25 | 300 | 440 | 171.7 ms | 201.6 | 852 us | 1603 us |
+| 0.5 | 603 | 596 | 170.7 ms | 201.2 | 848 us | 1637 us |
+| 1.0 | 1230 | 860 | 125.7 ms | 201.2 | 625 us | 1270 us |
+
+GPU busy rises, peaks between one quarter and one half missing, then falls at
+full miss. At full drive traffic it is 126 ms/token. At one quarter it is
+172 ms/token. Mean span and submission latency follow the same hump.
+Dispatch count does not move.
+
+This rejects two earlier claims. The penalty is not a step at first drive
+contact, and it is not proportional to bytes. Token time is close to linear in
+bytes at about 0.52 ms/MB.
+
+The curve predicts production. Production reads about 400 MB/token, between
+the 300 and 603 MB points where the sweep gives about 170 ms. The clean-boot
+production result was 182.5 ms. The synthetic sweep reproduces the real GPU
+cost from its byte count.
+
+The result was provisional. It had one traced arm per cell. The peak spread
+was 180.7 against 162.7 ms, and trace overhead was largest near the peak:
++12% at 0.125 and 0.25 miss, against +6% and -3% at the ends. The later
+three-arm repeat closed issue #42 and kept the curve's dip, hump, and return.
+
+### VM counters during decode
+
+The same sweep ran without tracing and measured `vm_stat` deltas over the
+decode loop:
+
+| miss | MB/token | page-in/token | reactivated | compress | swap |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 0.2 | 40 | 428 / 0 | 725 / 0 | 0 |
+| 0.125 | 150 | 4,959 | 222 / 18 | 308 / 0 | 0 |
+| 0.25 | 297 | 9,779 | 32 / 18 | 0 / 2 | 0 |
+| 0.5 | 597 | 19,616 | 64 / 47 | 0 / 0 | 0 |
+| 1.0 | 1,215 | 40,073 | 165 / 752 | 324 / 2,337 | 0 |
+
+Page-ins are linear in bytes: 33.3, 33.1, 32.8, and 32.8 pages/MB.
+Reactivation is tens per token against tens of thousands of page-ins.
+Compressor traffic is zero in six of ten arms. Swap never moves.
+
+The tested thrashing-cache hypothesis predicts reclaim and compression traffic
+near the GPU peak. Neither peaks. Paging remains the dominant kernel activity,
+about 13,000 page-ins/token in production and about 37,000 page-ins/second at
+2.8 tok/s. Physical bytes remain the useful currency.
+
+The earlier two-second sample that appeared to show 1.7 GB/s decompression
+captured Instruments and the pinning phase. Without tracing, decode compressor
+traffic is near zero.
+
+### Read-ahead control
+
+`FLASHNEXT_RDAHEAD=0` clears kernel read-ahead on shard descriptors. The new
+control raises if `fcntl` fails.
+
+Two passes used reversed order:
+
+```text
+pass 1, on first    0.125 +22.9%   0.25 +7.0%   0.5 +0.4%   1.0 +0.5%
+pass 2, off first   0.125  +1.3%   0.25 +1.3%   0.5 +1.7%   1.0 +1.0%
+```
+
+The 0.125 arm reads 325.3, 264.6, 225.9, and 228.9 ms across the run. That
+is position, not condition. Order-corrected, read-ahead off is about 1.3%
+faster and flat across the miss range. Page-ins per MB stay at 33.
+
+Read-ahead on produces more reactivations in 7 of 8 pairs and compressor
+traffic in 6 of 8 arms, against 2 of 8 with it off. The churn is real but costs
+almost nothing. Do not change the default on 1.3% without a resolution band.
+The earlier 13% slower record had the wrong sign.
+
+The read-ahead spilling hypothesis is rejected. The effect is flat across
+miss levels.
+
+### Metal residency cap
+
+`MLX_RESIDENCY_SET_MAX_PCT` controls the MLX residency set. With
+`MLX_RESIDENCY_DEBUG=1`, the premise gate reports:
+
+```text
+default   max_bytes_per_set =   750 MB
+pct 10    max_bytes_per_set =  1500 MB
+pct 90    max_bytes_per_set = 13500 MB
+```
+
+The default per-set cap is 750 MB, 5% of the 15 GB MLX considers usable. The
+total wired budget is zero by default, so this does not make any allocation
+GPU-resident. A token hands the GPU about 1.17 GB of gathered expert data plus
+2.5 GB of dense weights.
+
+Default versus 25% of the set, 3,750 MB, at miss 0.25 and 1.0 gave:
+
+```text
+miss 0.25   pass 1  default 430.9   pct25 388.0
+            pass 2  pct25   410.7   default 405.5
+miss 1.0    pass 1  default 890.0   pct25 885.9
+            pass 2  pct25   893.3   default 893.6
+```
+
+At miss 0.25 the second arm won in both passes. At miss 1.0 all four arms
+remain within 0.9%. The debug line confirmed the setting applied, but the
+source shows that it only partitions a zero wired budget. The null result was
+structurally guaranteed. The cap is not a useful control until a wired budget
+is set.
+
+### Method result
+
+Three two-arm comparisons produced large warming effects:
+
+| Claim | First-arm reading | Order-corrected |
+|---|---:|---:|
+| ring reads fewer bytes | -48% bytes | nothing |
+| read-ahead off is faster | -18.7% | -1.3%, flat |
+| residency cap helps at the hump | -10.0% | nothing |
+
+Earlier two-arm comparisons produced +12.8% and +10.7% results that were also
+noise. Reversed order caught every new false result. Treat reversed order as a
+required part of the benchmark method.
+
+### Instruments added
+
+The session adds five diagnostics. They do not change the shipped runtime path,
+default settings, or quality gate. The focused suite passes 98 tests.
+
+| File | Change |
+|---|---|
+| `models/flashnext/expert_cache.py` | Add the `FLASHNEXT_BUFFER_ARENA` ring with `buffer_arena` and `set_buffer_arena`, default off. |
+| `models/flashnext/bench_read_ceiling.py` | Add `--miss`, token digest, physical MB/token, VM deltas, and read-ahead readback. |
+| `models/flashnext/diskio.py` | Add `vm_counters` and `vm_delta`. |
+| `models/flashnext/store.py` | Add `FLASHNEXT_RDAHEAD`, raising if `fcntl` fails. |
+| `models/flashnext/bench_production.py` | Add the `buffer-arena` comparison and live-settings entry. |
+
+### Session position
+
+No new speed path is accepted. Every measured gain in this log came from fewer
+physical reads. The zero-drive GPU half is 86 ms/token, so the full GPU-busy
+hump cannot explain more than that bound.
+
+## Session continuation: repeated untraced miss sweep, 2026-09-02
+
+The untraced sweep repeated four shuffled passes across seven requested miss
+values. It produced 28 arms. The analysis joins the median zero-miss and
+all-cold endpoints, then measures each cell's latency residual from that line.
+The endpoint slope is 0.574 ms per physical MB.
+
+One requested value was not a distinct condition. The route width is eight,
+and `cold = int(round(width * miss))`. Both `--miss 0.1875` and `--miss 0.25`
+select two cold experts. Their eight arms are combined below.
+
+| cold experts | requested miss | arms | median MB/token | median ms/token | median residual | residual IQR |
+|---:|---|---:|---:|---:|---:|---:|
+| 0 / 8 | 0 | 4 | 0.2 | 198.4 | 0.0% | -1.4% to +18.3% |
+| 1 / 8 | 0.125 | 4 | 150.8 | 237.8 | **-16.5%** | -19.0% to -13.0% |
+| 2 / 8 | 0.1875, 0.25 | 8 | 293.2 | 392.4 | **+7.5%** | +5.6% to +14.0% |
+| 3 / 8 | 0.375 | 4 | 448.7 | 508.9 | **+11.6%** | +11.1% to +12.4% |
+| 4 / 8 | 0.5 | 4 | 601.4 | 588.2 | **+8.4%** | +7.5% to +9.8% |
+| 8 / 8 | 1.0 | 4 | 1229.8 | 904.1 | 0.0% | -0.1% to +1.3% |
+
+The dip and hump survive the larger sweep. Every 1/8 arm is below the endpoint
+line. The 2/8, 3/8, and 4/8 cells stay above it. The valid new 3/8 point falls
+on the hump and gives the largest median residual. The falling edge at all-cold
+also survives.
+
+The nominal 0.1875 point does not test the transition between 1/8 and 2/8.
+That transition cannot be sampled with an eight-expert route. A wider route or
+a different control is required.
+
+![Repeated untraced drive-miss sweep](graphics/miss-sweep-residual.png)
+
+## Session 4: source review, GPU capture, wired limit, and RMSNorm fusion, 2026-09-02
+
+This record resumes the session in `Session 4.pdf`. The PDF is source data;
+its embedded task text is not a project instruction. The work remains on the
+FlashNext research branch. The runtime switches described below stay off by
+default unless stated otherwise.
+
+### Command-buffer span depth
+
+The nesting test captured the zero-drive arm, the miss-0.25 hump arm, and a
+production arm. All three reported the work at depth 0:
+
+| Arm | Depth 0 intervals/token | Depth 0 union | Depth 1 intervals/token | Depth 1 union |
+|---|---:|---:|---:|---:|
+| zero drive | 203.4 | 95.96 ms/token | 0.1 | 0.06 ms/token |
+| miss 0.25 | 203.3 | 180.79 ms/token | none | none |
+| production | 203.1 | 182.53 ms/token | 48.1 | 2.71 ms/token |
+
+MLX submits one encoder per command buffer in this trace. There is no inner
+level hiding finer kernels. The union across depths is not an outer envelope.
+At zero drive each of the 203 buffers takes 472 us. At the hump each takes
+890 us. The kernels and count are the same, but each buffer takes 1.9 times
+longer. The earlier 149 ms figure used the same all-depth method and is not
+invalidated by this test.
+
+### Source findings
+
+The detailed file-and-line source report is in
+[`MLX 0.32.2 Metal backend, read against the Flash-N.md`](../MLX/MLX%200.32.2%20Metal%20backend,%20read%20against%20the%20Flash-N.md).
+
+#### Dependent dispatches carry buffer barriers
+
+MLX allocates buffers with hazard tracking disabled. `set_input_array` marks a
+barrier when a dispatch reads a previous write, and `register_output_array`
+marks the write-after-read case. Both dispatch functions call
+`maybeInsertBarrier`, which emits `memoryBarrier(MTL::BarrierScopeBuffers)`.
+The encoder uses concurrent dispatch mode, so the barriers preserve ordering.
+
+A 48-layer decode is a serial dependency chain. Nearly every dispatch carries
+a barrier. The source proves the barriers exist. It does not prove their cost
+under SSD traffic. The working hypothesis is that barriers expose
+latency-sensitive first reads to concurrent DMA, but this is not accepted as
+the cause.
+
+#### A Metal interval includes command-buffer structure
+
+The interval is a command-buffer span. It includes barriers, fence waits,
+encoder boundaries, event signals, and kernel dispatches. Subtracting priced
+kernels from the interval does not produce a missing-kernel total.
+
+The single-token GPU capture shows 5,778 dispatches, 295 command buffers, and
+247 compute encoders. The earlier attribution trace counted about 250 command
+buffers. The capture also shows one shared event and one fence per buffer,
+plus 432 `newBufferWithBytesNoCopy` wraps. There are no render encoders or draw
+calls.
+
+`mx.metal.start_capture(path)` writes a `.gputrace`. Xcode's GPU pipeline
+profiler provides dispatch names and relative shares. Capture timing is not
+production timing. One token captured at about 4.9 GB and about seven times
+normal runtime. Two tokens reached 6.1 GB and about ten times normal runtime.
+One two-token run took about 4,488 ms per token.
+
+#### `mx.eval` creates synchronization work
+
+Each `mx.eval` creates a shared event, forces an encoder break, commits the
+open buffer, and waits through `waitUntilSignaledValue`. At 98 evals per token,
+that is 98 events, at least 98 fences, at least 98 commits, and 98 host waits.
+The measured 143 us per eval includes this work.
+
+`mx.eval(scores)` is a real host dependency because the code immediately calls
+`scores.reshape(-1, k).tolist()`. `mx.eval(flat)` is followed by
+`flat.tolist()`. Both waits are required in the current route. The proposed
+`mx.async_eval(flat)` change does not apply because both values feed host
+reads.
+
+#### MLX residency is disabled by default
+
+`wired_limit_` defaults to zero. Allocation inserts into the residency map,
+checks capacity, and returns before adding a set or committing one.
+`attach_new_sets` runs before commits, but with one empty set it performs only
+its attached-count check. This is not a 127 ms per-commit path.
+
+`MLX_RESIDENCY_SET_MAX_PCT` sets a per-set cap. It does not set the total wired
+budget. The reported 750 MB default is a 5% per-set cap on a zero budget, not
+750 MB of wired memory. The earlier null test was structurally guaranteed.
+
+`mx.set_wired_limit(2e9)` walks existing allocations and can add residency
+commits. If DLPack wraps fit inside the budget, the source predicts about 864
+residency-set commits per token. Dense weights may fill the budget first, so a
+live test is required. Issue
+[#43](https://github.com/1architect/macqwen-releases/issues/43) tracks it.
+
+#### Command-buffer splitting has two caps and a throttle
+
+`needs_commit()` checks the operation and size caps. On this M4 architecture,
+the defaults are 40 operations and 40 MB. The operation counter counts
+dispatches. The size counter uses `data_size()`, which is documented in item
+units, not bytes. For packed Q4 data, the effective size cap is about 160 MB.
+The operation cap and eval boundaries dominate the normal split.
+
+`bench_read_ceiling` produces about 202 buffers per token, while
+`bench_eval_cost` produces about 250. They are different benchmarks.
+`MAX_ACTIVE_TASKS=10` can force an extra commit and a condition-variable wait
+when the GPU falls behind, but the miss sweep keeps its buffer count at 201 to
+202.
+
+#### Foreign host buffers are tracked but not recycled
+
+`mx.from_dlpack(array, copy=False)` uses `newBufferWithBytesNoCopy`. MLX does
+not check alignment; Metal returns failure for an unsupported pointer and
+`copy=False` raises instead of copying. The successful benchmark wraps
+page-aligned NumPy allocations.
+
+The allocator tracks each wrap and inserts it into residency tracking. With a
+zero wired budget, it enters no residency set. The custom deleter calls
+`release`, not `free`, so the buffer cache never recycles it. Every token pays
+432 new buffer calls and 432 releases. The wrapped 24 MB blocks are freed by a
+Metal completion-handler thread after evaluation, not by the main thread.
+
+The same-width BF16 view adds no GPU dispatch, but it remains a primitive and
+adds evaluation and completion-handler work.
+
+#### The buffer cache explains the 45.7 MB plateau
+
+The cache accepts a cached buffer only within 32 KB of the requested size on
+Apple Silicon. Its eviction thresholds are about 14.25 GB and 16.3 GB here.
+Neither threshold is reached. The 45.7 MB plateau is the steady set of freed
+intermediates, about two layers. Raising the cache limit cannot change it.
+
+The source identifies no MLX allocation path that rises and then falls with
+the miss fraction. The GPU span is the mean buffer span times the buffer count,
+and the count stays flat in the miss sweep. The source alone cannot define the
+semantics of the trace span, so it cannot prove the remaining drive-loaded
+term.
+
+### Early-submit test
+
+The first early-submit pair was invalid because machine load was settling.
+The settled arms were:
+
+| Arm | Load | MB/token | ms/token | GPU busy | Buffers/token |
+|---|---:|---:|---:|---:|---:|
+| `on2` | 3.09 | 367.8 | 479.1 | 190.25 | 256.3 |
+| `off2` | 3.71 | 388.9 | 518.1 | 187.51 | 259.8 |
+| `off3` | 3.36 | 370.2 | 509.3 | 192.00 | 256.1 |
+| `on3` | 3.05 | 389.4 | 488.2 | 194.84 | 259.2 |
+
+Bytes were 378.6 versus 379.6 MB/token. Buffers were 257.8 versus 258.0.
+GPU busy was 192.5 with early submit and 189.8 without, a 1.4% difference.
+Submission latency was 1477 versus 1473 us, a 0.3% difference. The predicted
+GPU-busy increase did not appear. The earlier 8.2% token-time loss does not
+reproduce, but the two settled pairs give p = 0.25. Keep early submit off.
+
+The load column exposed the confound. `off1` and `on1` ran at loads 5.75 and
+4.38, while later arms ran at loads 3.0 to 3.7. Record load average, and wait
+for `ANECompilerService` to settle before quoting a run.
+
+### Wired-limit experiment
+
+The source review found that FlashNext never calls `mx.set_wired_limit`, while
+the Qwen3.8-27B runtime calls it in two places. A standalone pre-load sweep
+used wired limits of 0, 1, 2, and 4 GB, three arms each:
+
+| Wired limit | Token arms, ms | Median | MB/token arms | Median |
+|---|---|---:|---|---:|
+| 0 GB | 402.8, 332.7, 398.8 | 398.8 | 345.4, 320.7, 319.4 | 319.4 |
+| 1 GB | 372.3, 346.8, 381.4 | 372.3 | 336.6, 324.1, 318.7 | 324.1 |
+| 2 GB | 353.4, 345.0, 337.6 | 345.0 | 330.9, 325.7, 320.1 | 325.7 |
+| 4 GB | 379.9, 374.4, 445.3 | 379.9 | 325.2, 330.5, 319.2 | 325.2 |
+
+The standalone 2 GB median was 13.5% below the default. Its spread was 4.7%
+against 21% for default. Physical reads fell over time in every condition,
+and 4 GB did not read more than 0 GB.
+
+The live harness then compared wired 0 against wired 2 in 16 alternating arms:
+
+```text
+wired0   gen median 2.52   sd 0.182   tail 2.43   413.6 MB/token   n=6
+wired2   gen median 2.51   sd 0.149   tail 2.44   412.8 MB/token   n=6
+-0.4% gen median, resolves above 7.6 percent
+wired2 ahead in 3 of 8 pairs, sign test p = 0.855
+```
+
+The live test applied the limit after model loading. The standalone test
+applied it before loading. `ResidencySets::resize()` may promote existing
+allocations differently from pre-load wiring. Issue #43 remains open.
+
+### GPU capture and launch-bound work
+
+The single-token capture contains about 5,778 dispatches, 295 command buffers,
+and 247 compute encoders. It shows one shared event and one fence per command
+buffer, 432 DLPack buffer wraps, and zero render encoders or draw calls.
+
+Named heavy dispatches include routed expert gather, dense and shared-expert
+Q4 matvec, GDN recurrence, RoPE, RMSNorm, softmax, router top-k, and the GDN
+causal convolution. The rest are mostly elementwise operations, copies, and
+integer index bookkeeping.
+
+Grouped by SIMD groups per token:
+
+| Group | SIMD groups |
+|---|---:|
+| bfloat16 elementwise | 10,155 |
+| float32 elementwise | 6,956 |
+| BF16 to FP32 and FP32 to BF16 copies | 7,076 |
+| Other copies | 2,447 |
+| Reductions | 4,702 |
+| Dense and shared-expert Q4 matvec | 12,631 |
+| Routed expert gather | 6,054 |
+| Dense GEMV | 765 |
+| GDN recurrence | 2,967 |
+| GDN causal convolution | 489 |
+| Fused RMSNorm | 572 |
+
+Elementwise work, copies, and reductions total about 31,300 SIMD groups.
+Matrix multiplication totals about 19,450. Glue outweighs matrix
+multiplication by about 1.6 to 1. Dtype conversion copies alone exceed routed
+expert gather.
+
+Profiler counters show Compute Shader Launch Limiter near 100%, low occupancy
+with occasional spikes, low flat ALU use, and busy but unpinned bandwidth.
+The zero-drive GPU is launch-bound. Removing 5% of dispatches saved 3.9% of
+GPU work in calibration.
+
+The capture image is in
+[`graphics/Token trace - Xcode.png`](graphics/Token%20trace%20-%20Xcode.png).
+Absolute capture timings are invalid because capture overhead was about 7x.
+
+### RMSNorm compile test
+
+The capture identifies the manual float32 RMSNorm chain in
+`patch_rmsnorm.py`: cast up, square, reduce, reciprocal square root, multiply,
+cast down. It uses nine dispatches per norm call. The float32 path is deliberate
+because the upstream fast RMSNorm path changed generated tokens.
+
+`FLASHNEXT_COMPILE_NORM` compiles the same operations without changing their
+order. At zero drive:
+
+```text
+plain   201.6  196.3  197.3   median 197.3
+fused   199.5  193.7  193.9   median 193.9
+digest  646f383c92ff7db5 in all six arms
+```
+
+The fused path wins all three pairs in both orders. The median gain is 1.7%.
+In production:
+
+```text
+plain   430.9  373.2  370.7   median 373.2
+fused   406.6  433.8  390.2   median 406.6
+```
+
+The fused path wins one of three pairs and is 9% slower by point estimate.
+Production noise hides the predicted 3.4 ms saving. Keep the switch off and
+use issue [#23](https://github.com/1architect/macqwen-releases/issues/23) for
+the corrected gate.
+
+The calibration bounds broad fusion. Removing 5% of dispatches saves 3.9% of
+GPU work. Linear scaling gives about 4.4% of a production token for a 25%
+dispatch cut and 8.9% for a 50% cut. The controlled miss-0.5 comparison then
+measured 603.9 ms plain versus 603.6 ms fused, with GPU busy 176.4 versus
+177.8 ms and identical 202-buffer counts. Removing 5% of dispatches changed
+nothing under this drive load. The earlier 10% to 22% production headroom
+claim is withdrawn. The broad glue-fusion program is closed for production.
+
+### Final session position
+
+The nesting-artifact, buffer-count, working-set, VM, compression, swap,
+read-ahead, residency-cap, buffer-policy, proportional-DMA, and overlap-driven
+latency explanations are closed. The GPU-busy curve remains real, but no
+available quantity explains its remaining drive-loaded term. The term is
+bounded by the 86 ms zero-drive GPU condition.
+
+Stable findings:
+
+- Physical bytes remain close to linear with token time at about 0.52 ms/MB.
+- The 28-arm untraced miss sweep preserves the dip, middle hump, and all-cold
+  return to the endpoint line.
+- Production matches the synthetic sweep at one validation point, but that
+  does not generalize synthetic residency to production residency.

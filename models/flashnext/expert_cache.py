@@ -144,6 +144,32 @@ _PREAD_MODES = ("pread", "preadv", "resident")
 _SHARED_BUFFER = [os.environ.get("FLASHNEXT_SHARED_READ_BUFFER")]
 
 
+# `empty_rows` allocates a new numpy block for every part of every layer, so a
+# token creates 432 host allocations and hands each one to the GPU as a new
+# Metal-visible buffer. This ring reuses a few destinations instead. Depth has
+# to exceed one: a layer's MoE output is not evaluated until the next layer's
+# router sync, so the GPU may still be reading the previous destination. A list,
+# for the same reason the shared-buffer switch is one.
+_ARENA = [int(os.environ.get("FLASHNEXT_BUFFER_ARENA", "0"))]
+_ARENA_WIDTH = 16
+# One pool for the whole model, not one per layer. Every layer's gate_proj
+# weight has the same shape, so the same block serves all 48 of them and the
+# GPU sees a handful of buffers per token instead of 432. Keyed per layer the
+# ring costs about 9 GB and the machine swaps; keyed by shape it costs about
+# 150 MB. Allocation happens on the main thread inside `_submit_shared`, so no
+# lock is needed.
+_ARENA_POOL: dict = {}
+
+
+def buffer_arena() -> int:
+    """Ring depth, or 0 for one fresh allocation per part per layer."""
+    return _ARENA[0]
+
+
+def set_buffer_arena(depth) -> None:
+    _ARENA[0] = int(depth)
+
+
 def shared_buffer(mode: str = "pread") -> bool:
     """Whether this read mode fills one destination per part."""
     forced = _SHARED_BUFFER[0]
@@ -234,7 +260,8 @@ class ExpertLRU:
     left, and that means a lower-bit checkpoint, not a code change.
     """
 
-    __slots__ = ("store", "prefix", "capacity", "_rows", "hits", "misses", "_missing")
+    __slots__ = ("store", "prefix", "capacity", "_rows", "hits", "misses",
+                 "_missing")
 
     def __init__(self, store: SafeTensorStore, prefix: str, capacity: int):
         self.store = store
@@ -246,6 +273,7 @@ class ExpertLRU:
         self.hits = 0
         self.misses = 0
         self._missing = []
+
 
     def submit(self, experts: List[int], bulk: bool = False):
         """Queue reads so a whole layer flies at once, chunked to stay fast."""
@@ -300,7 +328,11 @@ class ExpertLRU:
                 else _CHUNK
             )
             name = f"{self.prefix}.{part}"
-            buffer = self.store.empty_rows(name, len(experts))
+            depth = _ARENA[0]
+            buffer = (
+                self._reused_rows(name, len(experts), depth) if depth
+                else self.store.empty_rows(name, len(experts))
+            )
             futures = [
                 _submit_read(
                     self.store.rows_into,
@@ -313,6 +345,37 @@ class ExpertLRU:
             ]
             pending.append(_SharedRead(buffer, futures))
         return pending
+
+    def _reused_rows(self, name: str, count: int, depth: int):
+        """Hand out one destination from a ring that lives for the whole run.
+
+        The ring is built at the router's top-k width, so a layer that routes
+        fewer experts takes a prefix of the same block rather than a new
+        allocation. A prefix of a C-contiguous block is still contiguous, so
+        `to_mx` wraps it without a copy exactly as before.
+
+        Depth must exceed one. A layer's MoE output is not evaluated until the
+        next layer's router sync, so the GPU may still be reading the previous
+        destination when the following layer asks for one.
+        """
+        # Key on the projection and part, not on the shape. `gate_proj` and
+        # `up_proj` share a shape, so a shape key advances the ring twice per
+        # layer and wraps before the GPU has read the earlier block. That is
+        # not a crash; it silently changes the output.
+        key = name.rsplit(".", 2)[-2:]
+        key = (key[0], key[1], depth)
+        ring = _ARENA_POOL.get(key)
+        if ring is None:
+            ring = [[self.store.empty_rows(name, _ARENA_WIDTH)
+                     for _ in range(depth)], 0]
+            _ARENA_POOL[key] = ring
+        if count > _ARENA_WIDTH:
+            # Wider than the ring was built for. Allocate rather than truncate
+            # the gather; a silent short read would change the output.
+            return self.store.empty_rows(name, count)
+        buffers, index = ring
+        ring[1] = (index + 1) % depth
+        return buffers[index][:count]
 
     def to_mx(self, raw):
         out = []

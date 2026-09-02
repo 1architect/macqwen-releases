@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drive Miss Sweep</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f7f5f0;
+      --card: #ffffff;
+      --ink: #172033;
+      --muted: #667085;
+      --grid: #e9e6df;
+      --border: #ded9ce;
+      --accent: #d1495b;
+      --footer: #172033;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+    }
+
+    main {
+      width: min(1600px, 100%);
+      margin: 0 auto;
+      padding: clamp(28px, 5vw, 72px) clamp(20px, 4vw, 60px) 48px;
+    }
+
+    .eyebrow {
+      margin: 0 0 16px;
+      color: var(--accent);
+      font-size: 15px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(34px, 4vw, 58px);
+      font-weight: 500;
+      letter-spacing: -0.035em;
+    }
+
+    .subtitle {
+      margin: 14px 0 34px;
+      color: #53606f;
+      font-size: clamp(16px, 1.6vw, 21px);
+    }
+
+    .charts {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px;
+    }
+
+    .card {
+      min-width: 0;
+      padding: 28px 24px 18px;
+      overflow: hidden;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+    }
+
+    .card h2 {
+      margin: 0 0 6px;
+      font-size: 24px;
+      font-weight: 500;
+    }
+
+    .card p {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      overflow: visible;
+    }
+
+    .note {
+      display: inline-block;
+      margin: 0 0 10px;
+      padding: 6px 12px;
+      color: #2f6690;
+      background: #eef5f8;
+      border-radius: 999px;
+      font-size: 12px;
+    }
+
+    .result {
+      display: flex;
+      gap: 20px;
+      align-items: baseline;
+      margin-top: 28px;
+      padding: 22px 28px;
+      color: white;
+      background: var(--footer);
+      border-radius: 14px;
+    }
+
+    .result strong {
+      flex: 0 0 auto;
+      color: #f2a541;
+      font-size: 16px;
+      font-weight: 500;
+    }
+
+    .result span { font-size: clamp(16px, 1.6vw, 21px); }
+
+    .method {
+      margin: 12px 4px 0;
+      color: #667085;
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .charts { grid-template-columns: 1fr; }
+      .result { align-items: flex-start; flex-direction: column; gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Drive miss sweep</p>
+    <h1>Latency bends around physical reads</h1>
+    <p class="subtitle">28 untraced arms · four shuffled passes · medians with interquartile ranges</p>
+
+    <section class="charts" aria-label="Drive miss sweep charts">
+      <article class="card">
+        <h2>Observed token time</h2>
+        <p>The gray line joins the median endpoints.</p>
+        <svg id="observed" viewBox="0 0 700 500" role="img"
+          aria-label="Observed milliseconds per token against physical megabytes per token"></svg>
+      </article>
+
+      <article class="card">
+        <h2>Residual from the endpoint line</h2>
+        <p>Positive values are slower than physical reads predict.</p>
+        <span class="note">2/8 combines nominal 0.1875 and 0.25 · n=8</span>
+        <svg id="residual" viewBox="0 0 700 470" role="img"
+          aria-label="Latency residual by the number of cold experts per layer"></svg>
+      </article>
+    </section>
+
+    <div class="result">
+      <strong>Result</strong>
+      <span>The dip and hump survive. The peak shifts to 3/8 cold experts: +11.6%.</span>
+    </div>
+    <p class="method">Baseline: median endpoint line, 198.4 to 904.1 ms/token. Error bars show IQR.</p>
+  </main>
+
+  <script>
+    const rows = [
+      [1, 0, 0.2, 335.9], [1, .125, 150.8, 230.7], [1, .1875, 288.0, 393.9],
+      [1, .25, 298.9, 424.4], [1, .375, 449.5, 506.6], [1, .5, 601.6, 605.9],
+      [1, 1, 1229.6, 904.3], [2, 1, 1229.5, 903.9], [2, .5, 601.5, 593.5],
+      [2, .375, 449.2, 511.1], [2, .25, 298.1, 420.3], [2, .1875, 288.5, 387.8],
+      [2, .125, 150.0, 230.3], [2, 0, 0.2, 195.3], [3, .25, 297.8, 390.9],
+      [3, 1, 1229.9, 901.7], [3, .125, 150.7, 244.9], [3, .5, 601.3, 583.0],
+      [3, 0, 0.2, 195.8], [3, .375, 447.3, 505.3], [3, .1875, 287.3, 380.6],
+      [4, .375, 448.1, 515.6], [4, .1875, 288.0, 360.0], [4, .5, 598.9, 582.8],
+      [4, .125, 151.4, 256.8], [4, 1, 1230.1, 951.6], [4, 0, 0.2, 200.9],
+      [4, .25, 298.4, 434.1]
+    ].map(([pass, nominal, mb, ms]) => ({
+      pass, nominal, mb, ms,
+      miss: nominal === .1875 ? .25 : nominal
+    }));
+
+    const levels = [0, .125, .25, .375, .5, 1];
+    const colors = new Map([
+      [0, "#53657a"], [.125, "#2f6690"], [.25, "#3a86a8"],
+      [.375, "#e07a5f"], [.5, "#f2a541"], [1, "#7a6652"]
+    ]);
+
+    const svgNS = "http://www.w3.org/2000/svg";
+    const median = values => {
+      const a = [...values].sort((x, y) => x - y);
+      const m = Math.floor(a.length / 2);
+      return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+    };
+    const quantile = (values, p) => {
+      const a = [...values].sort((x, y) => x - y);
+      const index = (a.length - 1) * p;
+      const lower = Math.floor(index);
+      const fraction = index - lower;
+      return a[lower + 1] === undefined
+        ? a[lower]
+        : a[lower] + fraction * (a[lower + 1] - a[lower]);
+    };
+    const grouped = new Map(levels.map(level => [
+      level, rows.filter(row => row.miss === level)
+    ]));
+    const medians = new Map(levels.map(level => {
+      const group = grouped.get(level);
+      return [level, {
+        mb: median(group.map(row => row.mb)),
+        ms: median(group.map(row => row.ms))
+      }];
+    }));
+    const start = medians.get(0);
+    const end = medians.get(1);
+    const slope = (end.ms - start.ms) / (end.mb - start.mb);
+    const baseline = mb => start.ms + slope * (mb - start.mb);
+    const residual = row => 100 * (row.ms - baseline(row.mb)) / baseline(row.mb);
+
+    function node(name, attrs = {}, text = "") {
+      const element = document.createElementNS(svgNS, name);
+      for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, value);
+      if (text) element.textContent = text;
+      return element;
+    }
+
+    function add(parent, name, attrs, text) {
+      const element = node(name, attrs, text);
+      parent.appendChild(element);
+      return element;
+    }
+
+    function text(svg, x, y, value, options = {}) {
+      return add(svg, "text", {
+        x, y,
+        fill: options.fill || "#667085",
+        "font-size": options.size || 14,
+        "font-family": "Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+        "text-anchor": options.anchor || "middle",
+        "font-weight": options.weight || 400
+      }, value);
+    }
+
+    function observedChart() {
+      const svg = document.querySelector("#observed");
+      const plot = { left: 62, top: 20, right: 680, bottom: 430 };
+      const x = value => plot.left + value / 1250 * (plot.right - plot.left);
+      const y = value => plot.bottom - (value - 150) / 850 * (plot.bottom - plot.top);
+
+      [200, 400, 600, 800, 1000].forEach(value => {
+        add(svg, "line", { x1: plot.left, y1: y(value), x2: plot.right, y2: y(value), stroke: "#e9e6df" });
+        text(svg, plot.left - 12, y(value) + 5, String(value), { anchor: "end" });
+      });
+      [0, 300, 600, 900, 1200].forEach(value => {
+        add(svg, "line", { x1: x(value), y1: plot.top, x2: x(value), y2: plot.bottom, stroke: "#f0eee8" });
+        text(svg, x(value), plot.bottom + 26, String(value));
+      });
+      add(svg, "line", { x1: plot.left, y1: plot.top, x2: plot.left, y2: plot.bottom, stroke: "#76808f" });
+      add(svg, "line", { x1: plot.left, y1: plot.bottom, x2: plot.right, y2: plot.bottom, stroke: "#76808f" });
+      add(svg, "line", {
+        x1: x(0), y1: y(baseline(0)), x2: x(1250), y2: y(baseline(1250)),
+        stroke: "#a4a8ae", "stroke-width": 3
+      });
+
+      rows.forEach(row => {
+        const circle = add(svg, "circle", {
+          cx: x(row.mb), cy: y(row.ms), r: 5,
+          fill: colors.get(row.miss), opacity: .92
+        });
+        add(circle, "title", {}, `Pass ${row.pass}: ${row.mb.toFixed(1)} MB/token, ${row.ms.toFixed(1)} ms/token`);
+      });
+
+      levels.forEach(level => {
+        const point = medians.get(level);
+        add(svg, "circle", {
+          cx: x(point.mb), cy: y(point.ms), r: 10,
+          fill: "white", stroke: colors.get(level), "stroke-width": 4
+        });
+      });
+
+      add(svg, "line", { x1: x(.2) + 6, y1: y(335.9) - 4, x2: x(.2) + 72, y2: y(335.9) - 34, stroke: "#8a6d55" });
+      text(svg, x(.2) + 78, y(335.9) - 37, "first-arm warm-up outlier", { anchor: "start", fill: "#8a6d55", size: 12 });
+      text(svg, (plot.left + plot.right) / 2, 487, "Physical MB per token", { size: 15 });
+      text(svg, 5, (plot.top + plot.bottom) / 2, "ms/token", { anchor: "start", size: 14 });
+    }
+
+    function residualChart() {
+      const svg = document.querySelector("#residual");
+      const plot = { left: 65, top: 20, right: 680, bottom: 390 };
+      const y = value => plot.bottom - (value + 25) / 45 * (plot.bottom - plot.top);
+      const x = index => plot.left + index / (levels.length - 1) * (plot.right - plot.left);
+
+      [-20, -10, 0, 10, 20].forEach(value => {
+        add(svg, "line", {
+          x1: plot.left, y1: y(value), x2: plot.right, y2: y(value),
+          stroke: value === 0 ? "#838a93" : "#e9e6df",
+          "stroke-width": value === 0 ? 2 : 1
+        });
+        text(svg, plot.left - 12, y(value) + 5, `${value >= 0 ? "+" : ""}${value}%`, { anchor: "end" });
+      });
+      add(svg, "line", { x1: plot.left, y1: plot.top, x2: plot.left, y2: plot.bottom, stroke: "#76808f" });
+      add(svg, "line", { x1: plot.left, y1: plot.bottom, x2: plot.right, y2: plot.bottom, stroke: "#76808f" });
+
+      const labels = ["0/8", "1/8", "2/8", "3/8", "4/8", "8/8"];
+      levels.forEach((level, index) => {
+        const group = grouped.get(level);
+        const values = group.map(residual);
+        const middle = median(values);
+        const q1 = quantile(values, .25);
+        const q3 = quantile(values, .75);
+        const cx = x(index);
+        const color = colors.get(level);
+        add(svg, "line", { x1: cx, y1: y(q1), x2: cx, y2: y(q3), stroke: color, "stroke-width": 5 });
+        add(svg, "line", { x1: cx - 10, y1: y(q1), x2: cx + 10, y2: y(q1), stroke: color, "stroke-width": 3 });
+        add(svg, "line", { x1: cx - 10, y1: y(q3), x2: cx + 10, y2: y(q3), stroke: color, "stroke-width": 3 });
+        const circle = add(svg, "circle", { cx, cy: y(middle), r: 9, fill: color, stroke: "white", "stroke-width": 2 });
+        add(circle, "title", {}, `${labels[index]} cold: ${middle >= 0 ? "+" : ""}${middle.toFixed(1)}% median residual`);
+        text(svg, cx, plot.bottom + 25, labels[index], { fill: "#344054", size: 15 });
+        text(svg, cx, plot.bottom + 47, `${medians.get(level).mb.toFixed(0)} MB`, { fill: "#7a8491", size: 12 });
+        if ([.125, .375, .5].includes(level)) {
+          text(svg, cx, y(middle) + (middle > 0 ? -14 : 24), `${middle >= 0 ? "+" : ""}${middle.toFixed(1)}%`, { fill: color, size: 14, weight: 500 });
+        }
+      });
+      text(svg, (plot.left + plot.right) / 2, 466, "Cold experts per layer · median physical reads", { size: 15 });
+      text(svg, 4, (plot.top + plot.bottom) / 2, "Residual", { anchor: "start", size: 14 });
+    }
+
+    observedChart();
+    residualChart();
+  </script>
+</body>
+</html>

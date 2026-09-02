@@ -163,6 +163,21 @@ def analyse(trace: str, pid: int | None, tokens: int, top: int, run: int,
         print(f"gpu busy/token {covered / 1e6 / tokens:.2f} ms")
         print(f"intervals/token {len(every) / tokens:.1f}")
 
+    # Intervals nest: a command buffer encloses its encoders, which enclose
+    # the work. The union across every depth is therefore the outermost
+    # envelope, and that includes time a buffer sits on the GPU timeline
+    # rather than executing. Reporting per depth separates the two. Both
+    # sessions' GPU figures were taken across all depths.
+    depths = sorted({int(i[4]) for v in groups.values() for i in v})
+    print("\nby nesting depth")
+    print(f"{'depth':>6} {'count':>9} {'/token':>9} {'union ms':>10} {'/token ms':>11}")
+    for level in depths:
+        picked = [i for v in groups.values() for i in v if int(i[4]) == level]
+        cover = union([(b, e) for b, e, *_ in picked])
+        per = f"{cover / 1e6 / tokens:11.2f}" if tokens else " " * 11
+        share = f"{len(picked) / tokens:9.1f}" if tokens else " " * 9
+        print(f"{level:>6} {len(picked):>9} {share} {cover / 1e6:>10.1f} {per}")
+
     buckets = [(0, 0.05), (0.05, 0.2), (0.2, 0.5), (0.5, 1.0),
                (1.0, 2.0), (2.0, 5.0), (5.0, 1e9)]
     print("\ninterval duration distribution")

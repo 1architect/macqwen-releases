@@ -19,19 +19,56 @@ Import `apply()` before building the model.
 """
 from __future__ import annotations
 
+import os
+from functools import partial
+
 import mlx.core as mx
 
 _applied = False
 
+# A GPU capture of one decode token showed the compute shader launch limiter
+# pinned near 100% with occupancy and ALU utilisation low, so the GPU is
+# launch-bound at about 120 dispatches per layer. In that capture the two dtype
+# conversions below, `v_copybfloat16float32` and `v_copyfloat32bfloat16`, ranked
+# third and fifth of all kernels by SIMD groups, together larger than the routed
+# expert gather. They come from this function, which spends nine dispatches on a
+# chain that fuses into far fewer.
+#
+# Off by default. The float32 accumulation is deliberate, so the acceptance test
+# is an identical token digest, not a rate.
+_COMPILE = [os.environ.get("FLASHNEXT_COMPILE_NORM", "0") != "0"]
+
+
+def compile_norm() -> bool:
+    return _COMPILE[0]
+
+
+def set_compile_norm(enabled) -> None:
+    _COMPILE[0] = bool(int(enabled)) if isinstance(enabled, str) else bool(enabled)
+
+
+@partial(mx.compile, shapeless=True)
+def _fused(y, weight, eps):
+    """The same operations in the same order, as one graph."""
+    y = y.astype(mx.float32)
+    y = y * mx.rsqrt(mx.mean(mx.square(y), axis=-1, keepdims=True) + eps)
+    return y * weight.astype(mx.float32)
+
 
 def _rms_norm(self, x: mx.array) -> mx.array:
     dtype = x.dtype
-    y = x.astype(mx.float32)
     if self.group_size is not None:
-        y = y.reshape(*y.shape[:-1], -1, self.group_size)
+        # Reshape before the cast rather than after. An elementwise cast
+        # commutes with a reshape, so the values are unchanged and the compiled
+        # graph gets the whole chain including both conversions.
+        y = x.reshape(*x.shape[:-1], -1, self.group_size)
         weight = self.weight.reshape(-1, self.group_size)
     else:
+        y = x
         weight = self.weight
+    if _COMPILE[0]:
+        return _fused(y, weight, self.eps).reshape(x.shape).astype(dtype)
+    y = y.astype(mx.float32)
     y = y * mx.rsqrt(mx.mean(mx.square(y), axis=-1, keepdims=True) + self.eps)
     y = y * weight.astype(mx.float32)
     return y.reshape(x.shape).astype(dtype)

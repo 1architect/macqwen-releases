@@ -26,7 +26,7 @@ Recent decisions, with the evidence in `research.md`:
   808 MB/token against decode's 390.
 - The weight-preserving cache-aware swap is rejected for `exact-quality`.
   Four of seven replies changed, and its speed result was unresolved.
-- An external [oQ4-MTP report](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ4/discussions/2) describes repetition loops that reach `max_tokens` and truncate tool calls during long agentic turns. The same settings did not reproduce the issue on oQ3-MTP. The report uses oMLX on an M5 Max. The maintainer is investigating. This supports keeping MTP disabled in production, but it does not measure our standard oQ4 path.
+- An external [oQ4-MTP report](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ4/discussions/2) describes repetition loops that reach `max_tokens` and truncate tool calls during long tool-use turns. The same settings did not reproduce the issue on oQ3-MTP. The report uses oMLX on an M5 Max. The maintainer is investigating. This supports keeping MTP disabled in production, but it does not measure our standard oQ4 path.
 
 What changed in the code recently:
 
@@ -43,9 +43,10 @@ What changed in the code recently:
   alongside the routing settings. The compatibility `/settings` command
   remains accepted.
 - The 2026-09-01 performance sweep closed host-only bookkeeping, routed
-  `gather_qmm`, and the complete-runtime compile estimate. The closed results
-  recover about 4.16 ms, measure 13 to 16 ms of expert gather, and measure
-  about 1 ms of compile savings. None explains the 36 ms gap.
+  `gather_qmm`, and the original complete-runtime compile estimate. The closed
+  results recover about 4.16 ms, measure 13 to 16 ms of expert gather, and
+  measure about 1 ms of compile savings. Issue #23 is open again for the
+  corrected zero-drive RMSNorm gate.
 - A 12-arm comparison gives `buffer-chunk2` a resolved 6.3% generation gain
   over the current concatenate path. Token IDs match and physical bytes fall.
   The run started after a clean boot. Issue #26 is closed and the default is
@@ -63,10 +64,30 @@ What changed in the code recently:
   52%, but makes generation slower. It is rejected.
 - A 60-token context sweep shows a warm-up transient near 2.9 to 3.2 tok/s,
   then a steady unpinned rate near 1.9 tok/s at every tested context.
+- `FLASHNEXT_BUFFER_ARENA` is bit-exact but unresolved. It measures 2.91 gen
+  against 2.94 with fresh buffers and 397.4 against 397.9 MB/token.
+- A miss-fraction sweep shows GPU busy rising to 171.7 ms/token near 25% miss,
+  then falling to 125.7 ms/token at full miss. Token time stays close to
+  linear in physical bytes. The peak needs three arms per cell.
+- VM counters show about 33 page-ins per MB, with reclaim, compression, and
+  swap flat during decode. The corrected `FLASHNEXT_RDAHEAD=0` result is 1.3%
+  faster, not 13% slower, and does not clear a band.
+- The default Metal per-set cap is 750 MB, but the total wired budget is zero.
+  Raising it to 3,750 MB changes neither token time nor VM counters because no
+  allocation is wired by default.
+- A standalone 2 GB wired-limit sweep looked 13.5% faster. The live harness
+  measured -0.4% inside a 7.6% band because it applied the limit after loading.
+  Issue #43 tracks the controlled comparison.
+- A GPU capture measured 5,778 dispatches in 86.99 ms without drive traffic.
+  The Compute Shader Launch Limiter stayed near 100%, with low occupancy and
+  ALU use. The zero-drive GPU is launch-bound.
+- A controlled RMSNorm compile is bit-exact and 1.7% faster at zero drive, but
+  remains unresolved in production. Keep it disabled by default.
 - The remaining cost is still scheduling and graph execution, not a named
   removable stage.
-- The Flash-Next test suite passes all 98 tests. Three new instruments support
-  Metal trace, context decay, and resident working-set measurements.
+- The Flash-Next test suite passes all 98 tests. Current diagnostics cover
+  Metal trace, context decay, resident working set, wired limits, GPU capture,
+  and RMSNorm compilation.
 
 Next work starts with "Redo the gate now that the sampler exists" under Next
 work. Cache-aware's gate result was measured under greedy decoding, which
@@ -174,10 +195,21 @@ Use `/new` before enabling the one-shot fused draft for a new conversation.
 | `models/flashnext/bench_read_ceiling.py` | Price the drive at zero to find the rate ceiling |
 | `models/flashnext/bench_production.py` | The standard benchmark protocol; use it for every published number |
 | `models/flashnext/diskio.py` | Physical bytes read, to tell a cold run from a warm one |
+| `models/flashnext/metal_trace.py` | Export Metal command-buffer spans and nesting depth |
+| `models/flashnext/capture_dispatches.py` | Capture a small `.gputrace` for Xcode dispatch inventory |
 | `models/flashnext/bench_residency.py` | Check the residency gate against `mincore` |
 | `models/flashnext/bench_prefill_scaling.py` | Prefill rate and bytes across prompt lengths |
 | `models/flashnext/bench_route_swap.py` | Count how often a cold expert had a resident near-equal alternative |
 | `models/flashnext/bench_swap_quality.py` | Compare exact and cache-aware answers on checkable prompts |
+
+## Supporting material
+
+| Path | Use |
+|---|---|
+| [`../../MLX/`](../../MLX/) | MLX 0.32.2 Metal source notes with file and line references |
+| [`graphics/README.md`](graphics/README.md) | FlashNext trace image guide |
+| [`graphics/Token trace - Xcode.png`](graphics/Token%20trace%20-%20Xcode.png) | Xcode GPU capture view; use for dispatch inventory, not absolute timing |
+| [`graphics/miss-sweep-residual.png`](graphics/miss-sweep-residual.png) | 28-arm untraced miss-sweep residual plot |
 
 ## Validation
 
@@ -269,7 +301,7 @@ The profile decides whether the variable applies:
 - Run one model instance unless parallel operation is the experiment.
 - Hold prompt text and generated token limit constant.
 - Compare token IDs before accepting a performance change.
-- Reverse or interleave A/B order.
+- Reverse or interleave A/B order. Reversed order is mandatory on this machine.
 - **Use three arms per condition minimum.** The first arm of a run is always
 the slowest, because the page cache warms across arms. Two-arm A/Bs on this machine have produced +12.8% and +10.7% results that were both
 noise.
@@ -309,6 +341,16 @@ runtime but only 0.90 GB, interleaved with 93 language tensors inside a 2.05 GB 
 - Low-rank expert approximation.
 - Native MTP for this complete runtime.
 - Exact speculative paths already measured in the research log.
+- `MLX_MAX_OPS_PER_BUFFER`. The premise gate passed, but cap 120 was 19.8%
+  slower across the plain arms.
+- Reusing destination buffers as a speed change. The ring is bit-exact, but its
+  production result is unresolved and its shape-only form changed token IDs.
+- Raising `MLX_RESIDENCY_SET_MAX_PCT`. It changes only the per-set cap. The
+  total wired budget remains zero, so a fivefold increase changes neither token
+  time nor VM counters.
+- Enabling `FLASHNEXT_EARLY_SUBMIT` as a production default. The settled test
+  did not reproduce the predicted gain. Keep it off until a new mechanism and
+  a load-controlled comparison support it.
 - Removing host work from the read path. Mapping resident rows instead of
 copying them, dropping the concatenate, and issuing reads earlier were each measured. Every one returns its saving to the GPU wait under
 drive pressure.
@@ -327,7 +369,7 @@ further as more rows became eligible. The harm scales with the mapped fraction.
 If a change alters what the model computes, run a code task that names a real external API before adopting it. That applies to checkpoints
 and routing profiles alike. Prose won't catch this kind of failure.
 
-The task: ask for a SketchUp extension that extrudes several selected faces to a height the user types. The reply has to be a complete `.rb`
+The task: ask for a SketchUp extension that extrudes several selected faces to a height supplied in the prompt. The reply has to be a complete `.rb`
 file. Load it in SketchUp and run it. Record the checkpoint, the effort level, and whether it works.
 
 Run it at `medium` and at `high` with sampling on, and keep the sampler and the effort the same on both sides of the comparison. `medium` is
@@ -378,6 +420,7 @@ Current work is tracked in the public issue tracker:
 
 Open exact-quality performance experiments:
 
+- [#23](https://github.com/1architect/macqwen-releases/issues/23) Recheck the bit-exact RMSNorm compile with the zero-drive gate and production arms.
 - [#24](https://github.com/1architect/macqwen-releases/issues/24) Probe routed-expert Q4 group sizes 64 and 128.
 - [#25](https://github.com/1architect/macqwen-releases/issues/25) Gate and benchmark REAP-288. Use REAP-384 as the fallback.
 
@@ -385,8 +428,10 @@ Closed exact-quality performance issues:
 
 - [#21](https://github.com/1architect/macqwen-releases/issues/21) Host-only idle windows. Only 4.16 ms/token qualifies after bulk movement is excluded.
 - [#22](https://github.com/1architect/macqwen-releases/issues/22) Routed `gather_qmm`. The measured path runs at 92.2 to 92.4 GB/s.
-- [#23](https://github.com/1architect/macqwen-releases/issues/23) Complete-runtime `mx.compile`. The bit-exact result saves about 1 ms/token and stays diagnostic.
 - [#26](https://github.com/1architect/macqwen-releases/issues/26) Confirm and retain shared-buffer chunk-2 reads. Closed after the clean-boot result.
+- [#27](https://github.com/1architect/macqwen-releases/issues/27) Attribute the remaining FlashNext GPU layer cost. Closed after Metal trace attribution.
+- [#41](https://github.com/1architect/macqwen-releases/issues/41) Resolve reusable destination-ring performance. Closed with no resolved benefit; diagnostic remains disabled.
+- [#42](https://github.com/1architect/macqwen-releases/issues/42) Characterize the GPU-busy hump across drive miss levels. Closed after the reversed-order sweep.
 
 Follow-up issues from the 2026-09-01 sweep:
 
@@ -396,6 +441,8 @@ Follow-up issues from the 2026-09-01 sweep:
 - [#36](https://github.com/1architect/macqwen-releases/issues/36) Correct absolute GPU utilization reporting.
 - [#37](https://github.com/1architect/macqwen-releases/issues/37) Measure the resident-work boundary below 640 MB.
 - [#38](https://github.com/1architect/macqwen-releases/issues/38) Recheck GDN timing with a dependency-correct chain.
+- [#39](https://github.com/1architect/macqwen-releases/issues/39) Explain clean-boot GPU busy variance.
+- [#43](https://github.com/1architect/macqwen-releases/issues/43) Resolve FlashNext Metal wired-limit behavior.
 
 ### Standing decisions
 

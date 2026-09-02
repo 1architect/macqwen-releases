@@ -64,3 +64,50 @@ class ReadMeter:
         if now < 0 or self._bytes < 0:
             return -1
         return now - self._bytes
+
+
+_VM_KEYS = {
+    "Pages reactivated": "reactivated",
+    "Pageins": "pagein",
+    "Pageouts": "pageout",
+    "Compressions": "compress",
+    "Decompressions": "decompress",
+    "Swapins": "swapin",
+    "Swapouts": "swapout",
+}
+
+
+def vm_counters() -> dict:
+    """What the memory system did, beside what the drive served.
+
+    Physical bytes say how much came off the device. These say what macOS did
+    to make room for it: pull pages back off the inactive queue, push them
+    through the compressor, or swap. A cost that tracks these rather than the
+    byte count is the VM managing the cache, not the drive serving it.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["vm_stat"], capture_output=True, text=True, timeout=5
+        ).stdout
+    except Exception:
+        return {}
+    found = {}
+    for line in out.split("\n"):
+        label, _, value = line.partition(":")
+        name = _VM_KEYS.get(label.strip())
+        if name:
+            found[name] = int(value.strip().rstrip("."))
+    return found
+
+
+def vm_delta(before: dict, after: dict, tokens: int) -> str:
+    """Per-token counter movement, as a printable line."""
+    if not before or not after:
+        return "vm: unavailable"
+    parts = [
+        f"{name}={((after.get(name, 0) - value) / tokens):.0f}"
+        for name, value in sorted(before.items())
+    ]
+    return "vm/token " + " ".join(parts)

@@ -75,6 +75,12 @@ class SafeTensorStore:
         self._hybrid_cutoff = int(os.environ.get("FLASHNEXT_HYBRID_CUTOFF", "2"))
         self._sort_reads = os.environ.get("FLASHNEXT_SORT_READS") == "1"
         self._no_cache = os.environ.get("FLASHNEXT_F_NOCACHE") == "1"
+        # Kernel read-ahead on the shard descriptors. It was measured once,
+        # at 13 percent slower when off, and the code was removed. The
+        # question now is a different one: whether that cost is flat across
+        # miss rates or concentrated where GPU busy peaks. Spillover past the
+        # layer's own wait would show up as the second shape.
+        self._rdahead = os.environ.get("FLASHNEXT_RDAHEAD", "1") != "0"
         # The PLE n-gram shards hold 25 GB and every token reads rows from
         # them. Those reads land in the same page cache the experts compete
         # for, and cache occupancy is the variable that decides decode rate.
@@ -301,6 +307,16 @@ class SafeTensorStore:
                 fd = self._fds.get(shard)
                 if fd is None:
                     fd = os.open(os.path.join(self.dir, shard), os.O_RDONLY)
+                    if not self._rdahead:
+                        # F_RDAHEAD is 45 on Darwin and older Pythons do not
+                        # export it. Refuse rather than report a comparison
+                        # whose setting silently did not apply.
+                        command = getattr(fcntl, "F_RDAHEAD", 45)
+                        if fcntl.fcntl(fd, command, 0) != 0:
+                            raise OSError(
+                                "F_RDAHEAD could not be cleared on "
+                                f"{shard}; refusing to run the arm"
+                            )
                     if self._no_cache or (
                         self._ngram_nocache and shard in self._ngram_only_shards
                     ):

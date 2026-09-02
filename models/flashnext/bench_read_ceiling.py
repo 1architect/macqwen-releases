@@ -15,6 +15,7 @@ Output is not the model's real reply. This measures time, not text.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 import time
@@ -36,7 +37,8 @@ PARTS = ("weight", "scales", "biases")
 PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
 
 
-_PICK = {"mode": "ram", "fixed": [], "rng": None, "fixed_route": False}
+_PICK = {"mode": "ram", "fixed": [], "rng": None, "fixed_route": False,
+         "miss": 0.0}
 
 
 def patch(language) -> None:
@@ -60,6 +62,32 @@ def patch(language) -> None:
         width = inds.shape[-1]
         if _PICK["mode"] == "ram":
             fixed = _PICK["fixed"]
+            miss = _PICK["miss"]
+            if miss:
+                # Route part of the layer outside the pinned pool. The ram and
+                # disk arms are the two ends of one line and nothing sampled
+                # between them, so a GPU cost that rises the moment the drive
+                # is touched cannot be told from one that rises with bytes.
+                # Everything else is held: same width, same dispatch count,
+                # same code. Only the share of reads that reaches the drive
+                # changes. Pool and cold indices come from disjoint ranges, so
+                # the routed set stays distinct.
+                cold = int(round(width * miss))
+                hot = width - cold
+                vals = []
+                if hot:
+                    picked = _PICK["rng"].choice(
+                        len(fixed), size=min(hot, len(fixed)), replace=False
+                    ).tolist()
+                    vals.extend(fixed[index] for index in picked)
+                if cold:
+                    pool = len(fixed)
+                    vals.extend(
+                        (_PICK["rng"].choice(512 - pool, size=cold,
+                                             replace=False) + pool).tolist()
+                    )
+                return _o(self, x, mx.broadcast_to(
+                    mx.array(vals, dtype=inds.dtype), inds.shape))
             if len(fixed) > width and not _PICK["fixed_route"]:
                 # A pool wider than the route separates two causes that the
                 # plain ram arm confounds. Reusing eight experts every token
@@ -86,6 +114,11 @@ def main() -> None:
     parser.add_argument("--tokens", type=int, default=60)
     parser.add_argument("--experts", type=int, default=8,
                         help="routed experts per layer")
+    parser.add_argument("--miss", type=float, default=0.0,
+                        help="ram mode: share of each layer's route drawn from "
+                             "outside the pinned pool, so it reaches the drive. "
+                             "0 is the all-resident arm, 1 is all-cold. Samples "
+                             "the line between them")
     parser.add_argument("--route-fixed", action="store_true",
                         help="pin the pool but route the same experts every "
                              "token. Pairs with --pool to hold pinned bytes "
@@ -119,6 +152,7 @@ def main() -> None:
             for projection in PROJECTIONS:
                 for part in PARTS:
                     pinned += store.pin_rows(f"{prefix}.{projection}.{part}", fixed)
+    _PICK["miss"] = args.miss
     _PICK["fixed_route"] = args.route_fixed
     _PICK["mode"] = args.mode
     _PICK["fixed"] = fixed
@@ -139,18 +173,35 @@ def main() -> None:
     token = mx.argmax(logits[:, -1, :], axis=-1)
     mx.eval(token)
 
+    from models.flashnext.diskio import disk_bytes_read, vm_counters, vm_delta
+
+    vm_before = vm_counters()
+    before = disk_bytes_read()
     reset_profile()
+    # The buffer ring reuses destinations the GPU may still be reading, so the
+    # token digest is the acceptance test, not a nicety.
+    produced = []
     began = time.perf_counter()
     for _ in range(args.tokens):
         logits = language(token[None], cache=cache).logits
         token = mx.argmax(logits[:, -1, :], axis=-1)
         mx.eval(token)
+        produced.append(int(token.item()))
     elapsed = time.perf_counter() - began
+    physical = disk_bytes_read() - before
+    vm_after = vm_counters()
     from models.flashnext.diskio import free_memory_mb
 
     free = free_memory_mb()
     store.unpin_all()
 
+    from models.flashnext.expert_cache import buffer_arena
+
+    digest = hashlib.sha256(
+        ",".join(str(value) for value in produced).encode()
+    ).hexdigest()[:16]
+    print(f"arena: {buffer_arena()}", flush=True)
+    print(f"digest: {digest}", flush=True)
     print(f"free memory: {free} MB", flush=True)
     print(f"mode: {args.mode}", flush=True)
     touched = args.experts if args.route_fixed else len(fixed)
@@ -159,6 +210,10 @@ def main() -> None:
     print(f"pinned: {pinned / 1e9:.2f} GB", flush=True)
     print(f"rate: {args.tokens / elapsed:.2f} tok/s", flush=True)
     print(f"ms/token: {elapsed / args.tokens * 1000:.1f}", flush=True)
+    print(f"miss: {args.miss}", flush=True)
+    print(f"MB/token: {physical / args.tokens / 1e6:.1f}", flush=True)
+    print(f"rdahead: {int(store._rdahead)}", flush=True)
+    print(vm_delta(vm_before, vm_after, args.tokens), flush=True)
     totals = profile_totals()
     if totals.get("io_calls"):
         for key in sorted(totals):
