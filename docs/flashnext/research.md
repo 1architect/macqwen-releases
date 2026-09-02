@@ -2543,3 +2543,220 @@ This report does not measure standard oQ4, and it does not replace our local
 quality gate. It supports the existing decision to keep MTP disabled in the
 production backend. It also adds a long-agentic-run failure mode to the
 checkpoint review record.
+## Session continuation: eval cost and GPU accounting, 2026-09-02
+
+This section records the next research session. It updates the attribution
+work. It does not change the quality gate or the shipped read default.
+
+### GPU meter and main-thread wait
+
+\`gpustat.py\` reads IOKit \`Device Utilization %\` through \`ctypes\`. It needs no
+sudo and no child process. A sample takes 59 microseconds and the meter can
+sample at 17 kHz.
+
+Three real-decode runs produced these lower-bound GPU readings:
+
+| Run | Token time | GPU busy | Eval block time |
+|---|---:|---:|---:|
+| Loaded machine | 530.6 ms | 49.4 ms, 9.3% | 249.3 ms, 47.0% |
+| Clean boot | 449.4 ms | 30.9 ms, 6.9% | 197.0 ms, 43.8% |
+| Stack sampling | 481.1 ms | 38.3 ms, 8.0% | 212.0 ms, 44.1% |
+
+The meter samples every 4 ms while kernels run for 0.02 to 0.5 ms. Its
+counter reads 0 or 100 in two bands. A saturating matmul measured 32.4% when
+it should approach 100%, so the meter undercounts short bursts by about 3x.
+Treat its absolute GPU values as lower bounds.
+
+During steady decode, \`sample <pid> 30\` collected 826 main-thread samples:
+
+| Samples | Share | Frame |
+|---:|---:|---|
+| 299 | 36.2% | \`iokit_user_client_trap\` |
+| 277 | 33.5% | \`__psynch_cvwait\` |
+| 54 | 6.5% | \`iokit_user_client_trap\` |
+| 28 | 3.4% | \`iokit_user_client_trap\` |
+| 13 | 1.6% | \`pread\` |
+
+The recorded call chains are:
+
+\`\`\`text
+mlx::core::eval -> array::wait() -> Event::wait()
+  -> [IOSurfaceSharedEvent waitUntilSignaledValue:] -> iokit_user_client_trap
+lock_PyThread_acquire_lock -> acquire_timed -> PyThread_acquire_lock_timed
+  -> _pthread_cond_wait -> __psynch_cvwait
+\`\`\`
+
+About 46% of main-thread samples wait on a Metal completion event. About 35%
+wait on read-pool futures. Those waits account for the token schedule.
+
+### Eval cost
+
+\`bench_eval_cost.py\` timed every \`mx.eval\` call in a real decode:
+
+\`\`\`text
+token                       470.9 ms
+evals per token              98.0
+blocked in eval             236.7 ms   50.3% of the token
+mean per eval                 2.415 ms
+median per eval               1.278 ms
+GPU busy, IOKit               50.6 ms  10.7%
+\`\`\`
+
+| Eval duration | Evals/token | ms/token | Share |
+|---|---:|---:|---:|
+| 0 to 0.5 ms | 40.7 | 15.2 | 6.4% |
+| 0.5 to 1 ms | 8.2 | 5.8 | 2.5% |
+| 1 to 2 ms | 0.3 | 0.4 | 0.2% |
+| 2 to 5 ms | 43.3 | 179.1 | 75.7% |
+| 5 to 20 ms | 5.5 | 36.2 | 15.3% |
+
+The earlier estimate of 11 ms for 96 evals used an empty eval in isolation.
+In situ, eval blocks account for 236.7 ms per token.
+
+### One-sync comparison
+
+\`FLASHNEXT_ONE_SYNC\` makes \`_moe_call\` evaluate \`scores\` and \`inds\` in one
+round trip. It builds the routed expert list from host values and removes the
+unused device \`where\` over \`inds\`.
+
+The flag is bit-exact on a real chat turn. Both settings produced token digest
+\`429d4df086bbb87e\`.
+
+| Setting | Evals/token | Blocked in eval | Mean eval |
+|---|---:|---:|---:|
+| Two syncs | 98.0 | 198.6 ms | 2.027 ms |
+| One sync | 50.0 | 236.0 ms | 4.721 ms |
+
+The eight-arm production comparison gives one-sync a -11.4% generation median.
+It resolves above an 8.3% band, leads in 0 of 6 pairs, and has sign-test
+\`p = 1.000\`. The eval count halves, but graph work joins the remaining evals.
+Per-eval cost is not fixed overhead. The flag remains off by default.
+
+### Tests of the unattributed \`score_sync\` cost
+
+\`score_sync\` was 142.91 ms in the earlier split, with named components near
+58 ms. Six candidates do not account for the remainder:
+
+| Candidate | Instrument | Result |
+|---|---|---:|
+| Layer glue | \`bench_glue.py\` | 1.56 ms |
+| Cross-layer locality | \`bench_layer_locality.py\` | 0.93x |
+| Dense-weight faulting | \`score_sync_bytes\` | 0.00 MB |
+| Mask and renormalisation | \`bench_glue.py\` | 1.36 ms |
+| Write-pattern coherency | \`bench_gather_qmm.py\` | -0.3% |
+| Fixed eval round trip | \`FLASHNEXT_ONE_SYNC\` | -11.4%, refuted |
+
+The write-pattern test measured 99.8 GB/s for concatenated writes and
+100.1 GB/s for scattered writes. Outputs were byte-identical. The earlier
+write-pattern explanation for the shared-buffer result is withdrawn.
+
+Removing 33 ms of host copy with the shared buffer moved \`score_sync\` from
+142.91 to 187.37 ms. GPU work stayed unchanged and the drain had zero page
+faults. Subtracting separately timed components from \`score_sync\` measures
+scheduling, not a removable stage.
+
+### Layer component costs
+
+\`bench_layer_split.py\` rebuilt the dependency with \`x + sum(y) * 0\` and
+subtracted the link. Chained serial and independent runs produced:
+
+\`\`\`text
+component                  serial    indep  count  ms/token  MB/call
+LAYER_linear               5.9907   4.5697     36    215.66     0.09
+moe_block                  2.8431   3.1243     48    136.47     0.00
+LAYER_attn                 3.8672   4.2797     12     46.41     0.04
+linear_attn                0.5143   0.4839     36     18.51     0.00
+attn_hyper_connection      0.1359   0.1027     48      6.52     0.00
+self_attn                  0.4387   0.4051     12      5.26     0.00
+mlp_hyper_connection       0.0890   0.0850     48      4.27     0.00
+shared_expert              0.0571   0.0519     48      2.74     0.00
+ple                         1.3443   1.3259      1      1.34     0.01
+router_gate                 0.0196   0.0189     48      0.94     0.00
+PARTS TOTAL                                         176.07
+WHOLE LAYERS                                        262.07
+\`\`\`
+
+Whole layers cost 262 ms/token with expert pages hot. This cross-checks the
+earlier independent all-RAM ceiling of 235 ms/token from another tool.
+
+GDN measures 18.51 ms/token here. Earlier records gave 34 ms isolated and
+about 57 ms in situ. Those records used one eval per stage and need another
+controlled run before anyone changes the log.
+
+### Chat versus harness
+
+The chat is not slower because of the settings display change. Commit
+\`d3423f7\` only changes \`_settings_text()\`.
+
+With context reset for each turn, as in the harness, the chat produced:
+
+\`\`\`text
+gen 74 @ 2.5 t/s | tail 65 @ 2.5 | ctx 131
+gen 79 @ 2.6 t/s | tail 70 @ 2.6 | ctx 136
+gen 74 @ 2.5 t/s | tail 65 @ 2.5 | ctx 131
+gen 82 @ 2.5 t/s | tail 73 @ 2.5 | ctx 139
+\`\`\`
+
+| Condition | Tail rate |
+|---|---:|
+| Fresh context, thinking off, effort medium | 2.5 to 2.6 |
+| Context near 313 tokens | 1.9 to 2.0 |
+| Thinking on, effort xhigh | 1.4 to 1.5 |
+
+The investigation ruled out animation, greedy versus sampled decoding,
+\`stream_answers\`, missing pinning, and page-cache warmth alone. The harness
+uses a hand-built prompt with no system prompt and about 20 context tokens, so
+it does not measure the same workload.
+
+### Buffer-chunk2 caveat
+
+The shipped \`buffer-chunk2\` setting remains bit-exact and does not change
+prefill. Two results do not agree on its performance effect:
+
+- Clean-boot 12-arm comparison: +6.3% generation median above a 4.4% band.
+- Cold instrumented run: \`to_mx\` fell from 35.87 to 3.04 ms, while
+  \`score_sync\` rose from 142.91 to 187.37 ms. Token time stayed near 504 ms.
+
+The GPU absorbed the host-copy saving because the copy was already overlapped.
+The clean-boot gain is workload-dependent, not a general proof of lower token
+time.
+
+### Open items
+
+1. \`expert_cache.py\` calls \`self.cache.fetch(experts)\`, but \`ExpertLRU\` has no
+   such method. The path stays latent because \`_one_pass\` always passes
+   \`weights=\`.
+2. \`fetch_np\` and \`plan_missing\` are unreachable. Every caller passes
+   \`expert_capacity=0\`.
+3. The handoff validation command is unbounded. \`generation_limit\` equals
+   answer plus thinking capacity, so \`--max-tokens 32\` with a 4096-token
+   thinking budget requests 4,128 tokens and can run for about 24 minutes.
+   Use \`--think-budget=-1\` for the short check.
+4. The GDN record needs a controlled recheck.
+5. \`fast\` and \`fast-quality\` remain unmeasured with the shared buffer and stay
+   excluded from the default.
+6. Chunk 4 remains unsettled against chunk 2. The three-way sweep tied them,
+   with chunk 4 noisier.
+7. The IOKit meter undercounts short kernels by about 3x under the matmul
+   calibration.
+
+### Tools added in this session
+
+| File | Measurement |
+|---|---|
+| \`gpustat.py\` | GPU busy from IOKit through \`ctypes\`, 59 microseconds per sample |
+| \`bench_eval_cost.py\` | Eval count and block-time distribution per token |
+| \`bench_glue.py\` | Elementwise operations across both sync buckets |
+| \`bench_layer_locality.py\` | One layer repeated against 36 distinct layers |
+
+New \`bench_production.py\` comparisons are \`one-sync\`, \`buffer-chunk\`,
+\`buffer-chunk2\`, and \`compile\`.
+
+### Current position
+
+\`exact-quality\` measures 2.83 generation tokens per second on a clean boot
+with the shipped default. The drive is busy for about half a token. The other
+half is mainly the main thread blocked in \`mx.eval\`. Six tested explanations
+do not identify a stage that can be removed. Merging evals makes the result
+slower. A smaller checkpoint remains the open performance direction, and
+REAP-288 still needs its quality gate.

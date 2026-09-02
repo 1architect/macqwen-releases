@@ -60,6 +60,7 @@ _TIMERS = {
     "score_sync": 0.0,
     "topk_python": 0.0,
     "shared_expert": 0.0,
+    "score_sync_bytes": 0.0,
     "io_calls": 0,
 }
 
@@ -546,15 +547,23 @@ class StreamingSwitchGLU(nn.Module):
 
     def __call__(self, x, indices, allow_sort=True) -> mx.array:
         x = mx.expand_dims(x, (-2, -3))
-        flat = indices.reshape(-1)
-        if _PROFILE:
-            began = time.perf_counter()
-            mx.eval(flat)
-            _TIMERS["router_sync"] += time.perf_counter() - began
+        # `_moe_call` leaves the routed list here when one-sync is on. It is
+        # the same list this method would fetch, built from values already on
+        # the host, so taking it removes a Metal round trip per layer.
+        handed = getattr(self, "_routed_host", None)
+        self._routed_host = None
+        if handed is not None:
+            routed, _shape = handed
         else:
-            mx.eval(flat)
-        with hostwindow.window("route_tolist"):
-            routed = flat.tolist()
+            flat = indices.reshape(-1)
+            if _PROFILE:
+                began = time.perf_counter()
+                mx.eval(flat)
+                _TIMERS["router_sync"] += time.perf_counter() - began
+            else:
+                mx.eval(flat)
+            with hostwindow.window("route_tolist"):
+                routed = flat.tolist()
         observer = _PREFILL_PROGRESS
         if observer is not None and self.layer_id >= 0:
             observer(self.layer_id)

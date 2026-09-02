@@ -32,6 +32,7 @@ sys.path.insert(
 import mlx.core as mx
 
 from models.flashnext import hostwindow
+from models.flashnext.gpustat import GPUMeter
 from models.flashnext.diskio import disk_bytes_read, free_memory_mb
 from models.flashnext.expert_cache import profile_totals, reset_profile
 from models.flashnext.loader import load_streaming
@@ -53,6 +54,11 @@ def decode_pass(language, ids, count):
     produced = []
     reset_profile()
     hostwindow.reset()
+    # Every other number here is the main thread blocked. This one is the GPU
+    # itself, read from IOKit, so the "GPU running" row can be checked instead
+    # of assumed.
+    meter = GPUMeter(interval=0.004)
+    meter.start() if meter.available() else None
     read_before = disk_bytes_read()
     began = time.time()
     drain = 0.0
@@ -67,9 +73,12 @@ def decode_pass(language, ids, count):
         mx.eval(token)
         drain += time.perf_counter() - drain_began
     elapsed = time.time() - began
+    gpu = meter.stop() if meter.available() else {"samples": 0}
     read_bytes = disk_bytes_read() - read_before
     timers = profile_totals()
     timers["final_eval"] = drain
+    timers["gpu_busy_fraction"] = gpu.get("busy_fraction", -1.0)
+    timers["gpu_samples"] = gpu.get("samples", 0)
     return (
         produced,
         elapsed / count,
@@ -205,6 +214,28 @@ def main() -> int:
             print(f"  {label:26s} {ms:8.1f}  {ms/token_ms*100:5.1f}%")
         print(f"  {'unaccounted':26s} {token_ms-accounted:8.1f}  "
               f"{(token_ms-accounted)/token_ms*100:5.1f}%")
+        frac = last_timers.get("gpu_busy_fraction", -1.0)
+        if frac >= 0:
+            measured = frac * token_ms
+            print(f"  {'':26s} {'':8}  {'':6}")
+            print(f"  {'GPU busy, IOKit counter':26s} {measured:8.1f}  "
+                  f"{frac*100:5.1f}%   over "
+                  f"{int(last_timers.get('gpu_samples', 0))} samples")
+            # `gpu` is a total in seconds; every other figure here is
+            # milliseconds per token.
+            gpu_ms = gpu / tokens * 1000
+            print(f"  {'eval block time claims':26s} {gpu_ms:8.1f}  "
+                  f"{gpu_ms/token_ms*100:5.1f}%")
+            if measured < gpu_ms * 0.7:
+                print("  The GPU is idle for much of what the eval blocks on,")
+                print("  so eval block time is not GPU time and the unattributed")
+                print("  part of score_sync is the host waiting, not kernels.")
+            elif measured > gpu_ms * 1.3:
+                print("  The GPU is busier than the eval blocks account for,")
+                print("  so work is running outside the timed evals.")
+            else:
+                print("  The two agree, so eval block time is GPU time and the")
+                print("  component table is missing real kernels.")
         print(f"  {'token':26s} {token_ms:8.1f}")
         print(
             f"  drive: expert timer "

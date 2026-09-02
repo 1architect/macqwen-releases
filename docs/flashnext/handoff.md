@@ -5,7 +5,7 @@ rules.
 
 ## Where things stand
 
-Last worked on 2026-09-01.
+Last worked on 2026-09-02.
 
 The runtime streams a 176B sparse MoE model from SSD on a 16 GB M4 Mac. oQ4 is
 installed and is the baseline. `exact-quality` is the default routing profile.
@@ -50,16 +50,23 @@ What changed in the code recently:
   over the current concatenate path. Token IDs match and physical bytes fall.
   The run started after a clean boot. Issue #26 is closed and the default is
   active for the pread family.
-- A whole-layer control costs 255.93 ms/token with expert pages hot. The
-  individually timed component parts total 41.00 ms. Issue #27 tracks the
-  missing attribution.
-- The Flash-Next test suite passes all 98 tests.
+- An earlier whole-layer control costs 255.93 ms/token with expert pages hot,
+  while its separately timed component parts total 41.00 ms. The latest
+  dependency-correct split measures 262 ms/token for whole hot layers and
+  176.07 ms/token for chained parts. Issue #27 tracks the missing attribution.
+- The 2026-09-02 continuation measures 236.7 ms/token blocked in `mx.eval`.
+  A one-sync experiment halves eval count but slows generation by 11.4%.
+  The IOKit GPU meter undercounts short kernels by about 3x.
+- The remaining cost is still scheduling and graph execution, not a named
+  removable stage.
+- The Flash-Next test suite passes all 98 tests. Four new tools support GPU,
+  eval, glue, and layer-locality measurements.
 
-The first thing worth doing is in "Redo the gate now that the sampler exists"
-under Next work. Cache-aware's gate result was measured under greedy decoding,
-which causes repetition on its own, so it says more about greedy than about
-routing. That one comparison decides whether cache-aware can become the
-default, and it decides the 2.91 against 2.73 question with it.
+Next work starts with "Redo the gate now that the sampler exists" under Next
+work. Cache-aware's gate result was measured under greedy decoding, which
+causes repetition on its own, so it says more about greedy than about routing.
+That comparison decides whether cache-aware can become the default and whether
+the 2.91 against 2.73 result holds with the recommended sampler.
 
 ## Environment
 
