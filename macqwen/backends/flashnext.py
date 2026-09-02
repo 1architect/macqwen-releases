@@ -141,11 +141,77 @@ class FlashNextBackend(Conversation):
         } - {None}
 
     def _settings_text(self) -> str:
+        from macqwen.ui import C
+
         routing = getattr(self, "routing", None)
+        profile = self.routing_profile
+
+        def runtime(name, fallback):
+            return (
+                getattr(routing, name, fallback)
+                if routing is not None else fallback
+            )
+
+        def setting(label, value, active=True):
+            width = max(20, len(label) + 1)
+            line = f"  {label:<{width}}{value}"
+            if active:
+                return line + "\n"
+            return f"{C['dim']}{line} (inactive){C['0']}\n"
+
         pinned_count = sum(
             len(experts) for experts in getattr(routing, "pinned", {}).values()
         )
         pinned_gb = getattr(routing, "pinned_bytes", 0) / 1e9
+        swap_active = (
+            profile == "cache-aware"
+            or os.environ.get("FLASHNEXT_SWAP_RESIDENT") == "1"
+            or bool(getattr(routing, "cache_aware", False))
+        )
+        if os.environ.get("FLASHNEXT_SWAP_RESIDENT") == "1":
+            from models.flashnext.routing import swap_epsilon
+
+            effective_swap_epsilon = swap_epsilon()
+        else:
+            effective_swap_epsilon = runtime(
+                "swap_epsilon", self.swap_epsilon
+            )
+        quality_profiles = {
+            "fast-quality", "exact-quality", "cache-aware", "fused-quality",
+        }
+        resident_active = profile in {
+            "exact-quality", "cache-aware", "fused-quality",
+        }
+        tail_active = profile == "fast-quality"
+        quality_active = profile in quality_profiles
+        fusion_active = profile == "fused-quality"
+
+        configured_threshold = self.threshold
+        effective_threshold = (
+            0.2 if profile == "fast"
+            else runtime("threshold", configured_threshold)
+        )
+        if profile == "fast":
+            threshold_text = f"{effective_threshold:g}"
+            if configured_threshold != effective_threshold:
+                threshold_text += (
+                    f" (configured {configured_threshold:g}; config ignored)"
+                )
+        elif profile == "fast-quality":
+            threshold_text = (
+                f"{effective_threshold:g} (warmup; tail threshold 0.2)"
+            )
+        else:
+            threshold_text = f"{effective_threshold:g}"
+
+        runtime_pin_budget = getattr(routing, "pin_budget_gb", None)
+        if runtime_pin_budget is None:
+            runtime_pin_budget = getattr(routing, "pin_budget", None)
+            if runtime_pin_budget is not None:
+                runtime_pin_budget /= 1e9
+        if runtime_pin_budget is None:
+            runtime_pin_budget = self.pin_budget_gb
+
         warnings = []
         if self.routing_profile == "fused-quality":
             warnings.append("fused-quality is experimental; its reasoning gate failed")
@@ -172,24 +238,54 @@ class FlashNextBackend(Conversation):
             f"  thinking            "
             f"{'on' if getattr(self, 'thinking_enabled', False) else 'off'}\n"
             f"  token-budget        {budgets}\n"
-            f"  routing             {self.routing_profile}\n"
-            f"  swap-epsilon        {self.swap_epsilon:g}  (cache-aware)\n"
-            f"  threshold           {self.threshold:g}\n"
-            f"  resident-experts    {self.resident_experts}  "
-            "(alias: pinned-experts; exact/cache/fused)\n"
-            f"  pin-budget-gb       {self.pin_budget_gb:g}\n"
-            f"  pinned-now          {pinned_count} layer experts, {pinned_gb:.2f} GB\n"
-            f"  tail-experts        {self.tail_experts}  (fast-quality)\n"
-            f"  tail-warmup         {self.tail_warmup}  (quality profiles)\n"
-            f"  fusion-block        {self.fusion_block}\n"
-            f"  fusion-min-margin   {self.fusion_min_margin:g}\n"
-            f"  fusion-min-block    {self.fusion_min_block}\n"
-            f"  fusion-margin-tokens {self.fusion_margin_tokens}\n"
-            f"  fusion-max-prompt   {self.fusion_max_prompt}\n"
-            f"  fusion-model        {self.fusion_model}\n"
-            f"  model-path          {getattr(self, 'model_path', '(startup only)')}\n"
+            + setting("routing", profile)
+            + setting(
+                "swap-epsilon",
+                f"{effective_swap_epsilon:g}  (cache-aware)",
+                swap_active,
+            )
+            + setting("threshold", threshold_text, profile != "fast")
+            + setting(
+                "resident-experts",
+                f"{runtime('resident_experts', self.resident_experts)}  "
+                "(alias: pinned-experts; exact/cache/fused)",
+                resident_active,
+            )
+            + setting(
+                "pin-budget-gb", f"{runtime_pin_budget:g}", quality_active
+            )
+            + setting(
+                "pinned-now",
+                f"{pinned_count} layer experts, {pinned_gb:.2f} GB",
+                quality_active,
+            )
+            + setting(
+                "tail-experts",
+                f"{runtime('tail_experts', self.tail_experts)}  (fast-quality)",
+                tail_active,
+            )
+            + setting(
+                "tail-warmup",
+                f"{runtime('warmup', self.tail_warmup)}  (quality profiles)",
+                quality_active,
+            )
+            + setting("fusion-block", self.fusion_block, fusion_active)
+            + setting(
+                "fusion-min-margin", f"{self.fusion_min_margin:g}", fusion_active
+            )
+            + setting("fusion-min-block", self.fusion_min_block, fusion_active)
+            + setting(
+                "fusion-margin-tokens", self.fusion_margin_tokens, fusion_active
+            )
+            + setting(
+                "fusion-max-prompt", self.fusion_max_prompt, fusion_active
+            )
+            + setting("fusion-model", self.fusion_model, fusion_active)
+            + f"  model-path          {getattr(self, 'model_path', '(startup only)')}\n"
             f"  session-dir         {getattr(self, 'session_dir', '(startup only)')}"
             f"{warning}\n"
+            "legend: dim = inactive or ignored; values show effective "
+            "runtime settings\n"
             "usage: /settings NAME VALUE | /settings defaults\n"
             "decoding is set by /sampling, /effort, /thinking, /think-budget\n"
             "routing: standard, fast, fast-quality, exact-quality, "

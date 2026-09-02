@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from macqwen.backends.flashnext import FlashNextBackend
 from macqwen.model_settings import FLASHNEXT_DEFAULTS
@@ -25,6 +28,72 @@ class SettingsTests(unittest.TestCase):
         backend.tape = []
         backend._rebuild_routing = lambda: None
         return backend
+
+    def settings_backend(self, profile):
+        backend = self.make_backend()
+        backend.routing_profile = profile
+        effective = 0.2 if profile == "fast" else backend.threshold
+        backend.routing = SimpleNamespace(
+            mode=profile,
+            threshold=effective,
+            quality=profile in (
+                "fast-quality", "exact-quality", "cache-aware", "fused-quality"
+            ),
+            cache_aware=profile == "cache-aware",
+        )
+        return backend
+
+    @staticmethod
+    def settings_line(text, name):
+        return next(
+            line for line in text.splitlines() if f"  {name} " in line
+        )
+
+    def test_irrelevant_settings_are_dimmed_and_active_settings_are_normal(self):
+        cases = (
+            ("exact-quality", "resident-experts", "swap-epsilon"),
+            ("cache-aware", "swap-epsilon", "tail-experts"),
+            ("fast-quality", "tail-experts", "fusion-block"),
+            ("fused-quality", "fusion-block", "tail-experts"),
+        )
+        for profile, active, inactive in cases:
+            with self.subTest(profile=profile):
+                text = self.settings_backend(profile)._settings_text()
+                active_line = self.settings_line(text, active)
+                inactive_line = self.settings_line(text, inactive)
+                self.assertNotIn("\033[2m", active_line)
+                self.assertNotIn("\033[0m", active_line)
+                self.assertTrue(inactive_line.startswith("\033[2m"))
+                self.assertTrue(inactive_line.endswith("\033[0m"))
+
+    def test_fast_displays_effective_and_configured_thresholds(self):
+        backend = self.settings_backend("fast")
+        backend.threshold = 0.85
+        line = self.settings_line(backend._settings_text(), "threshold")
+        self.assertTrue(line.startswith("\033[2m"))
+        self.assertTrue(line.endswith("\033[0m"))
+        self.assertIn("0.2", line)
+        self.assertIn("0.85", line)
+
+    def test_fast_quality_displays_threshold_transition(self):
+        backend = self.settings_backend("fast-quality")
+        backend.threshold = 0.85
+        line = self.settings_line(backend._settings_text(), "threshold")
+        self.assertIn("0.85", line)
+        self.assertIn("0.2", line)
+        self.assertIn("warmup", line)
+        self.assertIn("tail threshold 0.2", line)
+
+    def test_global_swap_override_is_active_and_displayed(self):
+        backend = self.settings_backend("exact-quality")
+        with patch.dict(os.environ, {
+            "FLASHNEXT_SWAP_RESIDENT": "1",
+            "FLASHNEXT_SWAP_EPSILON": "0.37",
+        }):
+            line = self.settings_line(backend._settings_text(), "swap-epsilon")
+        self.assertNotIn("\033[2m", line)
+        self.assertNotIn("\033[0m", line)
+        self.assertIn("0.37", line)
 
     def test_lists_modes_and_advanced_values(self):
         text = self.make_backend().configure("")
