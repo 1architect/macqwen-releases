@@ -45,18 +45,34 @@ PROMPT = "Explique a fotossintese em duas frases."
 class EvalCounter:
     """Wrap `mx.eval`, recording one duration per call."""
 
-    def __init__(self):
+    def __init__(self, split=False):
         self.durations: list[float] = []
+        self.submits: list[float] = []
+        self.waits: list[float] = []
+        self.split = split
         self._original = None
 
     def install(self):
         self._original = mx.eval
-        durations = self.durations
+        durations, submits, waits = self.durations, self.submits, self.waits
+        split = self.split
+        original = self._original
 
         def counted(*args, **kwargs):
             began = time.perf_counter()
             try:
-                return self._original(*args, **kwargs)
+                if split:
+                    mid = time.perf_counter()
+                    try:
+                        mx.async_eval(*args)
+                        mid = time.perf_counter()
+                        submits.append(mid - began)
+                    except Exception:
+                        submits.append(0.0)
+                    out = original(*args, **kwargs)
+                    waits.append(time.perf_counter() - mid)
+                    return out
+                return original(*args, **kwargs)
             finally:
                 durations.append(time.perf_counter() - began)
 
@@ -80,6 +96,49 @@ def main() -> int:
     parser.add_argument("--model")
     parser.add_argument("--tokens", type=int, default=24)
     parser.add_argument("--warm", type=int, default=4)
+    parser.add_argument("--cache-limit-mb", type=int, default=-1,
+                        help="MLX buffer cache limit. A token wraps 48 arrays "
+                             "of about 24 MB, so 1.1 GB of allocation churn. "
+                             "If MLX returns those to the OS and re-allocates, "
+                             "the cost lands inside mx.eval as "
+                             "MetalAllocator::make_buffer, which a stack "
+                             "sample of a real decode did catch. Raising the "
+                             "limit trades page cache for fewer allocations, "
+                             "so watch MB/token as well as the clock.")
+    parser.add_argument("--dummy", type=int, default=0,
+                        help="side of a square matmul added to every layer's "
+                             "graph. The result is multiplied by zero before "
+                             "it reaches the output, so tokens stay identical "
+                             "while the GPU is given known extra work. If eval "
+                             "block time grows by what the matmul costs, eval "
+                             "time is GPU time and the IOKit counter is wrong. "
+                             "If it barely moves, the GPU is idle inside the "
+                             "eval and something else holds the main thread.")
+    parser.add_argument("--dummy-ops", type=int, default=0,
+                        help="count of trivial cancelled elementwise ops added "
+                             "to every layer. The matmul sweep showed cost per "
+                             "GFLOP falling as the matmul grew, which is per-op "
+                             "latency rather than throughput. These ops carry "
+                             "almost no work, so the slope prices a graph node "
+                             "on its own.")
+    parser.add_argument("--resident-mb", type=int, default=0,
+                        help="megabytes of resident weights swept once per "
+                             "token, standing in for a small model running in "
+                             "the idle window. The matmul sweep reused a 2 MB "
+                             "array, so it measured arithmetic with no memory "
+                             "traffic. A real supervisor model streams its "
+                             "weights, and every previous attempt to add "
+                             "traffic to this machine lost to contention. "
+                             "Watch MB/token: if the page cache gives ground, "
+                             "the expert reads pay for it.")
+    parser.add_argument("--split-async", action="store_true",
+                        help="split every eval into async_eval then eval. "
+                             "async_eval does the CPU-side scheduling and "
+                             "returns; the eval that follows only waits. The "
+                             "fixed 86 ms survives every test for GPU work, "
+                             "graph nodes, page faults and eval count, so the "
+                             "remaining question is which side of the "
+                             "submission boundary it sits on.")
     args = parser.parse_args()
 
     os.environ.setdefault("FLASHNEXT_TOPK_THRESHOLD", "0.85")
@@ -99,8 +158,13 @@ def main() -> int:
     )
     ids = mx.array(tokenizer(text)["input_ids"])[None]
 
+    if args.cache_limit_mb >= 0:
+        mx.set_cache_limit(args.cache_limit_mb * 1024 * 1024)
     print(f"model        {path}")
     print(f"free memory  {free_memory_mb():.0f} MB")
+    print(f"cache limit  "
+          + ("default" if args.cache_limit_mb < 0
+             else f"{args.cache_limit_mb} MB"))
 
     language._position_ids = None
     language._rope_deltas = None
@@ -115,17 +179,81 @@ def main() -> int:
         token = mx.argmax(step.logits[:, -1, :], axis=-1)
         mx.eval(token)
 
-    counter = EvalCounter()
+    # Known GPU work, added to every layer, cancelled before it can change a
+    # value. `y + sum(D @ D) * 0` is exactly `y` for finite D.
+    if args.dummy:
+        from mlx_vlm.models.qwen4_exp.language import Qwen4ExpDecoderLayer
+
+        side = args.dummy
+        pad = mx.random.normal((side, side)).astype(mx.bfloat16) * 0.01
+        mx.eval(pad)
+        flops = 2 * side ** 3
+        original_layer = Qwen4ExpDecoderLayer.__call__
+
+        def with_dummy(self_, hidden_states, *rest, _o=original_layer, **kw):
+            out = _o(self_, hidden_states, *rest, **kw)
+            return out + mx.sum(pad @ pad).astype(out.dtype) * 0.0
+
+        Qwen4ExpDecoderLayer.__call__ = with_dummy
+        print(f"dummy        {side}x{side} matmul per layer, "
+              f"{flops/1e6:.0f} MFLOP, {flops*48/1e9:.1f} GFLOP per token")
+
+    if args.dummy_ops:
+        from mlx_vlm.models.qwen4_exp.language import Qwen4ExpDecoderLayer
+
+        n_ops = args.dummy_ops
+        seed = mx.zeros((1, 1, 8), dtype=mx.bfloat16)
+        mx.eval(seed)
+        original_ops = Qwen4ExpDecoderLayer.__call__
+
+        def with_ops(self_, hidden_states, *rest, _o=original_ops, **kw):
+            out = _o(self_, hidden_states, *rest, **kw)
+            acc = seed
+            for _ in range(n_ops):
+                acc = acc + seed          # one graph node, no real work
+            return out + mx.sum(acc).astype(out.dtype) * 0.0
+
+        Qwen4ExpDecoderLayer.__call__ = with_ops
+        print(f"dummy ops    {n_ops} elementwise adds per layer, "
+              f"{n_ops * 48} per token")
+
+    sidecar = None
+    if args.resident_mb:
+        # bf16 matvec against a resident bank, so the traffic is a real read of
+        # every byte rather than a cache-resident square matmul.
+        rows = args.resident_mb * 1024 * 1024 // (2 * 2560)
+        sidecar = mx.random.normal((rows, 2560)).astype(mx.bfloat16) * 0.01
+        probe = mx.zeros((2560,), dtype=mx.bfloat16)
+        mx.eval(sidecar, probe)
+        print(f"resident     {args.resident_mb} MB bank, {rows:,} x 2560, "
+              f"swept once per token")
+
+        from mlx_vlm.models.qwen4_exp.language import Qwen4ExpModel
+        original_model = Qwen4ExpModel.__call__
+
+        def with_sidecar(self_, *a, _o=original_model, **k):
+            out = _o(self_, *a, **k)
+            side = mx.sum(sidecar @ probe)
+            if isinstance(out, tuple):
+                return out
+            return out + side.astype(out.dtype) * 0.0
+
+        Qwen4ExpModel.__call__ = with_sidecar
+
+    counter = EvalCounter(split=args.split_async)
     meter = GPUMeter(interval=0.004)
     counter.install()
     if meter.available():
         meter.start()
+    from models.flashnext.diskio import disk_bytes_read
+    read_before = disk_bytes_read()
     began = time.time()
     for _ in range(args.tokens):
         step = language(token[None], cache=cache)
         token = mx.argmax(step.logits[:, -1, :], axis=-1)
         mx.eval(token)
     elapsed = time.time() - began
+    read_mb = (disk_bytes_read() - read_before) / 1e6 / args.tokens
     gpu = meter.stop() if meter.available() else {"samples": 0}
     counter.restore()
 
@@ -135,7 +263,9 @@ def main() -> int:
     total_ms = sum(durations) / args.tokens * 1000
     ordered = sorted(durations, reverse=True)
 
-    print(f"\n  token                    {token_ms:8.1f} ms")
+    print(f"\n  read                     {read_mb:8.1f} MB/token")
+    print(f"  mlx cache                {mx.get_cache_memory()/1e6:8.1f} MB")
+    print(f"  token                    {token_ms:8.1f} ms")
     print(f"  evals per token          {per_token:8.1f}")
     print(f"  blocked in eval          {total_ms:8.1f} ms  "
           f"{total_ms/token_ms*100:5.1f}% of the token")
@@ -145,6 +275,14 @@ def main() -> int:
         busy = gpu["busy_fraction"] * token_ms
         print(f"  GPU busy, IOKit          {busy:8.1f} ms  "
               f"{gpu['busy_fraction']*100:5.1f}%")
+
+    if counter.submits and counter.waits:
+        sub = sum(counter.submits) / args.tokens * 1000
+        wait = sum(counter.waits) / args.tokens * 1000
+        print(f"\n  async_eval, CPU side     {sub:8.1f} ms  "
+              f"{sub/token_ms*100:5.1f}% of the token")
+        print(f"  eval after it, waiting   {wait:8.1f} ms  "
+              f"{wait/token_ms*100:5.1f}%")
 
     # Where the block time sits: a few large evals or many small ones.
     print(f"\n  {'bucket':>16}  {'evals/token':>11} {'ms/token':>9} {'share':>6}")
