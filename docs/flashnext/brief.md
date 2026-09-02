@@ -33,11 +33,11 @@ These are the current measurements. The oQ3-MTP sweep finished: it failed the tr
 - Prefill speed increases with prompt length. A prompt near 5,000 tokens may
 reach about 40 to 50 tokens per second under favorable conditions.
 - Ten fixed-prompt exact-quality arms measured a 2.59 tokens-per-second
-pinned-tail mean. Their range was 2.42 to 2.73. A separate two-run subset averaged 2.83, so 2.83 is not a ten-run baseline.
-- The standard harness measures 2.713 tokens per second for a complete decode
-and 2.650 for the pinned tail, over ten kept arms at 390 MB of physical reads per token. Terminal `gen` on short chat turns runs near 2.0 to
-2.5. The older 2.59 figure comes from a harness that reloads the model for each arm and therefore starts colder. The gap is page-cache
-state, not code.
+  pinned-tail mean before the buffer-chunk2 change. Their range was 2.42 to
+  2.73. The older harness reloads the model for each arm and starts colder.
+- The accepted clean-boot `buffer-chunk2` comparison measures 2.83 tokens per
+  second for `gen`, 2.70 for the pinned tail, and 457.7 MB of physical reads
+  per token. It wins 10 of 12 pairs and preserves token IDs.
 - Prefill is faster only because it amortises. A layer reads each distinct
 expert once and serves every token in the prompt with it, so sixteen times the tokens cost 1.94 times the bytes. The drive rate falls as
 prefill speeds up, from 1.40 to 0.82 GB/s, while decode sustains 1.06 GB/s.
@@ -61,10 +61,11 @@ long-context comparison stayed coherent, but the exact-quality answer was better
   `gather_qmm`, and the complete-runtime compile estimate. They recover about
   4.16 ms, measure 13 to 16 ms, and save about 1 ms per token respectively.
 - A 12-arm test gives `buffer-chunk2` a resolved 6.3% generation gain over the
-  current concatenate path. Token IDs match and physical bytes fall. The
-  default stays unchanged while issue #26 tracks adoption.
-- The GPU, SSD, host split on a cold 492.5 ms token is 197.4, 226.7, and
-  44.8 ms. The main remaining unknown is whole-layer GPU attribution.
+  concatenate path. Token IDs match and physical bytes fall. Issue #26 is
+  closed.
+- The final device split is 172.4 ms GPU, 234.8 ms drive, 42.5 ms host-only,
+  and 18.8 ms unaccounted per token. The main remaining unknown is whole-layer
+  GPU attribution.
 
 The reference machine is an M4 Mac with 16 GB of unified memory and a 256 GB SSD. Prefill and decode measurements are separate. Short
 prompts have lower prefill rates because fixed setup and streamed-read costs apply to fewer tokens. Performance also depends on prompt type,

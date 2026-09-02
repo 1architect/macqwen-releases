@@ -1,6 +1,48 @@
 # Changelog
 
-## Unreleased
+## MACQWEN 0.3.4 - 2026-09-02
+
+### Added
+
+- Add the six-command shared chat surface: `/help`, `/new`, `/session`, `/config`, `/status`, and `/quit`.
+- Add grouped session and configuration commands while keeping the existing commands as compatibility aliases.
+- Add `/help all` with profile-aware compatibility command details.
+- Add effective-value and inactive-setting reporting for Flash-Next routing.
+- Add shared command metadata for web-terminal shortcut buttons.
+- Add branch synchronization warnings when a checkout does not contain `origin/main`.
+- Add Flash-Next host-window, layer-split, routed-gather, compile, and production comparison benchmarks.
+- Add optional bit-exact compiled router, normalization, gate, renormalization, and combine chains.
+
+### Changed
+
+- Replace the Plain profile prompt with: `Answer precisely. Never invent an API, a name, or a result. Ask for what you need, and say when you are unsure.`
+- Make shared-buffer chunk 2 the default for the `pread`, `preadv`, and `resident` read modes.
+- Keep `fast` and `fast-quality` on `shared_mmap` until their shared-buffer behavior is measured.
+- Instrument expert-read futures and host intervals so GPU, SSD, and host-only time can be separated.
+- Keep `/settings`, `/thinking`, `/save`, `/load`, `/reset`, and other former commands accepted through compatibility routing.
+- Add oQ3-MTP to the checkpoint notice and record the external oQ4-MTP repetition warning. MTP stays disabled in production.
+- Update the shared chat, Flash-Next, Qwen27B, and release documentation with the current command surface, measurements, and issue links.
+
+### Fixed
+
+- Show routing values that apply to the active profile and mark inactive or ignored settings.
+- Keep web-terminal shortcuts aligned with the shared command table.
+- Preserve token IDs while changing the Flash-Next read-buffer layout.
+- Keep Plain mode free of tools while allowing it to request missing information.
+
+### Measured
+
+- `buffer-chunk2` reaches 2.83 gen, 2.70 tail, and 457.7 MB/token in the clean-boot 12-arm comparison. It wins 10 of 12 pairs, uses fewer bytes in 10 of 12, and preserves token IDs.
+- Host-only bookkeeping contributes 4.16 ms/token after bulk movement is excluded. The routed `gather_qmm` path runs at 92.2 to 92.4 GB/s and costs 13 to 16 ms/token.
+- The compiled path remains bit-exact but changes the complete result by -0.6%. Its approximately 1 ms/token saving stays diagnostic.
+- Device duty is 172.4 ms GPU, 234.8 ms drive, 42.5 ms host-only, and 18.8 ms unaccounted per token in the final cold run.
+- Whole decoder layers cost 255.93 ms/token while individually timed neural components total 41.00 ms/token. The remaining attribution stays open.
+- The external oQ4-MTP report records repetition loops that reach `max_tokens` and truncate tool calls. It does not measure standard oQ4 or this runtime.
+
+### Quality
+
+- The recorded oQ3-MTP SketchUp failure called `Sketchup::Face#extrude` across 34,203 reasoning characters. oQ4 questioned `pushpull` before settling on the correct API.
+- Keep oQ4 as the quality baseline. REAP-288 remains gated until its reasoning-loop report passes the complete quality check.
 
 ## MACQWEN 0.3.3 - 2026-09-01
 

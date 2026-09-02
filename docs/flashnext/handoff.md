@@ -8,8 +8,9 @@ rules.
 Last worked on 2026-09-01.
 
 The runtime streams a 176B sparse MoE model from SSD on a 16 GB M4 Mac. oQ4 is
-installed and is the baseline. `exact-quality` is the default routing profile
-and measures 2.713 tok/s on the harness at 390 MB of physical reads per token.
+installed and is the baseline. `exact-quality` is the default routing profile.
+The accepted clean-boot `buffer-chunk2` result measures 2.83 gen, 2.70 tail,
+and 457.7 MB of physical reads per token.
 
 Recent decisions, with the evidence in `research.md`:
 
@@ -47,15 +48,12 @@ What changed in the code recently:
   about 1 ms of compile savings. None explains the 36 ms gap.
 - A 12-arm comparison gives `buffer-chunk2` a resolved 6.3% generation gain
   over the current concatenate path. Token IDs match and physical bytes fall.
-  The run started after a clean boot. Issue #26 tracks adoption as the default.
+  The run started after a clean boot. Issue #26 is closed and the default is
+  active for the pread family.
 - A whole-layer control costs 255.93 ms/token with expert pages hot. The
   individually timed component parts total 41.00 ms. Issue #27 tracks the
   missing attribution.
-- The session changes are uncommitted. Modified files are
-  `adaptive_topk.py`, `expert_cache.py`, and `bench_production.py`. New files
-  are `bench_gather_qmm.py`, `bench_host_window.py`, `bench_layer_split.py`,
-  `compiled.py`, and `hostwindow.py`. The Flash-Next test suite passes all 94
-  tests.
+- The Flash-Next test suite passes all 98 tests.
 
 The first thing worth doing is in "Redo the gate now that the sampler exists"
 under Next work. Cache-aware's gate result was measured under greedy decoding,
@@ -204,7 +202,7 @@ and page-cache state can move the result.
 
 | Condition | Rate |
 |---|---:|
-| exact-quality, complete decode, ten kept arms | **2.713 tok/s**, 390 MB/token |
+| exact-quality, clean-boot buffer-chunk2 | **2.83 tok/s**, 457.7 MB/token |
 | the same arms, pinned tail | 2.650 tok/s |
 | cache-aware, harness, four kept arms | **2.91 tok/s**, 2.92 tail, 360.4 MB/token |
 | exact arm in the same harness run | 2.73 tok/s, 2.70 tail, 430.0 MB/token |
@@ -212,12 +210,13 @@ and page-cache state can move the result.
 | cache-aware, earlier hot run, superseded | 2.79 against 2.54, 347.6 against 417.8 MB/token |
 | older harness, ten pinned-tail arms, colder start | 2.42 to 2.73 tok/s, mean 2.59 |
 | terminal `gen`, short chat turns | about 2.0 to 2.5 tok/s |
-| separate warmup-eight pair | 2.88 and 2.78 tok/s, mean 2.83 |
+| pre-buffer warmup-eight pair, superseded | 2.88 and 2.78 tok/s, mean 2.83 |
 | synthetic fixed routes, every expert read resident | **5.33 tok/s** |
 | synthetic fixed routes, every expert read cold | 1.09 tok/s |
 
-The 2.83 value is not a production baseline. The ten-arm mean is 2.59, and prompt-locality tests ranged from 1.98 to 2.44 tok/s. All these
-values measure the pinned tail. Use complete decode for interactive performance.
+The 2.83 value now comes from the accepted clean-boot buffer-chunk2
+comparison. The older ten-arm 2.59 value and the warmup-eight pair remain
+historical pre-buffer records. Use complete decode for interactive performance.
 
 The synthetic ceiling shows that compute can exceed 3 tok/s when expert reads stay resident. It does not predict a real production reply.
 
@@ -368,7 +367,7 @@ Open exact-quality performance experiments:
 
 - [#24](https://github.com/1architect/macqwen-releases/issues/24) Probe routed-expert Q4 group sizes 64 and 128.
 - [#25](https://github.com/1architect/macqwen-releases/issues/25) Gate and benchmark REAP-288. Use REAP-384 as the fallback.
-- [#26](https://github.com/1architect/macqwen-releases/issues/26) Confirm and retain shared-buffer chunk-2 reads.
+- [#26](https://github.com/1architect/macqwen-releases/issues/26) Confirm and retain shared-buffer chunk-2 reads. Closed after the clean-boot result.
 - [#27](https://github.com/1architect/macqwen-releases/issues/27) Attribute the remaining FlashNext GPU layer cost.
 
 Closed exact-quality performance issues:
@@ -376,6 +375,12 @@ Closed exact-quality performance issues:
 - [#21](https://github.com/1architect/macqwen-releases/issues/21) Host-only idle windows. Only 4.16 ms/token qualifies after bulk movement is excluded.
 - [#22](https://github.com/1architect/macqwen-releases/issues/22) Routed `gather_qmm`. The measured path runs at 92.2 to 92.4 GB/s.
 - [#23](https://github.com/1architect/macqwen-releases/issues/23) Complete-runtime `mx.compile`. The bit-exact result saves about 1 ms/token and stays diagnostic.
+
+Follow-up issues from the 2026-09-01 sweep:
+
+- [#33](https://github.com/1architect/macqwen-releases/issues/33) Remove or repair the unreachable `ExpertLRU` merge path.
+- [#34](https://github.com/1architect/macqwen-releases/issues/34) Bound FlashNext benchmark token limits.
+- [#35](https://github.com/1architect/macqwen-releases/issues/35) Complete the excluded FlashNext read-path measurements.
 
 ### Standing decisions
 

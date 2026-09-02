@@ -10,7 +10,9 @@ python models/flashnext/bench_production.py --json docs/flashnext/measurements/N
 ```
 
 Each file records every arm, physical MB per token, free memory, elapsed time, and rate correlation. Quote the median and range. Do not
-quote the best arm or a two-arm mean. A warm two-arm subset produced the invalid 2.83 tok/s baseline.
+quote the best arm or a two-arm mean. The older warm two-arm subset produced
+an invalid 2.83 tok/s baseline. The current accepted 2.83 result comes from
+the 12-arm clean-boot `buffer-chunk2` comparison.
 
 ## Retained files
 

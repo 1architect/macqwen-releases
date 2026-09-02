@@ -79,9 +79,9 @@ The 200 ms minimum tool display time is visual only. It is not part of the repor
 The final statistics aggregate every generation segment. This includes generation before and after tool results.
 
 The `gen` rate covers the complete decode. The `tail` rate starts after the eight-token routing warmup and expert pin operation. The
-standard harness measures 2.713 tok/s for `gen` and 2.650 for `tail` over ten kept arms. An older harness that reloads the model per arm
-measured a 2.59 tok/s tail mean; the gap is page-cache state. The separate 2.83 mean contains only two warmup-eight arms and is not a
-production baseline.
+accepted clean-boot `buffer-chunk2` comparison measures 2.83 tok/s for `gen`,
+2.70 for `tail`, and 457.7 MB/token. The older 2.713 and 2.59 figures are
+pre-buffer records.
 
 Cache-aware routing measured 2.79 tok/s against 2.54 in one hot interleaved run. Pairing adjacent arms gave an 8.3 percent mean gain. This
 mode changes expert choices, so its answer can differ from exact-quality.

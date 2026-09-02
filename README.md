@@ -13,13 +13,16 @@ The project includes no model weights.
 | Operation | Result |
 |---|---:|
 | Short terminal generation | About 2.0 to 2.5 tok/s |
-| Complete oQ4 benchmark decode | 2.71 tok/s |
+| Complete oQ4 benchmark decode | 2.83 tok/s |
 | Cache-aware oQ4 benchmark decode | 2.91 tok/s |
 | Long-prompt prefill near 5,000 tokens | About 40 to 50 tok/s |
 
 These results come from the reference Mac.
 Speed changes with memory pressure, SSD state, and the macOS file cache.
 See [measurement evidence](docs/flashnext/measurements/) for test conditions.
+
+The 2.83 tok/s result is the accepted clean-boot `buffer-chunk2` comparison.
+It uses 457.7 MB of physical reads per token and preserves token IDs.
 
 ## Current support
 
