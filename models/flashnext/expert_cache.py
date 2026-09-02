@@ -107,20 +107,53 @@ _WARM_ON = os.environ.get("FLASHNEXT_WARM") == "1"
 # computes the routed list without submitting, to separate the cost of the
 # extra eval from memory-controller contention.
 # Read every chunk straight into one destination per part, so the main thread
-# never concatenates the pieces. With FLASHNEXT_PREAD_CHUNK=1 the old path
-# concatenated one array per expert, copying the whole layer again.
-# A list so a benchmark can flip it on a live backend. Read through
-# `shared_buffer()`; the module constant could not be changed after import and
-# a comparison that cannot change its setting measures the same thing twice.
-_SHARED_BUFFER = [os.environ.get("FLASHNEXT_SHARED_READ_BUFFER", "0") != "0"]
+# never concatenates the pieces. At FLASHNEXT_PREAD_CHUNK=1 the old path gave
+# every expert its own allocation and then copied the whole layer again, which
+# cost 35.9 ms per token.
+#
+# This was measured once before and returned as a tie: the buffer saved 35 ms
+# of copy and the GPU drain grew 37 ms. The unmeasured explanation in the
+# research log was the write pattern, since 16 workers scatter across one
+# buffer where the concatenate was a single sequential copy. Chunk size and
+# this switch had never been tested together. They now are. At chunk 2 each
+# worker writes one contiguous run and most of the NVMe queue depth survives:
+#
+#   12 arms, clean boot, 40 tokens
+#   concat chunk 1   2.67 gen median   467.7 MB/token
+#   buffer chunk 2   2.83 gen median   457.7 MB/token
+#   +6.3% gen median against a 4.4% band, so it stands
+#   ahead in 10 of 12 pairs, sign test p = 0.019, fewer bytes in 10 of 12
+#
+# Token IDs are identical across every arm: the same bytes land in a different
+# destination layout, so nothing the model computes changes. Prefill is
+# unaffected, measured A/B/B/A at 512 and 2048 tokens.
+#
+# The pair was measured on the pread family only, which is what
+# `exact-quality`, `cache-aware`, `standard` and `fused-quality` run. `fast`
+# and `fast-quality` read through `shared_mmap`, where the chunk is _CHUNK and
+# the copy is a numpy slice assignment rather than a concatenate, so none of
+# the evidence above applies to them. Defaulting on for every mode would have
+# changed two profiles nobody has measured. It stays off there until someone
+# does. Setting the variable to 1 or 0 forces it either way for every mode.
+#
+# A list so a benchmark can flip it on a live backend. The module constant
+# could not be changed after import, and a comparison that cannot change its
+# setting measures the same thing twice.
+_PREAD_MODES = ("pread", "preadv", "resident")
+_SHARED_BUFFER = [os.environ.get("FLASHNEXT_SHARED_READ_BUFFER")]
 
 
-def shared_buffer() -> bool:
-    return _SHARED_BUFFER[0]
+def shared_buffer(mode: str = "pread") -> bool:
+    """Whether this read mode fills one destination per part."""
+    forced = _SHARED_BUFFER[0]
+    if forced is not None:
+        return forced != "0"
+    return mode in _PREAD_MODES
 
 
-def set_shared_buffer(enabled: bool) -> None:
-    _SHARED_BUFFER[0] = bool(enabled)
+def set_shared_buffer(enabled) -> None:
+    """Force the switch, or pass None to return to the per-mode default."""
+    _SHARED_BUFFER[0] = None if enabled is None else ("1" if enabled else "0")
 _EARLY_SUBMIT_MODE = os.environ.get("FLASHNEXT_EARLY_SUBMIT", "0")
 _EARLY_SUBMIT = _EARLY_SUBMIT_MODE != "0"
 _WARM = ThreadPoolExecutor(max_workers=4, thread_name_prefix="flashnext-warm")
@@ -227,7 +260,7 @@ class ExpertLRU:
                 if len(experts) <= self.store._hybrid_cutoff
                 else "pread"
             )
-        if _SHARED_BUFFER[0]:
+        if shared_buffer(mode):
             return self._submit_shared(experts, mode)
         pending = []
         for part in _PARTS:

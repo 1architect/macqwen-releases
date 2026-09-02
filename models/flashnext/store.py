@@ -64,7 +64,14 @@ class SafeTensorStore:
         self._shared_views: Dict[str, np.ndarray] = {}
         self._drop_ngram = os.environ.get("FLASHNEXT_NGRAM_DONTNEED") == "1"
         self._read_mode = os.environ.get("FLASHNEXT_READ", "pread")
-        self._pread_chunk = int(os.environ.get("FLASHNEXT_PREAD_CHUNK", "1"))
+        # Rows per positioned read. Chunk 1 gives every expert its own read and
+        # its own allocation, which the main thread then concatenates. Chunk 2
+        # halves the read count, lets one worker fill a contiguous run, and
+        # pairs with the shared read buffer in `expert_cache` to remove the
+        # concatenate entirely. The pair measured +6.3% on the production
+        # harness against a 4.4% band. Chunk 8 alone was 8% worse, because
+        # three reads per layer cannot keep the NVMe queue busy.
+        self._pread_chunk = int(os.environ.get("FLASHNEXT_PREAD_CHUNK", "2"))
         self._hybrid_cutoff = int(os.environ.get("FLASHNEXT_HYBRID_CUTOFF", "2"))
         self._sort_reads = os.environ.get("FLASHNEXT_SORT_READS") == "1"
         self._no_cache = os.environ.get("FLASHNEXT_F_NOCACHE") == "1"

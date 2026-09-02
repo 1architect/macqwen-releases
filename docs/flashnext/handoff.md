@@ -25,6 +25,7 @@ Recent decisions, with the evidence in `research.md`:
   808 MB/token against decode's 390.
 - The weight-preserving cache-aware swap is rejected for `exact-quality`.
   Four of seven replies changed, and its speed result was unresolved.
+- An external [oQ4-MTP report](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ4/discussions/2) describes repetition loops that reach `max_tokens` and truncate tool calls during long agentic turns. The same settings did not reproduce the issue on oQ3-MTP. The report uses oMLX on an M5 Max. The maintainer is investigating. This supports keeping MTP disabled in production, but it does not measure our standard oQ4 path.
 
 What changed in the code recently:
 

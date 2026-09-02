@@ -111,6 +111,14 @@ The default preferences path creates these profile files:
 `/config prompt` prints the active prompt and path. `/config prompt edit` opens that file. `/config prompt default` removes the custom file. Use `/new` after
 an external edit.
 
+The default Plain prompt is:
+
+```text
+Answer precisely. Never invent an API, a name, or a result. Ask for what you need, and say when you are unsure.
+```
+
+Its clauses keep direct answers, reject invented API names and results, request missing information, and state uncertainty. Plain has no tools, so it can ask for information but cannot retrieve it. The wording reflects the recorded SketchUp comparison: oQ3-MTP called `Sketchup::Face#extrude` across 34,203 reasoning characters without questioning the method, while oQ4 questioned `pushpull` about twenty times before settling on it.
+
 ## Validation
 
 Run the shared suite:

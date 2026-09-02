@@ -27,6 +27,32 @@ REQUIRED_MODULES = {
 }
 
 
+def branch_sync_warning(root: Path = ROOT) -> str:
+    """Warn when a checkout lacks commits from its known origin/main."""
+    try:
+        current = subprocess.run(
+            ["git", "-C", str(root), "merge-base", "--is-ancestor",
+             "origin/main", "HEAD"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return ""
+    if current.returncode != 1:
+        return ""
+    branch = subprocess.run(
+        ["git", "-C", str(root), "branch", "--show-current"],
+        capture_output=True,
+        check=False,
+        text=True,
+    ).stdout.strip() or "current branch"
+    return (
+        f"warning: {branch} does not include known origin/main; "
+        "fetch and merge origin/main before validating chat behavior"
+    )
+
+
 def _split_build(argv: list[str]) -> tuple[str | None, list[str]]:
     if argv and not argv[0].startswith("-"):
         return argv[0], argv[1:]
@@ -154,6 +180,9 @@ def command(argv: list[str]) -> tuple[list[str], dict[str, str]]:
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "setup":
         return setup_environment(sys.argv[2:])
+    warning = branch_sync_warning()
+    if warning:
+        print(warning, file=sys.stderr)
     executable, environment = command(sys.argv[1:])
     os.execvpe(executable[0], executable, environment)
     return 0

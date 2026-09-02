@@ -21,6 +21,21 @@ Each runtime uses a separate Python environment. The launcher selects it before 
 
 Profile and model selection are independent.
 
+### Plain system prompt
+
+The Plain profile uses this system prompt:
+
+```text
+Answer precisely. Never invent an API, a name, or a result. Ask for what you need, and say when you are unsure.
+```
+
+| Clause | Purpose | Evidence or scope |
+|---|---|---|
+| Answer precisely. | Preserve the original direct-answer rule. | Prompt text. |
+| Never invent an API, a name, or a result. | Block unsupported claims. | The recorded oQ3-MTP SketchUp failure called `Sketchup::Face#extrude` across 34,203 reasoning characters without questioning it. |
+| Ask for what you need. | Plain has no tools, so asking is the only way to get more information. | Prompt text and profile scope. |
+| Say when you are unsure. | Keep uncertainty explicit. | The recorded oQ4 response questioned `pushpull` about twenty times before settling on it. |
+
 ## Shared behavior
 
 The chat manages input, commands, preferences, prompts, streaming, tools, and sessions. Both models use one command table. Each backend owns

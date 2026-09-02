@@ -2530,3 +2530,16 @@ standing rule keeps oQ4 immutable, and local free space cannot hold both.
 Deleting oQ4 makes a failed gate cost another 111.7 GB download. Do not start
 the checkpoint transfer until external storage is available or that restore
 cost is explicitly accepted.
+
+## External oQ4-MTP repetition report
+
+The [Vontra oQ4-MTP discussion](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ4/discussions/2) reports a failure during long agentic and coding turns. The model entered a degenerate repetition loop, reached `max_tokens`, and ended with an unclosed tool-call envelope. The report describes two failures on an M5 Max with oMLX and matched sampling settings. One run reached 28,383 generated tokens after 12,487 MTP cycles. Another reached the limit after 14,684 tokens.
+
+The report compares oQ4-MTP with oQ3-MTP under the same server settings. It reports two truncated oQ4-MTP requests out of eight and no truncated oQ3-MTP requests across 177 requests. The author identifies the quantized checkpoint as the main variable, but the environment and MTP runtime differ from this project.
+
+The same report mentions a secondary `QSAKVCache` failure on oQ4-MTP. The cache object lacked `extend`, and recovery failed. The author marks this as a possible oMLX or `mlx-vlm` defect rather than a quantization defect. The checkpoint maintainer is testing longer runs and has not yet posted a fix.
+
+This report does not measure standard oQ4, and it does not replace our local
+quality gate. It supports the existing decision to keep MTP disabled in the
+production backend. It also adds a long-agentic-run failure mode to the
+checkpoint review record.

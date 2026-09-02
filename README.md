@@ -58,6 +58,8 @@ Read the [Flash-Next research record](docs/flashnext/research.md) for the compar
 
 The production runtime does not use the MTP weights included with oQ3-MTP.
 
+An external [oQ4-MTP report](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ4/discussions/2) describes degenerate repetition during long agentic and coding turns. The run reached `max_tokens` and cut off tool calls. The same report did not reproduce the failure with oQ3-MTP under matching settings. The report uses oMLX on an M5 Max, and the checkpoint maintainer is investigating. This warning applies to the MTP variant. MACQWEN keeps MTP disabled in the production path.
+
 ## Quick start
 
 Clone the repository:
