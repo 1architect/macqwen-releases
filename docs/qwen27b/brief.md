@@ -28,6 +28,11 @@ tested machine.
 
 The most recent local verification found no installed V4 checkpoint. Unit and import tests still pass.
 
+## Scope boundary
+
+The revised performance direction applies to FlashNext. This Qwen27B runtime
+has no new measurement or code change from that work.
+
 ## Status
 
 Qwen27B remains available for research. Flash-Next is the primary runtime.

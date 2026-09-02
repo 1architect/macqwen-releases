@@ -3662,3 +3662,59 @@ Stable findings:
   return to the endpoint line.
 - Production matches the synthetic sweep at one validation point, but that
   does not generalize synthetic residency to production residency.
+
+## Revised work direction, 2026-09-02
+
+The closed experiments remove the earlier Python and high-level MLX candidates.
+Three open fronts remain for the unexplained GPU cost.
+
+### 1. Metal barriers and fences under mixed residency
+
+The MLX source proves buffer-scope barriers and encoder fences. It does not
+measure their cost while SSD DMA and GPU work share the memory system. The
+miss sweep keeps physical bytes, dispatch count, and buffer count nearly fixed,
+but GPU span changes with the miss regime. Barrier and fence cost remains a
+hypothesis, not a result.
+
+The required test is custom MLX or Metal instrumentation. Compare equivalent
+dependency chains with and without the controlled barrier or fence path. Keep
+bytes, dispatches, shapes, command-buffer count, and output token IDs fixed.
+Record barrier count, fence waits, GPU span, command-buffer timing, and host
+submission timing. Issue
+[#45](https://github.com/1architect/macqwen-releases/issues/45) tracks this
+work.
+
+### 2. `wired_limit` before model load
+
+The standalone pre-load sweep gave a 13.5% lower 2 GB median than the default.
+The live harness applied 2 GB after model load and measured -0.4%, inside a
+7.6% resolution band. These operations reach different MLX allocator and
+residency states. Issue
+[#43](https://github.com/1architect/macqwen-releases/issues/43) remains open.
+
+The standalone result is not a confirmed gain. It is the last runtime setting
+with a large unresolved signal. Repeat it with the limit applied before model
+load, paired order, load recording, physical MB/token, and residency evidence.
+
+### 3. Physical bytes and expert working set
+
+REAP-288 and Q4/G64/G128 change the size of the streamed expert bank. They may
+move production from about 400 MB/token to another part of the miss curve. A
+smaller working set could change both SSD traffic and GPU span. The effect
+must be measured. Issues
+[#24](https://github.com/1architect/macqwen-releases/issues/24) and
+[#25](https://github.com/1architect/macqwen-releases/issues/25) track these
+tests.
+
+### Revised assessment
+
+- High confidence: no simple 50 to 100 ms hotspot remains in Python or high-level MLX code.
+- Good confidence: the GPU-busy hump is real and depends on the miss and streaming regime.
+- Moderate confidence: the unexplained component belongs to Metal dependency, hazard, or resource scheduling.
+- Still plausible: backend changes can recover a few percent.
+- Low probability: the full roughly 80 ms hump can be recovered.
+
+The clean-boot baseline is 2.83 tok/s. The practical target is about 353 to
+333 ms/token, or about 20 ms/token. The work order is #43, then #45, followed
+by #24 and #25 if the first two do not expose a path to that target. Do not
+run unrelated optimisation experiments between these tests.

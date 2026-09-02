@@ -112,6 +112,24 @@ it.
 
 Use a similar code task for each checkpoint gate.
 
+## Revised performance direction
+
+Three open fronts remain for the unexplained GPU cost:
+
+- Finish the pre-load `wired_limit` comparison in issue #43. The standalone
+  2 GB result was 13.5% faster, but the live post-load result was -0.4% inside
+  a 7.6% band. Do not treat the standalone result as a gain.
+- Isolate Metal barrier and fence cost under mixed residency in issue #45.
+  The source proves the barriers and fences, but not their SSD-DMA cost.
+- Change the physical expert working set with Q4/G64/G128 and REAP-288 in
+  issues #24 and #25. Measure physical bytes and GPU span.
+
+The clean-boot baseline is 2.83 tok/s. The practical target is about 20 ms per
+token, from about 353 to 333 ms. The revised assessment gives high confidence
+that no simple 50 to 100 ms Python or high-level MLX hotspot remains, good
+confidence that the hump is real, moderate confidence that Metal scheduling is
+involved, and low probability of recovering the full roughly 80 ms.
+
 ## Routing profiles
 
 | Profile | Purpose |
@@ -129,5 +147,5 @@ Threshold `1.0` keeps the shipped router selection.
 
 The text runtime, six routing profiles, exact sessions, and shared chat integration are active. Cache-aware is optional. The production
 backend keeps the included MTP weights disabled. Current performance work is
-tracked by issues #23 through #25, #33 through #39, and #43. Issues #21, #22,
+tracked by issues #23 through #25, #33 through #39, #43, and #45. Issues #21, #22,
 #26 through #27, and #41 through #42 are closed.
