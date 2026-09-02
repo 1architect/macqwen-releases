@@ -2804,9 +2804,12 @@ CPU scheduling       about 14 ms, async_eval split
 host bookkeeping     about 4 ms
 ```
 
-The earlier 86 ms unexplained term was GPU work. The remaining eval-block time
-is CPU-to-GPU submission latency, measured at about 1.6 ms per interval across
-16,554 intervals.
+The earlier 86 ms unexplained term was GPU work in that trace. The afternoon
+clean-boot comparison shows that GPU busy is not a fixed model cost: production
+decode measured 182.5 ms/token, while zero-drive decode measured 86.1 ms/token.
+The 149 ms trace value is a state reading between those runs, not a constant
+term. CPU-to-GPU latency overlaps eval work, so its accumulated value is not a
+serial cost.
 
 This also explains the one-sync result from the previous session. It reduced
 the number of round trips but kept the same submission latency and moved real
@@ -2969,22 +2972,26 @@ of greedy decoding, and checkpoint selection.
 
 1. `gpustat.py` absolute values are wrong by about 3.2x. Use Metal trace values
    for absolute GPU claims.
-2. The 256 MB resident arm is inside measurement noise. Test that boundary if
+2. GPU busy still varies between clean-boot conditions. The production and
+   zero-drive pair measured 182.5 and 86.1 ms/token. The cause is open.
+3. The 256 MB resident arm is inside measurement noise. Test that boundary if
    work must use the idle window.
-3. `expert_cache.py` calls `self.cache.fetch(experts)`, but `ExpertLRU` has no
+4. `expert_cache.py` calls `self.cache.fetch(experts)`, but `ExpertLRU` has no
    such method. The path stays latent because `_one_pass` always passes
    `weights=`.
-4. `fetch_np` and `plan_missing` are unreachable. Every caller uses
+5. `fetch_np` and `plan_missing` are unreachable. Every caller uses
    `expert_capacity=0`.
-5. The handoff validation command is unbounded. With a 4,096-token thinking
+6. The handoff validation command is unbounded. With a 4,096-token thinking
    budget, `--max-tokens 32` requests 4,128 tokens. Use
    `--think-budget=-1` for the short check.
-6. The GDN record needs a controlled recheck. The latest result is
+7. The GDN record needs a controlled recheck. The latest result is
    18.51 ms/token against earlier isolated 34 ms and in-situ 57 ms values.
-7. `fast` and `fast-quality` remain unmeasured with the shared buffer.
-8. Chunk 4 remains unsettled against chunk 2.
-9. REAP-288 still needs its quality gate and has an open `xhigh` reasoning-loop
+8. `fast` and `fast-quality` remain unmeasured with the shared buffer.
+9. Chunk 4 remains unsettled against chunk 2.
+10. REAP-288 still needs its quality gate and has an open `xhigh` reasoning-loop
    report.
+11. The context-decay result is valid only for the unpinned harness. Its first
+    40 tokens can run at 2.9 to 3.2 tok/s before the working set widens.
 
 ### Tools and comparisons
 
@@ -3003,8 +3010,149 @@ New `bench_production.py` comparisons are `one-sync`, `buffer-chunk`,
 ### Current position
 
 `exact-quality` measures 2.83 generation tokens per second on a clean boot with
-the shipped default. A token contains about 257 ms of drive reading, 149 ms
-of measured GPU execution, and CPU-to-GPU submission latency across the
-remaining eval block. The drive and GPU work are now measured directly.
-Nothing in the remaining cost is a named, removable stage. REAP-288 still
-needs its quality gate.
+the shipped default. The trace measured about 257 ms of drive reading and
+149 ms of GPU execution in one state. The afternoon interleaving measured
+182.5 ms on production decode and 86.1 ms with zero drive, so GPU busy is not a
+fixed model cost. Submission latency overlaps eval work and is not a serial
+explanation. REAP-288 still needs its quality gate.
+
+## Session continuation: clean-boot GPU variance and context decay, 2026-09-02
+
+This record resumes the afternoon session from the external handoff. The
+measurements use a clean boot and keep runtime defaults unchanged.
+
+### GPU busy is not a fixed model cost
+
+The run used three arms per condition, interleaved as
+`prod, ram, prod, ram, prod, ram`, with 30 tokens per arm. The decode window
+was isolated from load and prefill with `metal_trace.py --last-ms`.
+
+| Condition | ms/token | GPU busy/token | buffers/token | mean buffer | CPU to GPU latency |
+|---|---:|---:|---:|---:|---:|
+| production decode | 505.7, 488.3, 502.8 | 180.8, 185.1, **182.5** | 250 | 739 us | 1404 us |
+| zero drive, 32 resident | 246.3, 236.6, 225.5 | 87.1, **86.1**, 77.0 | 202 | 427 us | 904 us |
+
+Production GPU busy varies 2.4% across its three arms. The same 48-layer
+decode uses 86 ms of GPU when experts are resident and 182 ms when they
+stream. The earlier 149 ms reading sits between them and is a state reading.
+
+The 96 ms gap contains about 35 ms of extra command buffers. Production uses
+adaptive top-k, routing, and residency bookkeeping that the synthetic arm
+patches out. The identical remainder accounts for about 61 ms of stretch.
+
+Untraced arms bracket the traced arms. Production measured 478.8 ms before and
+388.0 ms after. Zero-drive measured 206.5 ms before and 203.5 ms after.
+Tracing costs about 5%, and production warms across the session, so 182.5 ms
+is an upper reading.
+
+Free memory stayed between 82 and 128 MB in every arm, including after reboot.
+Free RAM does not explain the difference.
+
+### Resident working-set size
+
+Both arms pin the same 32 experts per layer, 4.95 GB, with zero drive. One
+routes the same eight experts each token. The other draws eight from the full
+32-expert pool. The arms were interleaved, with order reversed each pass, for
+40 tokens.
+
+| Arm | touched/layer | arms | median |
+|---|---:|---|---:|
+| touch 8 | 8 | 203.3, 225.8, 272.2 | 225.8 |
+| touch 32 | 32 | 235.5, 200.2, 194.6 | 200.2 |
+
+The larger touched set leads in two of three pairs. Locality inside RAM does
+not explain the GPU stretch. The all-resident ceiling still holds with a
+realistic 32-expert pool.
+
+### `MLX_MAX_OPS_PER_BUFFER`
+
+MLX reads this variable when it creates the Metal device. Each arm therefore
+ran in a separate process.
+
+| Setting | buffers/token | mean buffer | CPU to GPU latency | GPU busy/token |
+|---|---:|---:|---:|---:|
+| default | 249.8 | 691 us | 1294 us | 170.1 ms |
+| 120 | 155.4 | 1250 us | 625 us | 190.9 ms |
+
+The setting took effect. Buffers fell 38%, and latency per buffer fell 52%.
+
+Six plain arms were interleaved, with order reversed each pass:
+
+```text
+default   422.8  347.0  375.0    median 375.0
+cap 120   449.2  440.6  454.0    median 449.2
+```
+
+Default led in all three pairs. The cap-120 arms clustered within 3%.
+Eval-block time rose from 130 to 196 ms at default to 211 to 220 ms at 120.
+Fewer, larger submissions coarsen serialization. The main thread waits
+longer per buffer, and expert reads wait for the router result.
+
+The setting is rejected. It belongs on the do-not-retry list.
+
+### Submission latency
+
+Accumulated CPU-to-GPU latency was 323 ms/token at default and 97 ms/token at
+cap 120. Removing 226 ms of accumulated latency made the token slower. The
+latency overlaps GPU and eval work and is not on the critical path by itself.
+
+### Context length
+
+The first 24-token run is withdrawn because it timed only the warm-up. A
+60-token run split into three windows of 20 tokens gave this result:
+
+| context | overall | window 1 | window 2 | window 3 | experts/layer |
+|---:|---:|---|---|---|---:|
+| 128 | 2.54 | 2.88 / 239 MB | 3.21 / 248 MB | **1.91 / 502 MB** | 7.90 |
+| 1024 | 1.83 | 1.84 / 504 MB | 1.77 / 558 MB | **1.89 / 522 MB** | 7.90 |
+| 4096 | 1.93 | 1.80 / 431 MB | 2.17 / 407 MB | **1.85 / 452 MB** | 7.85 |
+
+The last window is the same at every context. Routing does not move. A short
+prompt keeps a narrow expert set hot for about 40 tokens, then the generation
+working set widens from about 240 MB to about 500 MB. Long-context arms have no
+transient.
+
+`bench_production.py` decodes 60 tokens from a 20-token prompt. Its published
+number mixes the warm-up transient with the steady state. The 2.83 harness
+figure and the 2.0 to 2.2 chat figures are different points on this curve,
+not different context lengths.
+
+This benchmark calls the language model directly. It does not run chat
+warm-up or 32-expert pinning. The 1.9 tok/s result is the unpinned steady
+state. The flatness across context is the result; the absolute level is not.
+
+### Per-kernel names
+
+MLX leaves compute encoders unlabelled. `metal-gpu-intervals` resolves to
+command buffers. `metal-shader-profiler-intervals` and
+`gpu-shader-profiler-interval` are empty under this trace template.
+`gpu-counter-info` defines only `RT Unit Active` on this M4. This template
+cannot provide per-kernel GPU attribution.
+
+### Open findings
+
+- GPU busy at zero drive measured 164 ms/token yesterday and 77 to 87 ms/token
+  today after clean boot. The same code and settings produced both results.
+- A 640 MB resident bank added 71 MB of reads and 39 ms/token. The 256 MB arm
+  stayed inside measurement noise. Test 128, 256, 384, and 512 MB with paired
+  runs if the idle window matters.
+- GDN remains unresolved at 18.51 ms/token in the dependency-correct split,
+  against earlier isolated 34 ms and in-situ 57 ms records.
+
+### Instruments added by this session
+
+The branch contains three research instruments. They change no runtime path,
+default, or quality gate:
+
+| File | Purpose |
+|---|---|
+| `models/flashnext/metal_trace.py` | Export and union Metal GPU spans. Report per-token GPU busy, command-buffer count, mean interval, CPU-to-GPU latency, and duration histogram. `--last-ms` isolates decode. |
+| `models/flashnext/bench_context_decay.py` | Measure decode rate by context in windows and count kept experts per layer. |
+| `models/flashnext/bench_read_ceiling.py` | Add `--pool` and `--route-fixed` to separate resident working-set size from drive traffic at zero drive. |
+
+`--pool 0` preserves the original fixed-route behavior. The focused test suite
+passes all 98 tests.
+
+The recording left multi-gigabyte `instruments*.ktrace` files in `TMPDIR`.
+Free space fell to 1.1 GB. About 11 GB was reclaimed, and the volume now has
+15 GB free. Clear trace scratch between recorded arms.

@@ -53,14 +53,20 @@ What changed in the code recently:
 - An earlier whole-layer control costs 255.93 ms/token with expert pages hot,
   while its separately timed component parts total 41.00 ms. The latest
   dependency-correct split measures 262 ms/token for whole hot layers and
-  176.07 ms/token for chained parts. Issue #27 tracks the missing attribution.
+  176.07 ms/token for chained parts. Metal System Trace closed issue #27 for
+  device-level attribution, but the afternoon clean-boot result shows GPU
+  busy varies from 86.1 ms/token at zero drive to 182.5 ms/token in production.
 - The 2026-09-02 continuation measures 236.7 ms/token blocked in `mx.eval`.
   A one-sync experiment halves eval count but slows generation by 11.4%.
-  The IOKit GPU meter undercounts short kernels by about 3x.
+  Metal trace shows that IOKit undercounts short kernels by about 3.2x.
+- `MLX_MAX_OPS_PER_BUFFER=120` reduces buffers by 38% and latency per buffer by
+  52%, but makes generation slower. It is rejected.
+- A 60-token context sweep shows a warm-up transient near 2.9 to 3.2 tok/s,
+  then a steady unpinned rate near 1.9 tok/s at every tested context.
 - The remaining cost is still scheduling and graph execution, not a named
   removable stage.
-- The Flash-Next test suite passes all 98 tests. Four new tools support GPU,
-  eval, glue, and layer-locality measurements.
+- The Flash-Next test suite passes all 98 tests. Three new instruments support
+  Metal trace, context decay, and resident working-set measurements.
 
 Next work starts with "Redo the gate now that the sampler exists" under Next
 work. Cache-aware's gate result was measured under greedy decoding, which
@@ -374,20 +380,22 @@ Open exact-quality performance experiments:
 
 - [#24](https://github.com/1architect/macqwen-releases/issues/24) Probe routed-expert Q4 group sizes 64 and 128.
 - [#25](https://github.com/1architect/macqwen-releases/issues/25) Gate and benchmark REAP-288. Use REAP-384 as the fallback.
-- [#26](https://github.com/1architect/macqwen-releases/issues/26) Confirm and retain shared-buffer chunk-2 reads. Closed after the clean-boot result.
-- [#27](https://github.com/1architect/macqwen-releases/issues/27) Attribute the remaining FlashNext GPU layer cost.
 
 Closed exact-quality performance issues:
 
 - [#21](https://github.com/1architect/macqwen-releases/issues/21) Host-only idle windows. Only 4.16 ms/token qualifies after bulk movement is excluded.
 - [#22](https://github.com/1architect/macqwen-releases/issues/22) Routed `gather_qmm`. The measured path runs at 92.2 to 92.4 GB/s.
 - [#23](https://github.com/1architect/macqwen-releases/issues/23) Complete-runtime `mx.compile`. The bit-exact result saves about 1 ms/token and stays diagnostic.
+- [#26](https://github.com/1architect/macqwen-releases/issues/26) Confirm and retain shared-buffer chunk-2 reads. Closed after the clean-boot result.
 
 Follow-up issues from the 2026-09-01 sweep:
 
 - [#33](https://github.com/1architect/macqwen-releases/issues/33) Remove or repair the unreachable `ExpertLRU` merge path.
 - [#34](https://github.com/1architect/macqwen-releases/issues/34) Bound FlashNext benchmark token limits.
 - [#35](https://github.com/1architect/macqwen-releases/issues/35) Complete the excluded FlashNext read-path measurements.
+- [#36](https://github.com/1architect/macqwen-releases/issues/36) Correct absolute GPU utilization reporting.
+- [#37](https://github.com/1architect/macqwen-releases/issues/37) Measure the resident-work boundary below 640 MB.
+- [#38](https://github.com/1architect/macqwen-releases/issues/38) Recheck GDN timing with a dependency-correct chain.
 
 ### Standing decisions
 

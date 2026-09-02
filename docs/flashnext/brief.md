@@ -63,9 +63,13 @@ long-context comparison stayed coherent, but the exact-quality answer was better
 - A 12-arm test gives `buffer-chunk2` a resolved 6.3% generation gain over the
   concatenate path. Token IDs match and physical bytes fall. Issue #26 is
   closed.
-- The final device split is 172.4 ms GPU, 234.8 ms drive, 42.5 ms host-only,
-  and 18.8 ms unaccounted per token. The main remaining unknown is whole-layer
-  GPU attribution.
+- The Metal trace measured about 149 ms of GPU execution and 257 ms of drive
+  reading in one state. A later clean-boot comparison measured 182.5 ms GPU
+  busy in production and 86.1 ms with zero drive, so GPU busy is not a fixed
+  model cost. IOKit values are relative only.
+- A 60-token context sweep found no decode-rate decay with context. Short
+  prompts include a warm-up transient: about 40 tokens near 2.9 to 3.2 tok/s,
+  then about 1.9 tok/s as the working set widens.
 
 The reference machine is an M4 Mac with 16 GB of unified memory and a 256 GB SSD. Prefill and decode measurements are separate. Short
 prompts have lower prefill rates because fixed setup and streamed-read costs apply to fewer tokens. Performance also depends on prompt type,
@@ -107,4 +111,5 @@ Threshold `1.0` keeps the shipped router selection.
 
 The text runtime, six routing profiles, exact sessions, and shared chat integration are active. Cache-aware is optional. The production
 backend keeps the included MTP weights disabled. Current performance work is
-tracked by issues #24 through #27. Issues #21 through #23 are closed.
+tracked by issues #24, #25, and #33 through #38. Issues #21 through #23 and
+#26 through #27 are closed.
