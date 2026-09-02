@@ -30,6 +30,11 @@ See [measurement evidence](docs/flashnext/measurements/) for test conditions.
 
 Flash-Next supports regular local testing. The project remains experimental.
 
+
+## Why Qwen3.8-FlashNext and not others?
+
+Qwen3.8-Flash-Next has unusually fine-grained experts. Its moe_intermediate_size is 640 against a 2560 hidden size, so one expert is 3.07 MB. Considering the architecture of the challenge (running big models on low memory/high bandwidth machines) it is close to a best case scenario.
+
 ## Requirements
 
 - An Apple Silicon Mac with Metal support.
