@@ -50,6 +50,16 @@ PROMPT = ("<|im_start|>user\nExplique a fotossintese em duas frases."
 
 COMPARISONS = {
     "none": {"baseline": {}},
+    # `empty_rows` allocates a fresh numpy block for every part of every layer,
+    # about 1.18 GB of transient host memory per token across 432 allocations.
+    # The ring reuses a handful instead. The 2x2 against the read-ceiling
+    # benchmark could not see it: its ram arm pins everything and its disk arm
+    # caches nothing, so neither arm's hit rate can move. Production is the
+    # only arm where it can, and that is where it showed.
+    "buffer-arena": {
+        "fresh": {"FLASHNEXT_BUFFER_ARENA": "0"},
+        "ring3": {"FLASHNEXT_BUFFER_ARENA": "3"},
+    },
     "ngram-nocache": {
         "baseline": {"FLASHNEXT_NGRAM_NOCACHE": "0"},
         "nocache": {"FLASHNEXT_NGRAM_NOCACHE": "1"},
@@ -205,6 +215,17 @@ LIVE_SETTINGS = {
         ),
         lambda backend: backend.store._ngram_nocache,
         lambda value: value == "1",
+    ),
+    "FLASHNEXT_BUFFER_ARENA": (
+        # Read at call time from a list, so a live flip is enough and the
+        # setting is read back before either arm reports.
+        lambda backend, value: __import__(
+            "models.flashnext.expert_cache", fromlist=["set_buffer_arena"]
+        ).set_buffer_arena(value),
+        lambda backend: __import__(
+            "models.flashnext.expert_cache", fromlist=["buffer_arena"]
+        ).buffer_arena(),
+        lambda value: int(value),
     ),
     "FLASHNEXT_SORT_READS": (
         lambda backend, value: setattr(

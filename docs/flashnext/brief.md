@@ -70,6 +70,15 @@ long-context comparison stayed coherent, but the exact-quality answer was better
 - A 60-token context sweep found no decode-rate decay with context. Short
   prompts include a warm-up transient: about 40 tokens near 2.9 to 3.2 tok/s,
   then about 1.9 tok/s as the working set widens.
+- A reusable destination ring is bit-exact but unresolved on speed. It reads
+  397.4 MB/token against 397.9 with fresh buffers and stays disabled.
+- A traced miss sweep finds a GPU-busy hump. It peaks near 25% to 50% missing
+  reads, while token time stays close to linear in physical bytes.
+- VM counters show page-ins at about 33 pages/MB, with flat reclaim,
+  compression, and swap during decode. Read-ahead off is 1.3% faster, but the
+  result does not clear a band.
+- The default Metal residency set is 750 MB. Raising it fivefold changes
+  neither token time nor VM counters.
 
 The reference machine is an M4 Mac with 16 GB of unified memory and a 256 GB SSD. Prefill and decode measurements are separate. Short
 prompts have lower prefill rates because fixed setup and streamed-read costs apply to fewer tokens. Performance also depends on prompt type,
@@ -111,5 +120,5 @@ Threshold `1.0` keeps the shipped router selection.
 
 The text runtime, six routing profiles, exact sessions, and shared chat integration are active. Cache-aware is optional. The production
 backend keeps the included MTP weights disabled. Current performance work is
-tracked by issues #24, #25, and #33 through #38. Issues #21 through #23 and
+tracked by issues #24, #25, and #33 through #39, plus #41 and #42. Issues #21 through #23 and
 #26 through #27 are closed.

@@ -108,7 +108,9 @@ router-first scheduling all tie or lose against the control.
 - Selective layer protection improves the fast response but still emits
 lexical errors, while speed falls from 2.64-2.85 to 2.19-2.43 tok/s.
 - Post-cut score renormalization makes the low-I/O profiles incoherent.
-- `F_RDAHEAD=0` is about 13% slower than the default.
+- The earlier `F_RDAHEAD=0` result had the wrong sign. The order-corrected
+  result is 1.3% faster than the default in 8 of 8 pairs, flat across miss
+  levels, and does not clear a resolution band.
 - `F_RDADVISEV` averages 0.89 tok/s against 0.98 for direct `pread`, 10%
 slower. Its `NOAGE` flag returns `EPERM` on this checkpoint filesystem.
 - A 1024-row cache per n-gram shard has only a 4.9% hit rate. It averages
@@ -2473,9 +2475,10 @@ Issue [#26](https://github.com/1architect/macqwen-releases/issues/26) tracks
 that change.
 
 The current 36 ms gap remains open. The new split shows that the missing cost
-is not routed expert matmul or small host bookkeeping. Issue
-[#27](https://github.com/1architect/macqwen-releases/issues/27) tracks a valid
-whole-layer GPU attribution method. Issue [#24](https://github.com/1architect/macqwen-releases/issues/24) remains open for Q4 group sizes, and issue
+is not routed expert matmul or small host bookkeeping. Metal System Trace
+closed issue [#27](https://github.com/1architect/macqwen-releases/issues/27)
+for device-level attribution. Issue [#24](https://github.com/1architect/macqwen-releases/issues/24)
+remains open for Q4 group sizes, and issue
 [#25](https://github.com/1architect/macqwen-releases/issues/25) remains open
 for the REAP-288 gate.
 
@@ -3156,3 +3159,193 @@ passes all 98 tests.
 The recording left multi-gigabyte `instruments*.ktrace` files in `TMPDIR`.
 Free space fell to 1.1 GB. About 11 GB was reclaimed, and the volume now has
 15 GB free. Clear trace scratch between recorded arms.
+
+## Session continuation: miss fraction, VM counters, and destination ring, 2026-09-02
+
+This record resumes the second afternoon session. It keeps the shipped runtime
+defaults unchanged and adds diagnostics only.
+
+### Reusable destination ring
+
+`empty_rows` allocates a new NumPy block for every part of every layer. This is
+432 host allocations and about 1.18 GB of transient memory per token. The
+`FLASHNEXT_BUFFER_ARENA` ring replaces those blocks with pools keyed by
+projection and part. One pool covers all 48 layers and uses about 150 MB.
+
+The production harness used `--compare buffer-arena --arms 8`:
+
+```text
+fresh   gen median 2.94   sd 0.106   tail 2.86   397.9 MB/token   n=5
+ring3   gen median 2.91   sd 0.051   tail 2.81   397.4 MB/token   n=4
+-0.9 percent gen median, resolves above 3.7 percent, unresolved
+ring3 ahead in 4 of 6 pairs, sign test p = 0.344
+```
+
+The byte result is 397.9 against 397.4 MB/token, a 0.1% difference. An
+earlier cross-process run showed 10% to 48% fewer bytes, but each process
+started from the previous process's page cache. The sequence warmed throughout,
+so process start state was confounded with the condition.
+
+Keep `FLASHNEXT_BUFFER_ARENA=0` as the default. The path is bit-exact at
+depths 2, 3, and 4 and uses less allocation work, so it remains a diagnostic
+beside `FLASHNEXT_SHARED_READ_BUFFER`. Issue
+[#41](https://github.com/1architect/macqwen-releases/issues/41) tracks the
+unresolved performance result.
+
+Two implementation errors were found:
+
+- A ring keyed by layer holds about 9 GB and swaps. It ran 8 times slower.
+- A ring keyed only by shape is not bit-exact. `gate_proj` and `up_proj` share
+  a shape, so the ring wraps before the GPU reads the earlier block. The token
+  digest changed from `5c3d84d8b2020912` to `37f821a34805788b`.
+
+The digest check caught the second error. The path did not crash.
+
+### GPU busy against drive share
+
+`bench_read_ceiling.py --miss F` routes a set share of each layer outside the
+pinned pool. It sweeps physical reads from zero to all-cold in one benchmark,
+with the same code, route width, and dispatch count. Runs were traced forward
+and reverse, with 30 tokens per arm.
+
+| miss | MB/token | ms/token | GPU busy/token | buffers/token | mean span | CPU to GPU |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0.2 | 217 | 69.5 ms | 201.5 | 345 us | 788 us |
+| 0.125 | 152 | 278 | 93.8 ms | 201.6 | 466 us | 977 us |
+| 0.25 | 300 | 440 | 171.7 ms | 201.6 | 852 us | 1603 us |
+| 0.5 | 603 | 596 | 170.7 ms | 201.2 | 848 us | 1637 us |
+| 1.0 | 1230 | 860 | 125.7 ms | 201.2 | 625 us | 1270 us |
+
+GPU busy rises, peaks between one quarter and one half missing, then falls at
+full miss. At full drive traffic it is 126 ms/token. At one quarter it is
+172 ms/token. Mean span and submission latency follow the same hump.
+Dispatch count does not move.
+
+This rejects two earlier claims. The penalty is not a step at first drive
+contact, and it is not proportional to bytes. Token time is close to linear in
+bytes at about 0.52 ms/MB.
+
+The curve predicts production. Production reads about 400 MB/token, between
+the 300 and 603 MB points where the sweep gives about 170 ms. The clean-boot
+production result was 182.5 ms. The synthetic sweep reproduces the real GPU
+cost from its byte count.
+
+The result is provisional. It has one traced arm per cell. The peak spread is
+180.7 against 162.7 ms, and trace overhead is largest near the peak: +12% at
+0.125 and 0.25 miss, against +6% and -3% at the ends. Issue
+[#42](https://github.com/1architect/macqwen-releases/issues/42) tracks the
+three-arm repeat.
+
+### VM counters during decode
+
+The same sweep ran without tracing and measured `vm_stat` deltas over the
+decode loop:
+
+| miss | MB/token | page-in/token | reactivated | compress | swap |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 0.2 | 40 | 428 / 0 | 725 / 0 | 0 |
+| 0.125 | 150 | 4,959 | 222 / 18 | 308 / 0 | 0 |
+| 0.25 | 297 | 9,779 | 32 / 18 | 0 / 2 | 0 |
+| 0.5 | 597 | 19,616 | 64 / 47 | 0 / 0 | 0 |
+| 1.0 | 1,215 | 40,073 | 165 / 752 | 324 / 2,337 | 0 |
+
+Page-ins are linear in bytes: 33.3, 33.1, 32.8, and 32.8 pages/MB.
+Reactivation is tens per token against tens of thousands of page-ins.
+Compressor traffic is zero in six of ten arms. Swap never moves.
+
+The tested thrashing-cache hypothesis predicts reclaim and compression traffic
+near the GPU peak. Neither peaks. Paging remains the dominant kernel activity,
+about 13,000 page-ins/token in production and about 37,000 page-ins/second at
+2.8 tok/s. Physical bytes remain the useful currency.
+
+The earlier two-second sample that appeared to show 1.7 GB/s decompression
+captured Instruments and the pinning phase. Without tracing, decode compressor
+traffic is near zero.
+
+### Read-ahead control
+
+`FLASHNEXT_RDAHEAD=0` clears kernel read-ahead on shard descriptors. The new
+control raises if `fcntl` fails.
+
+Two passes used reversed order:
+
+```text
+pass 1, on first    0.125 +22.9%   0.25 +7.0%   0.5 +0.4%   1.0 +0.5%
+pass 2, off first   0.125  +1.3%   0.25 +1.3%   0.5 +1.7%   1.0 +1.0%
+```
+
+The 0.125 arm reads 325.3, 264.6, 225.9, and 228.9 ms across the run. That
+is position, not condition. Order-corrected, read-ahead off is about 1.3%
+faster and flat across the miss range. Page-ins per MB stay at 33.
+
+Read-ahead on produces more reactivations in 7 of 8 pairs and compressor
+traffic in 6 of 8 arms, against 2 of 8 with it off. The churn is real but costs
+almost nothing. Do not change the default on 1.3% without a resolution band.
+The earlier 13% slower record had the wrong sign.
+
+The read-ahead spilling hypothesis is rejected. The effect is flat across
+miss levels.
+
+### Metal residency cap
+
+`MLX_RESIDENCY_SET_MAX_PCT` controls the MLX residency set. With
+`MLX_RESIDENCY_DEBUG=1`, the premise gate reports:
+
+```text
+default   max_bytes_per_set =   750 MB
+pct 10    max_bytes_per_set =  1500 MB
+pct 90    max_bytes_per_set = 13500 MB
+```
+
+The default is 750 MB, 5% of the 15 GB MLX considers usable. A token hands the
+GPU about 1.17 GB of gathered expert data plus 2.5 GB of dense weights.
+
+Default versus 25% of the set, 3,750 MB, at miss 0.25 and 1.0 gave:
+
+```text
+miss 0.25   pass 1  default 430.9   pct25 388.0
+            pass 2  pct25   410.7   default 405.5
+miss 1.0    pass 1  default 890.0   pct25 885.9
+            pass 2  pct25   893.3   default 893.6
+```
+
+At miss 0.25 the second arm won in both passes. At miss 1.0 all four arms
+remain within 0.9%. The debug line confirmed the setting applied. Raising the
+set fivefold changes neither token time nor VM counters. The cap is rejected.
+
+### Method result
+
+Three two-arm comparisons produced large warming effects:
+
+| Claim | First-arm reading | Order-corrected |
+|---|---:|---:|
+| ring reads fewer bytes | -48% bytes | nothing |
+| read-ahead off is faster | -18.7% | -1.3%, flat |
+| residency cap helps at the hump | -10.0% | nothing |
+
+Earlier two-arm comparisons produced +12.8% and +10.7% results that were also
+noise. Reversed order caught every new false result. Treat reversed order as a
+required part of the benchmark method.
+
+### Instruments added
+
+The session adds five diagnostics. They do not change the shipped runtime path,
+default settings, or quality gate. The focused suite passes 98 tests.
+
+| File | Change |
+|---|---|
+| `models/flashnext/expert_cache.py` | Add the `FLASHNEXT_BUFFER_ARENA` ring with `buffer_arena` and `set_buffer_arena`, default off. |
+| `models/flashnext/bench_read_ceiling.py` | Add `--miss`, token digest, physical MB/token, VM deltas, and read-ahead readback. |
+| `models/flashnext/diskio.py` | Add `vm_counters` and `vm_delta`. |
+| `models/flashnext/store.py` | Add `FLASHNEXT_RDAHEAD`, raising if `fcntl` fails. |
+| `models/flashnext/bench_production.py` | Add the `buffer-arena` comparison and live-settings entry. |
+
+### Session position
+
+No new speed path is accepted. Every measured gain in this log came from fewer
+physical reads. The zero-drive GPU half is 86 ms/token, so the full GPU-busy
+hump cannot explain more than that bound.
+
+The next concrete item is REAP-288. Measure physical MB/token and `mincore`
+tail coverage before measuring its rate. Its cold tail is the only current
+candidate near the machine's page-cache capacity.

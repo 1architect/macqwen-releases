@@ -63,6 +63,16 @@ What changed in the code recently:
   52%, but makes generation slower. It is rejected.
 - A 60-token context sweep shows a warm-up transient near 2.9 to 3.2 tok/s,
   then a steady unpinned rate near 1.9 tok/s at every tested context.
+- `FLASHNEXT_BUFFER_ARENA` is bit-exact but unresolved. It measures 2.91 gen
+  against 2.94 with fresh buffers and 397.4 against 397.9 MB/token.
+- A miss-fraction sweep shows GPU busy rising to 171.7 ms/token near 25% miss,
+  then falling to 125.7 ms/token at full miss. Token time stays close to
+  linear in physical bytes. The peak needs three arms per cell.
+- VM counters show about 33 page-ins per MB, with reclaim, compression, and
+  swap flat during decode. The corrected `FLASHNEXT_RDAHEAD=0` result is 1.3%
+  faster, not 13% slower, and does not clear a band.
+- The default Metal residency set is 750 MB. Raising it to 3,750 MB changes
+  neither token time nor VM counters.
 - The remaining cost is still scheduling and graph execution, not a named
   removable stage.
 - The Flash-Next test suite passes all 98 tests. Three new instruments support
@@ -269,7 +279,7 @@ The profile decides whether the variable applies:
 - Run one model instance unless parallel operation is the experiment.
 - Hold prompt text and generated token limit constant.
 - Compare token IDs before accepting a performance change.
-- Reverse or interleave A/B order.
+- Reverse or interleave A/B order. Reversed order is mandatory on this machine.
 - **Use three arms per condition minimum.** The first arm of a run is always
 the slowest, because the page cache warms across arms. Two-arm A/Bs on this machine have produced +12.8% and +10.7% results that were both
 noise.
@@ -309,6 +319,12 @@ runtime but only 0.90 GB, interleaved with 93 language tensors inside a 2.05 GB 
 - Low-rank expert approximation.
 - Native MTP for this complete runtime.
 - Exact speculative paths already measured in the research log.
+- `MLX_MAX_OPS_PER_BUFFER`. The premise gate passed, but cap 120 was 19.8%
+  slower across the plain arms.
+- Reusing destination buffers as a speed change. The ring is bit-exact, but its
+  production result is unresolved and its shape-only form changed token IDs.
+- Raising `MLX_RESIDENCY_SET_MAX_PCT`. The debug premise gate passed, but a
+  fivefold increase changed neither token time nor VM counters.
 - Removing host work from the read path. Mapping resident rows instead of
 copying them, dropping the concatenate, and issuing reads earlier were each measured. Every one returns its saving to the GPU wait under
 drive pressure.
@@ -396,6 +412,9 @@ Follow-up issues from the 2026-09-01 sweep:
 - [#36](https://github.com/1architect/macqwen-releases/issues/36) Correct absolute GPU utilization reporting.
 - [#37](https://github.com/1architect/macqwen-releases/issues/37) Measure the resident-work boundary below 640 MB.
 - [#38](https://github.com/1architect/macqwen-releases/issues/38) Recheck GDN timing with a dependency-correct chain.
+- [#39](https://github.com/1architect/macqwen-releases/issues/39) Explain clean-boot GPU busy variance.
+- [#41](https://github.com/1architect/macqwen-releases/issues/41) Resolve reusable destination-ring performance.
+- [#42](https://github.com/1architect/macqwen-releases/issues/42) Characterize the GPU-busy hump across drive miss levels.
 
 ### Standing decisions
 
