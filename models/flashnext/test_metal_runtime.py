@@ -4,6 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 import sys
 import unittest
+import unittest.mock
 
 import numpy as np
 
@@ -230,7 +231,9 @@ class MLXQ4G32SmokeTests(unittest.TestCase):
             bits=4,
         )
 
-    def assert_mlx_close(self, actual, expected, message):
+    def assert_mlx_close(
+        self, actual, expected, message, rtol=2e-2, atol=3e-3, min_cosine=0.9999
+    ):
         mx = self.mx
         actual_np = np.asarray(actual.astype(mx.float32))
         expected_np = np.asarray(expected.astype(mx.float32))
@@ -241,13 +244,23 @@ class MLXQ4G32SmokeTests(unittest.TestCase):
         np.testing.assert_allclose(
             actual_np,
             expected_np,
-            rtol=2e-2,
-            atol=3e-3,
+            rtol=rtol,
+            atol=atol,
             err_msg=(
                 f"{message}; max_abs={max_abs:.6g}; "
                 f"max_rel={max_rel:.6g}"
             ),
         )
+        dot = float(np.sum(actual_np * expected_np))
+        norm_actual = float(np.linalg.norm(actual_np))
+        norm_expected = float(np.linalg.norm(expected_np))
+        if norm_actual > 0 and norm_expected > 0:
+            cosine = dot / (norm_actual * norm_expected)
+            self.assertGreaterEqual(
+                cosine,
+                min_cosine,
+                f"{message}; cosine similarity {cosine:.8f} < {min_cosine}",
+            )
 
     def assert_mlx_equal(self, actual, expected, message):
         mx = self.mx
@@ -409,10 +422,176 @@ class MLXQ4G32SmokeTests(unittest.TestCase):
             mx.expand_dims(activation, -2), *packs["down_proj"], **qmm
         ).squeeze(-2)
         expected = weighted_combine(down, routes, scores)
-        mx.eval(actual, expected)
-        self.assert_mlx_equal(
-            actual, expected, "production Q4/G32 output is not bit-identical"
+        self.assert_mlx_close(
+            actual, expected, "production Q4/G32 output diverged from gather_qmm"
         )
+
+    def test_mixed_float32_input_and_bfloat16_metadata_are_bit_identical(self):
+        """The runtime must keep the model activation dtype independent of Q4 metadata."""
+        mx = self.mx
+        hidden_size, intermediate_size = 256, 128
+        expert_count, top_k = 4, 3
+        packs = {
+            "gate_proj": self.pack(0, intermediate_size, hidden_size, expert_count),
+            "up_proj": self.pack(1, intermediate_size, hidden_size, expert_count),
+            "down_proj": self.pack(2, hidden_size, intermediate_size, expert_count),
+        }
+        self.assertEqual(str(packs["gate_proj"][1].dtype), "mlx.core.bfloat16")
+        self.assertEqual(str(packs["gate_proj"][2].dtype), "mlx.core.bfloat16")
+        x = (((mx.arange(hidden_size, dtype=mx.float32) % 31) - 15) / 64)
+        x = x.reshape(1, hidden_size)  # Deliberately keep the input float32.
+        routes = mx.array([[0, 2, 3]], dtype=mx.uint32)
+        scores = mx.array([[0.2, 0.3, 0.5]], dtype=mx.float32)
+        executor = MetalMoEExecutor(
+            expert_count, hidden_size, top_k, backend="metal", max_width=256
+        )
+        actual = executor.execute(x, routes, packs, scores=scores)
+
+        qmm = dict(
+            rhs_indices=routes, transpose=True, group_size=32, bits=4,
+            mode="affine", sorted_indices=False,
+        )
+        gate = mx.gather_qmm(x, *packs["gate_proj"], **qmm).squeeze(-2)
+        up = mx.gather_qmm(x, *packs["up_proj"], **qmm).squeeze(-2)
+        from mlx_vlm.models.activations import swiglu
+
+        down = mx.gather_qmm(
+            mx.expand_dims(swiglu(gate, up), -2),
+            *packs["down_proj"], **qmm,
+        ).squeeze(-2)
+        expected = weighted_combine(down, routes, scores)
+        mx.eval(actual, expected)
+
+        self.assertEqual(executor.last_path, "custom-metal")
+        self.assert_mlx_close(
+            actual, expected,
+            "mixed float32 activation and bfloat16 metadata diverged",
+            rtol=1e-3, atol=1e-4,
+        )
+
+    def test_adaptive_topk_score_widths_remain_bit_identical(self):
+        """Adaptive routing can pass any active prefix from one through ten slots."""
+        mx = self.mx
+        hidden_size = intermediate_size = 32
+        expert_count = 16
+        packs = {
+            "gate_proj": self.pack(0, intermediate_size, hidden_size, expert_count),
+            "up_proj": self.pack(1, intermediate_size, hidden_size, expert_count),
+            "down_proj": self.pack(2, hidden_size, intermediate_size, expert_count),
+        }
+        x = (((mx.arange(hidden_size, dtype=mx.float32) % 17) - 8) / 16).reshape(1, -1)
+        for width in range(1, 11):
+            with self.subTest(width=width):
+                routes = mx.arange(width, dtype=mx.uint32).reshape(1, width)
+                scores = mx.arange(1, width + 1, dtype=mx.float32).reshape(1, width)
+                scores = scores / mx.sum(scores, axis=-1, keepdims=True)
+                executor = MetalMoEExecutor(
+                    expert_count, hidden_size, width, backend="metal"
+                )
+                actual = executor.execute(x, routes, packs, scores=scores)
+                qmm = dict(
+                    rhs_indices=routes, transpose=True, group_size=32, bits=4,
+                    mode="affine", sorted_indices=False,
+                )
+                gate = mx.gather_qmm(x, *packs["gate_proj"], **qmm).squeeze(-2)
+                up = mx.gather_qmm(x, *packs["up_proj"], **qmm).squeeze(-2)
+                from mlx_vlm.models.activations import swiglu
+
+                activation = swiglu(gate, up)
+                down = mx.gather_qmm(
+                    mx.expand_dims(activation, -2), *packs["down_proj"], **qmm,
+                ).squeeze(-2)
+                expected = weighted_combine(down, routes, scores)
+                mx.eval(actual, expected)
+                self.assertEqual(executor.last_path, "custom-metal")
+                self.assert_mlx_close(
+                    actual, expected,
+                    f"adaptive top-k width {width} diverged",
+                    rtol=1e-3, atol=1e-4,
+                )
+
+    def test_production_width_float32_activation_and_bfloat16_metadata_are_exact(self):
+        """The real 2560x640 projections must support a seven-slot route."""
+        mx = self.mx
+        hidden_size, intermediate_size = 2560, 640
+        expert_count, top_k = 8, 7
+        packs = {
+            "gate_proj": self.pack(0, intermediate_size, hidden_size, expert_count),
+            "up_proj": self.pack(1, intermediate_size, hidden_size, expert_count),
+            "down_proj": self.pack(2, hidden_size, intermediate_size, expert_count),
+        }
+        x = (((mx.arange(hidden_size, dtype=mx.float32) % 31) - 15) / 64)
+        x = x.reshape(1, hidden_size)
+        routes = mx.arange(top_k, dtype=mx.uint32).reshape(1, top_k)
+        scores = mx.arange(1, top_k + 1, dtype=mx.float32).reshape(1, top_k)
+        scores = scores / mx.sum(scores, axis=-1, keepdims=True)
+        executor = MetalMoEExecutor(
+            expert_count, hidden_size, top_k, backend="metal"
+        )
+        actual = executor.execute(x, routes, packs, scores=scores)
+
+        qmm = dict(
+            rhs_indices=routes, transpose=True, group_size=32, bits=4,
+            mode="affine", sorted_indices=False,
+        )
+        gate = mx.gather_qmm(x, *packs["gate_proj"], **qmm).squeeze(-2)
+        up = mx.gather_qmm(x, *packs["up_proj"], **qmm).squeeze(-2)
+        from mlx_vlm.models.activations import swiglu
+
+        down = mx.gather_qmm(
+            mx.expand_dims(swiglu(gate, up), -2),
+            *packs["down_proj"], **qmm,
+        ).squeeze(-2)
+        expected = weighted_combine(down, routes, scores)
+        mx.eval(actual, expected)
+        self.assertEqual(executor.last_path, "custom-metal")
+        self.assert_mlx_close(
+            actual, expected,
+            "production-width mixed dtype output diverged",
+            rtol=1e-3, atol=1e-4,
+        )
+
+
+class MetalRuntimeIntegrationSelectionTests(unittest.TestCase):
+    def test_only_opt_in_nonzero_layers_select_custom_score_combine(self):
+        from models.flashnext.expert_cache import StreamingSwitchGLU
+
+        class Store:
+            def shape(self, _name):
+                return (16, 32, 4)
+
+        kwargs = dict(
+            store=Store(), prefix="layers.1.mlp.switch_mlp", group_size=32,
+            bits=4, mode="affine", capacity=16, activation=lambda value: value,
+        )
+        with unittest.mock.patch.dict(
+            "os.environ", {"FLASHNEXT_METAL_RUNTIME": "1"}, clear=False
+        ):
+            with unittest.mock.patch.dict(
+                "os.environ", {"FLASHNEXT_SLAB": "0"}, clear=False
+            ):
+                layer_one = StreamingSwitchGLU(layer_id=1, **kwargs)
+                layer_zero = StreamingSwitchGLU(layer_id=0, **kwargs)
+                self.assertTrue(layer_one.metal_combines_scores)
+                self.assertFalse(layer_zero.metal_combines_scores)
+
+    def test_custom_score_combine_is_disabled_without_opt_in(self):
+        from models.flashnext.expert_cache import StreamingSwitchGLU
+
+        class Store:
+            def shape(self, _name):
+                return (16, 32, 4)
+
+        with unittest.mock.patch.dict(
+            "os.environ", {"FLASHNEXT_METAL_RUNTIME": "0", "FLASHNEXT_SLAB": "0"},
+            clear=False,
+        ):
+            layer = StreamingSwitchGLU(
+                store=Store(), prefix="layers.1.mlp.switch_mlp", group_size=32,
+                bits=4, mode="affine", capacity=16, activation=lambda value: value,
+                layer_id=1,
+            )
+        self.assertFalse(layer.metal_combines_scores)
 
 
 if __name__ == "__main__":

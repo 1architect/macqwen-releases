@@ -3797,3 +3797,149 @@ installed MLX kernel layout.
 The prototype still uses MLX to launch the custom Metal kernels. Do not
 integrate it into production yet. The next step is to port this exact topology
 to the Objective-C++ command-buffer scheduler and connect the real buffers.
+
+## Bit-identity paradigm and kernel progress, 2026-09-03
+
+The investigation into why custom Metal kernels diverge from the stock MLX
+runtime examines whether non-exact outputs point to a real quality defect or
+whether requiring bit-identity with MLX hinders kernel progress.
+
+### Output equivalence versus numerical tolerance
+
+In IEEE 754 floating-point arithmetic, addition is non-associative: $(A + B) + C \neq A + (B + C)$.
+Stock MLX computes matrix reductions across SIMD lanes using a parallel binary
+reduction tree, whereas a fused Metal kernel accumulates sequentially or
+across custom threadgroup tile dimensions. These two paths differ by up to 1 ULP
+(Unit in the Last Place, $\sim 10^{-7}$ in float32, $\sim 10^{-3}$ in bfloat16).
+
+This numerical drift does not indicate a model quality defect:
+- Quantization error in 4-bit weights ($\sim 10^{-2}$) is orders of magnitude
+  larger than 1-ULP accumulation variance.
+- Different inference backends (vLLM, TensorRT-LLM, llama.cpp, and MLX) produce
+  different intermediate logits on identical weights due to distinct GEMM tiling.
+- In interactive use, stochastic sampling (`temperature > 0`, `top_p`, min-p)
+  swamps any floating-point accumulation difference.
+
+However, under greedy decoding (`argmax`), an intermediate 1-ULP variation can
+flip a token selection when candidate logits are nearly tied. Because the chosen
+token enters the key-value cache, the autoregressive trajectory branches, and
+subsequent token text diverges completely.
+
+### The cost of the bit-identity constraint
+
+Requiring strict bit-identity against MLX was adopted as an experimental control
+shortcut: holding token IDs constant guarantees that physical SSD expert reads
+remain identical across benchmark passes, isolating compute timing from I/O
+variance.
+
+Enforcing bit-identity at the kernel level severely hinders progress:
+- In `metal_runtime.py`, the fused down-projection and router-score combine kernel
+  had to be bypassed for float32 activations and route widths $> 8$ slots solely
+  because sequential Metal accumulation drifts by 1 ULP from MLX's reduction tree.
+- Kernel authors are forced to mimic MLX's specific internal tree quirks rather
+  than targeting optimal Apple Silicon GPU utilization and register occupancy.
+- Porting to the native Objective-C++ command-buffer queue (`metal_runtime_native.mm`)
+  under issue #45 cannot maintain bit-identity with MLX's internal graph scheduler.
+
+### Transition to a three-tier verification framework
+
+Strict bit-identity against MLX is dropped as a kernel acceptance requirement.
+It is replaced with a three-tier verification model:
+
+1. **Tier 1: Layer-level numerical tolerance (isolated tensors)**:
+   Custom Metal kernels must match MLX output on static inputs within numerical
+   tolerance: `atol < 1e-4`, `rtol < 1e-3`, and cosine similarity $> 0.99999$.
+   This catches real kernel bugs (misaligned unpacks, wrong indices, sign errors)
+   without penalizing valid floating-point reassociation.
+2. **Tier 2: Benchmarking on fixed/replayed routes**:
+   To isolate compute performance from drive traffic when token sequences branch,
+   benchmark runs use synthetic or replayed route traces (`bench_runtime_layer.py`),
+   holding SSD read volume constant.
+3. **Tier 3: End-to-end trajectory gate (model quality)**:
+   When text trajectories branch, model capability is evaluated using the
+   established trajectory gate: generating a complete SketchUp Ruby extension
+   with sampling and reasoning enabled (`docs/flashnext/handoff.md`). Passing
+   requires coherent reasoning, correct API usage (`Face#pushpull`, `parse_length`),
+   handling edge cases (`next unless face.valid?`), and zero repetition loops.
+
+### Current pending work on `flashnext-runtime`
+
+Current development on the `flashnext-runtime` branch includes:
+
+1. **Mixed-dtype Metal kernels (`models/flashnext/metal_runtime.py`)**:
+   Specialized Q4 helpers (`qmv_fast_mixed_impl`, `qmv_mixed_impl`) decouple
+   float32 activations from bfloat16 scales and biases. With the relaxation of
+   strict bit-identity, the fully fused down-projection plus router combine
+   kernel will be re-enabled for all activation types and slot widths.
+2. **MoE layer dispatch integration (`models/flashnext/expert_cache.py`, `adaptive_topk.py`)**:
+   `StreamingSwitchGLU` provides an opt-in path via `FLASHNEXT_METAL_RUNTIME=1`
+   for decode batch sizes $\le 8$, with Layer 0 remaining on the reference path.
+   The inline verification probe (`FLASHNEXT_METAL_VERIFY=1`) tracks component
+   errors on live tokens.
+3. **Native command-buffer integration (Issue #45)**:
+   Port the SIMD mixed-precision Q4 kernel into the native Objective-C++ scheduler
+   (`models/flashnext/metal_runtime_native.mm` and `metal_native.py`) to measure
+   barrier and fence costs while concurrent SSD DMA streaming is active.
+4. **Pre-load wired limit comparison (Issue #43)**:
+   Validate the standalone 2 GB memory-lock gain under controlled clean-boot
+   conditions with the limit configured prior to model load.
+5. **Physical working-set evaluation (Issues #24 and #25)**:
+   Prepare group-size changes (Q4/G64/G128) and REAP pruning to move production
+   working sets below 400 MB/token.
+
+## Issue #45 Resolution: Native Metal Q4 MoE Scheduler and Mixed Residency, 2026-09-03
+
+Issue #45 investigated whether Metal buffer-scope barriers (`MTLBarrierScopeBuffers`)
+or encoder-level fences (`MTLFence`) stall the Apple Silicon GPU memory controller
+when concurrent SSD DMA traffic is active, explaining the "GPU-busy hump" (where
+GPU time per token climbed from 86 ms to 171–182 ms during SSD streaming).
+
+### 1. Implementation
+The native Objective-C++ Metal scheduler in `models/flashnext/metal_runtime_native.mm`
+and `metal_native.py` was unified with the SIMD mixed-precision Q4/G32 kernel:
+- Direct support for float32 activations, uint32 Q4 weights, and bfloat16 scales and
+  biases (`qmv_fast_mixed_impl<float, 32, 4, bfloat>`, `qmv_mixed_impl<float, 32, 4, bfloat>`).
+- Direct execution on native `MTLCommandBuffer` with three synchronization strategies:
+  1. `serial`: single non-concurrent compute encoder (implicit hardware serialization);
+  2. `barrier`: single concurrent compute encoder with `[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers]`;
+  3. `fence`: three separate compute encoders with explicit `MTLFence` wait/update calls.
+- Hardware-accurate GPU timing via `[commandBuffer GPUEndTime] - [commandBuffer GPUStartTime]`.
+- Output verified bit-identical across all three strategies and matching MLX reference within $1.3 \times 10^{-6}$ max absolute error and 1.0000000 cosine similarity.
+
+### 2. Empirical Results Across SSD DMA Pressure
+Swept with 7 interleaved arms on real FlashNext shapes (hidden=2560, inter=640, slots=8)
+while streaming 0 MB, 32 MB, 64 MB, and 128 MB from checkpoint shard files:
+
+| Background SSD Read | Strategy | Host Median (ms) | Host Min..Max (ms) | GPU Median (ms) | Samples |
+|---|---|---|---|---|---|
+| **0 MB** | `serial` | 1.356 | 1.308..1.543 | 0.283 | 7 |
+| | `barrier` | 1.391 | 1.333..1.563 | **0.283** | 7 |
+| | `fence` | 1.192 | 1.152..1.214 | 0.319 | 7 |
+| **32 MB** | `serial` | 1.626 | 1.395..1.714 | 0.327 | 7 |
+| | `barrier` | 1.498 | 1.388..1.930 | **0.322** | 7 |
+| | `fence` | 1.450 | 1.384..1.561 | 0.324 | 7 |
+| **64 MB** | `serial` | 1.680 | 1.485..1.898 | 0.321 | 7 |
+| | `barrier` | 1.721 | 1.639..1.967 | **0.316** | 7 |
+| | `fence` | 1.605 | 1.510..1.736 | 0.325 | 7 |
+| **128 MB** | `serial` | 1.754 | 1.529..1.826 | 0.320 | 7 |
+| | `barrier` | 1.760 | 1.641..2.131 | **0.324** | 7 |
+| | `fence` | 1.684 | 1.599..1.724 | 0.361 | 7 |
+
+### 3. Key Findings & Closure of Issue #45
+1. **Barrier Stall Hypothesis Disproven**:
+   `barrier` GPU execution time is indistinguishable from `serial` across all SSD streaming
+   intensities (0.283 ms vs 0.283 ms at 0 MB; 0.316 ms vs 0.321 ms at 64 MB; 0.324 ms vs 0.320 ms at 128 MB).
+   In-encoder `MTLBarrierScopeBuffers` causes zero memory stall or scheduling amplification.
+2. **GPU Execution Contention is Small (~14%)**:
+   GPU hardware time climbs by only ~0.04 ms (0.283 ms -> 0.322 ms) under heavy SSD DMA,
+   reflecting mild memory fabric sharing between the PCIe/NVMe controller and the GPU.
+3. **Host Overhead is the Primary Driver (~30%)**:
+   Host dispatch-to-completion time increases from 1.35 ms to 1.76 ms (+0.40 ms) due to
+   kernel page faults, Darwin scheduler interruptions, and CPU thread contention while
+   servicing the disk stream.
+4. **Fences Degrade Under Heavy I/O**:
+   Multi-encoder `MTLFence` overhead jumps from 0.319 ms to 0.361 ms at 128 MB, showing
+   that cross-encoder fence synchronization is sensitive to memory fabric pressure.
+
+Issue #45 is resolved and closed.
+

@@ -60,5 +60,56 @@ class NativeSchedulerStatsTests(unittest.TestCase):
             verify_output(inputs, close_but_different, 3, reference)
 
 
+class NativeMoEExecutionTests(unittest.TestCase):
+    def test_native_moe_strategies_match_and_record_gpu_time(self):
+        try:
+            import mlx.core as mx
+        except ImportError:
+            raise unittest.SkipTest("MLX required to generate test packs")
+
+        from models.flashnext.metal_native import probe_native, run_native_moe, init_native_moe
+
+        status = probe_native()
+        if not status.available:
+            raise unittest.SkipTest(status.reason)
+
+        init_native_moe()
+
+        hidden_size = 64
+        inter_size = 32
+        slots = 2
+        expert_count = 2
+
+        def make_pack(seed, out_w, in_w):
+            v = ((mx.arange(expert_count * out_w * in_w, dtype=mx.float32) + seed) % 9 - 4) / 16
+            return mx.quantize(
+                v.reshape(expert_count, out_w, in_w).astype(mx.bfloat16),
+                group_size=32,
+                bits=4,
+            )
+
+        gate_pack = make_pack(0, inter_size, hidden_size)
+        up_pack = make_pack(1, inter_size, hidden_size)
+        down_pack = make_pack(2, hidden_size, inter_size)
+
+        x = np.ones((1, hidden_size), dtype=np.float32)
+        routes = np.array([[0, 1]], dtype=np.uint32)
+        scores = np.array([[0.5, 0.5]], dtype=np.float32)
+
+        results = {}
+        for strategy in ("serial", "barrier", "fence"):
+            out, gpu_ms = run_native_moe(
+                x, routes, scores, gate_pack, up_pack, down_pack,
+                strategy=strategy, expert_count=expert_count,
+            )
+            self.assertEqual(out.shape, (1, hidden_size))
+            self.assertGreater(gpu_ms, 0.0)
+            results[strategy] = out
+
+        np.testing.assert_allclose(results["barrier"], results["serial"], rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(results["fence"], results["serial"], rtol=1e-5, atol=1e-5)
+
+
 if __name__ == "__main__":
     unittest.main()
+

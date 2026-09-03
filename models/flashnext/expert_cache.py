@@ -526,6 +526,16 @@ class StreamingSwitchGLU(nn.Module):
         self.up_proj = make("up_proj")
         self.down_proj = make("down_proj")
         self.activation = activation
+        self._metal_executors = {}
+
+    @property
+    def metal_combines_scores(self) -> bool:
+        """Report the opt-in decode path to the patched MoE block."""
+        return (
+            os.environ.get("FLASHNEXT_METAL_RUNTIME") == "1"
+            and self.gate_proj.slab is None
+            and self.layer_id != 0
+        )
 
     def prefetch(self, wanted) -> None:
         """Issue this layer's expert reads before the next host sync.
@@ -548,7 +558,8 @@ class StreamingSwitchGLU(nn.Module):
             [p.cache.submit(wanted, False) for p in projections],
         )
 
-    def __call__(self, x, indices, allow_sort=True) -> mx.array:
+    def __call__(self, x, indices, allow_sort=True, scores=None) -> mx.array:
+        flat_input = x.reshape(-1, x.shape[-1])
         x = mx.expand_dims(x, (-2, -3))
         # `_moe_call` leaves the routed list here when one-sync is on. It is
         # the same list this method would fetch, built from values already on
@@ -579,16 +590,25 @@ class StreamingSwitchGLU(nn.Module):
             use_slab = slabs[0].ready()
 
         if not use_slab:
-            return self._one_pass(x, indices, routed, None, allow_sort=allow_sort)
+            return self._one_pass(
+                x, indices, routed, None, allow_sort=allow_sort,
+                flat_input=flat_input, scores=scores,
+            )
 
         hit = [e for e in routed if e in slabs[0].slot]
         miss = [e for e in routed if e not in slabs[0].slot]
         self.hits += len(hit)
         self.misses += len(miss)
         if not miss:
-            return self._one_pass(x, indices, routed, slabs, allow_sort=allow_sort)
+            return self._one_pass(
+                x, indices, routed, slabs, allow_sort=allow_sort,
+                flat_input=flat_input, scores=scores,
+            )
         if not hit:
-            return self._one_pass(x, indices, routed, None, allow_sort=allow_sort)
+            return self._one_pass(
+                x, indices, routed, None, allow_sort=allow_sort,
+                flat_input=flat_input, scores=scores,
+            )
 
         # Sum the two groups at the output. Accumulate in float32: three
         # bfloat16 adds drift by one ULP against the dense path.
@@ -602,7 +622,10 @@ class StreamingSwitchGLU(nn.Module):
         )
         return out.astype(mx.bfloat16)
 
-    def _one_pass(self, x, indices, routed, slabs, mask=None, allow_sort=True):
+    def _one_pass(
+        self, x, indices, routed, slabs, mask=None, allow_sort=True,
+        flat_input=None, scores=None,
+    ):
         projections = (self.gate_proj, self.up_proj, self.down_proj)
         if slabs is not None:
             local = mx.array(
@@ -662,6 +685,95 @@ class StreamingSwitchGLU(nn.Module):
 
         issue_began = time.perf_counter() if _PROFILE else 0.0
         with hostwindow.window("moe_issue_host"):
+            if (
+                self.metal_combines_scores
+                and scores is not None
+                and mask is None
+                and flat_input is not None
+                and flat_input.shape[0] <= 8
+                and self.gate_proj.group_size == 32
+                and self.gate_proj.bits == 4
+            ):
+                from .metal_runtime import MetalMoEExecutor
+
+                slots = indices.shape[-1]
+                local = local.reshape(flat_input.shape[0], slots)
+                routed_scores = scores.reshape(flat_input.shape[0], slots)
+                expert_count = weights[0][0].shape[0]
+                key = (expert_count, flat_input.shape[-1], slots)
+                executor = self._metal_executors.get(key)
+                if executor is None:
+                    executor = MetalMoEExecutor(
+                        expert_count, flat_input.shape[-1], slots
+                    )
+                    self._metal_executors[key] = executor
+                projection_packs = {
+                    "gate_proj": weights[0],
+                    "up_proj": weights[1],
+                    "down_proj": weights[2],
+                }
+                output = executor.execute(
+                    flat_input, local, projection_packs,
+                    scores=routed_scores,
+                )
+                output = output.reshape(
+                    *indices.shape[:-1], output.shape[-1]
+                )
+                if (
+                    os.environ.get("FLASHNEXT_METAL_VERIFY") == "1"
+                    and self.layer_id == 1
+                ):
+                    custom_gate, custom_up, custom_down = executor.execute(
+                        flat_input, local, projection_packs, return_all=True
+                    )
+                    reference_gate_raw = projections[0](
+                        x, local.reshape(indices.shape),
+                        plan=(None, local.reshape(indices.shape)),
+                        weights=weights[0], sorted_indices=False,
+                    )
+                    reference_up_raw = projections[1](
+                        x, local.reshape(indices.shape),
+                        plan=(None, local.reshape(indices.shape)),
+                        weights=weights[1], sorted_indices=False,
+                    )
+                    reference_down = projections[2](
+                        self.activation(reference_up_raw, reference_gate_raw),
+                        local.reshape(indices.shape),
+                        plan=(None, local.reshape(indices.shape)),
+                        weights=weights[2], sorted_indices=False,
+                    ).squeeze(-2)
+                    reference_gate = reference_gate_raw.squeeze(-2)
+                    reference_up = reference_up_raw.squeeze(-2)
+                    reference = self._issue(
+                        x, indices, projections, local.reshape(indices.shape),
+                        weights, None, routed, allow_sort, 0.0,
+                    )
+                    reference = (reference * scores[..., None]).sum(axis=-2)
+                    mx.eval(
+                        output, reference, custom_gate, custom_up, custom_down,
+                        reference_gate, reference_up, reference_down,
+                    )
+                    component_errors = []
+                    for actual_part, expected_part in (
+                        (custom_gate, reference_gate),
+                        (custom_up, reference_up),
+                        (custom_down, reference_down),
+                    ):
+                        expected_part = expected_part.reshape(actual_part.shape)
+                        component_errors.append(mx.max(mx.abs(
+                            actual_part.astype(mx.float32)
+                            - expected_part.astype(mx.float32)
+                        )).item())
+                    error = mx.max(mx.abs(
+                        output.astype(mx.float32) - reference.astype(mx.float32)
+                    )).item()
+                    print(
+                        f"metal layer {self.layer_id}: slots={slots} "
+                        f"parts={component_errors} max_abs={error}"
+                    )
+                if _PROFILE:
+                    _TIMERS["moe_issue"] += time.perf_counter() - issue_began
+                return output
             return self._issue(
                 x, indices, projections, local, weights, mask, routed,
                 allow_sort, issue_began,

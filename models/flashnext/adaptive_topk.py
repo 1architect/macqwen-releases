@@ -319,12 +319,25 @@ def _moe_call(self, x: mx.array) -> mx.array:
     if _PROFILE:
         _TIMERS["shared_expert"] += time.perf_counter() - shared_began
 
-    expert_values = self.switch_mlp(x, inds)
-    y = (expert_values * scores[..., None]).sum(axis=-2)
+    predictor_mode = _TAIL_MODE[0]
+    custom_combines = (
+        getattr(self.switch_mlp, "metal_combines_scores", False)
+        and x.size // x.shape[-1] <= 8
+        and predictor_mode == "off"
+    )
+    if custom_combines:
+        y = self.switch_mlp(x, inds, scores=scores)
+        expert_values = None
+    else:
+        expert_values = self.switch_mlp(x, inds)
+        y = (expert_values * scores[..., None]).sum(axis=-2)
     shared_y = shared_gate * shared
 
-    predictor_mode = _TAIL_MODE[0]
-    if predictor_mode in ("collect", "apply") and layer_id is not None:
+    if (
+        predictor_mode in ("collect", "apply")
+        and layer_id is not None
+        and expert_values is not None
+    ):
         predictor_keeps = fit_keeps if predictor_mode == "collect" else keeps
         predictor_shape = (*scores.shape[:-1], 1)
         predictor_keep_array = mx.array(

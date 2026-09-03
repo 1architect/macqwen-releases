@@ -100,6 +100,7 @@ def decode_pass(language, ids, count):
         LAYER_TIMERS[key] = 0.0
     reset_profile()
     read_before = disk_bytes_read()
+    cpu_before = time.process_time()
     began = time.time()
     drain = 0.0
     for _ in range(count):
@@ -110,11 +111,15 @@ def decode_pass(language, ids, count):
         mx.eval(token)
         drain += time.perf_counter() - drain_began
     elapsed = time.time() - began
+    cpu_seconds = time.process_time() - cpu_before
     read_bytes = disk_bytes_read() - read_before
     memory = (mx.get_active_memory(), mx.get_cache_memory())
     timers = profile_totals()
     timers["final_eval"] = drain
-    return produced, elapsed / count, read_bytes / count, memory, timers
+    return (
+        produced, elapsed / count, read_bytes / count, memory, timers,
+        cpu_seconds / count,
+    )
 
 
 def main() -> None:
@@ -165,7 +170,7 @@ def main() -> None:
     reference = None
     results = []
     for index in range(1, args.passes + 1):
-        produced, seconds, read_bytes, memory, timers = decode_pass(
+        produced, seconds, read_bytes, memory, timers, cpu_seconds = decode_pass(
             language, ids, args.tokens
         )
         layers = {k: v / args.tokens * 1000 for k, v in LAYER_TIMERS.items()}
@@ -173,10 +178,11 @@ def main() -> None:
             reference = produced
         elif produced != reference:
             raise SystemExit("token IDs changed between passes; result invalid")
-        results.append((seconds, read_bytes, timers))
+        results.append((seconds, read_bytes, timers, cpu_seconds))
         print(
             f"pass {index}  {1 / seconds:5.2f} tok/s  {seconds * 1000:7.1f} "
-            f"ms/token  physical read {read_bytes / 1e6:8.1f} MB/token  "
+            f"ms/token  CPU {cpu_seconds * 1000:6.1f} core-ms/token  "
+            f"physical read {read_bytes / 1e6:8.1f} MB/token  "
             f"mlx active {memory[0] / 1e9:5.2f} GB  cache {memory[1] / 1e9:5.2f} GB",
             flush=True,
         )
@@ -213,7 +219,7 @@ def main() -> None:
             inside = ", ".join(f"{k} {v:.1f} ms" for k, v in layers.items())
             print(f"          inside rest: {inside}", flush=True)
 
-    best_seconds, best_bytes, best_timers = min(results)
+    best_seconds, best_bytes, best_timers, best_cpu = min(results)
     observed = best_bytes / best_seconds / 1e6
     disk_seconds = best_bytes / 1e6 / args.gather_rate
     print(f"\nidentical token IDs across {args.passes} passes: yes")

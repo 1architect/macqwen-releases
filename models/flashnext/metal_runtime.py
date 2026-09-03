@@ -183,7 +183,7 @@ const device T* input = x +
     ((SLOT_INPUT != 0) ? pair * IN_WIDTH : token * IN_WIDTH);
 device T* output = out + pair * OUT_WIDTH;
 uint3 tid = uint3(0, threadgroup_position_in_grid.y, pair);
-QMV_IMPL<T, 32, 4>(
+QMV_MIXED_IMPL<T, 32, 4>(
     weight + expert * OUT_WIDTH * (IN_WIDTH / 8),
     scales + expert * OUT_WIDTH * (IN_WIDTH / 32),
     biases + expert * OUT_WIDTH * (IN_WIDTH / 32),
@@ -211,6 +211,36 @@ def _mlx_qmv_header() -> str:
     )
     qmv_end = text.index("// Affine analog of fp_qmv_wide", qmv_start)
     header = text[:helper_end] + text[qmv_start:qmv_end]
+    # The stock MLX helpers use one type for activations and affine metadata.
+    # FlashNext stores float32 activations with bfloat16 scales and biases.
+    # Keep the MLX reduction body, but use a separate metadata type so MLX
+    # does not insert per-projection metadata conversion kernels.
+    impl_start = text.index(
+        "template <typename T, int group_size, int bits>\n"
+        "METAL_FUNC void qmv_impl",
+        qmv_start,
+    )
+    fast = text[qmv_start:impl_start]
+    impl = text[impl_start:qmv_end]
+    fast = fast.replace(
+        "template <typename T, int group_size, int bits>",
+        "template <typename T, int group_size, int bits, typename M>",
+        1,
+    ).replace("qmv_fast_impl", "qmv_fast_mixed_impl", 1)
+    impl = impl.replace(
+        "template <typename T, int group_size, int bits>",
+        "template <typename T, int group_size, int bits, typename M>",
+        1,
+    ).replace("qmv_impl", "qmv_mixed_impl", 1)
+    for old, new in (
+        ("const device T* scales", "const device M* scales"),
+        ("const device T* biases", "const device M* biases"),
+        ("const device T* sl", "const device M* sl"),
+        ("const device T* bl", "const device M* bl"),
+    ):
+        fast = fast.replace(old, new)
+        impl = impl.replace(old, new)
+    header += fast + impl
     # Custom-kernel helpers receive compile-time local dimensions, not buffer
     # address-space constants.
     return header.replace("const constant int&", "const int&")
@@ -231,7 +261,7 @@ for (uint slot = 0; slot < SLOTS; ++slot) {
     uint3 tid = uint3(0, group.x, token);
     device T* slot_output = scratch +
         (token * SLOTS + slot) * OUT_WIDTH;
-    qmv_impl<T, 32, 4>(
+    qmv_mixed_impl<T, 32, 4>(
         weight + expert * OUT_WIDTH * (IN_WIDTH / 8),
         scales + expert * OUT_WIDTH * (IN_WIDTH / 32),
         biases + expert * OUT_WIDTH * (IN_WIDTH / 32),
@@ -325,8 +355,8 @@ class MetalMoEExecutor:
             body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
             body = body.replace("SLOT_INPUT", "1" if slot_input else "0")
             body = body.replace(
-                "QMV_IMPL",
-                "qmv_fast_impl" if input_width % 512 == 0 else "qmv_impl",
+                "QMV_MIXED_IMPL",
+                "qmv_fast_mixed_impl" if input_width % 512 == 0 else "qmv_mixed_impl",
             )
             kernel = maker(
                 name="flashnext_level1_q4g32",
@@ -371,18 +401,23 @@ class MetalMoEExecutor:
 
         tokens, input_width = _shape(x)[0], _shape(x)[-1]
         slots = _shape(routes)[1]
+        scales = down.scales
+        biases = down.biases
         kernel = self._get_fused_down_kernel(
             x, tokens, slots, input_width, output_width
         )
         result = kernel(
-            inputs=[x, down.weight, down.scales, down.biases, routes, scores],
+            inputs=[x, down.weight, scales, biases, routes, scores],
             template=[("T", x.dtype)],
             grid=(((output_width + 7) // 8) * 64, 1, tokens),
             threadgroup=(64, 1, 1),
             output_shapes=[(tokens, slots, output_width), (tokens, output_width)],
             output_dtypes=[x.dtype, mx.float32],
         )
-        return result[1]
+        out = result[1]
+        if str(out.dtype) != str(x.dtype):
+            out = out.astype(x.dtype)
+        return out
 
     def _metal_projection(
         self,
@@ -400,8 +435,10 @@ class MetalMoEExecutor:
         )
         import mlx.core as mx
 
+        scales = projection.scales
+        biases = projection.biases
         result = kernel(
-            inputs=[x, projection.weight, projection.scales, projection.biases, routes],
+            inputs=[x, projection.weight, scales, biases, routes],
             template=[("T", x.dtype)],
             grid=(32, ((output_width + 7) // 8) * 2, tokens * slots),
             threadgroup=(32, 2, 1),

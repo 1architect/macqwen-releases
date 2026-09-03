@@ -156,8 +156,98 @@ def _background_thread(path: str | None, byte_count: int, chunk_bytes: int):
     return worker, errors
 
 
+def run_moe_benchmark(args, strategies: tuple[str, ...]) -> int:
+    try:
+        import mlx.core as mx
+    except ImportError:
+        print("MLX required to generate MoE benchmark weights")
+        return 2
+
+    from models.flashnext.metal_native import probe_native, run_native_moe, init_native_moe
+
+    status = probe_native()
+    if not status.available:
+        print(f"native scheduler unavailable: {status.reason}")
+        return 2
+
+    init_native_moe()
+
+    hidden_size = 2560
+    inter_size = 640
+    slots = 8
+    expert_count = 16
+
+    def make_pack(seed, out_w, in_w):
+        v = ((mx.arange(expert_count * out_w * in_w, dtype=mx.float32) + seed * 3) % 17 - 8) / 64
+        return mx.quantize(
+            v.reshape(expert_count, out_w, in_w).astype(mx.bfloat16),
+            group_size=32,
+            bits=4,
+        )
+
+    gate_pack = make_pack(0, inter_size, hidden_size)
+    up_pack = make_pack(1, inter_size, hidden_size)
+    down_pack = make_pack(2, hidden_size, inter_size)
+
+    x = np.ones((1, hidden_size), dtype=np.float32)
+    routes = np.arange(slots, dtype=np.uint32).reshape(1, slots) % expert_count
+    scores = (np.ones((1, slots), dtype=np.float32) / slots)
+
+    background_bytes = int(args.background_mb * 1024 * 1024)
+
+    # Warmup all strategies
+    reference = None
+    for strategy in strategies:
+        warm, _ = run_native_moe(
+            x, routes, scores, gate_pack, up_pack, down_pack,
+            strategy=strategy, expert_count=expert_count,
+        )
+        if reference is None:
+            reference = warm
+        elif not np.allclose(warm, reference, rtol=1e-3, atol=1e-3):
+            raise RuntimeError(f"MoE strategy {strategy} output diverged from reference")
+
+    samples_host: dict[str, list[float]] = {s: [] for s in strategies}
+    samples_gpu: dict[str, list[float]] = {s: [] for s in strategies}
+    schedule = interleaved_order(strategies, args.arms, args.rounds)
+
+    for strategy in schedule:
+        worker, errors = _background_thread(
+            args.background_file, background_bytes, args.background_chunk_kb * 1024
+        )
+        try:
+            t0 = time.perf_counter()
+            out, gpu_ms = run_native_moe(
+                x, routes, scores, gate_pack, up_pack, down_pack,
+                strategy=strategy, expert_count=expert_count,
+            )
+            elapsed_host = (time.perf_counter() - t0) * 1000.0
+        finally:
+            if worker is not None:
+                worker.join()
+        if errors:
+            raise RuntimeError(f"background read failed: {errors[0]}")
+        samples_host[strategy].append(elapsed_host)
+        samples_gpu[strategy].append(gpu_ms)
+
+    print(f"mode=moe, hidden={hidden_size}, inter={inter_size}, slots={slots}, samples={len(schedule)}")
+    if args.background_file:
+        print(f"background={Path(args.background_file).expanduser()} "
+              f"bytes_per_arm={background_bytes}")
+    print("\nstrategy  host_med_ms  min_ms  max_ms  res_band  gpu_med_ms  samples")
+    for strategy in strategies:
+        h_res = summarize(samples_host[strategy])
+        g_res = summarize(samples_gpu[strategy])
+        print(f"{strategy:8s}  {h_res.median_ms:11.3f}  "
+              f"{h_res.minimum_ms:6.3f}  {h_res.maximum_ms:6.3f}  "
+              f"{h_res.resolution_band_pct:7.1f}%  {g_res.median_ms:10.3f}  {h_res.samples:7d}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=["chain", "moe"], default="chain",
+                        help="benchmark mode: synthetic chain or full Q4 MoE block")
     parser.add_argument("--strategies", default=",".join(DEFAULT_STRATEGIES),
                         help="comma-separated native strategies")
     parser.add_argument("--width", type=int, default=8192)
@@ -188,6 +278,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--background-mb exceeds the 256 MB safety cap")
     if args.background_chunk_kb < 1:
         parser.error("--background-chunk-kb must be positive")
+
+    if args.mode == "moe":
+        return run_moe_benchmark(args, strategies)
 
     try:
         from models.flashnext.metal_native import probe_native, run_dependency_chain
@@ -245,3 +338,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
