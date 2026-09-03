@@ -85,15 +85,22 @@ What changed in the code recently:
   remains unresolved in production. Keep it disabled by default.
 - The remaining cost is still scheduling and graph execution, not a named
   removable stage.
-- The `flashnext-runtime` branch now has a bounded Q4/G32 Metal kernel and a
-  native scheduler probe. The first scalar Q4 kernel was 7 to 8 times slower.
-  Its exact SIMD replacement is 3.5% to 3.8% faster than MLX in the resolved
-  SSD-loaded cells. It is bit-identical and still launches through MLX.
-  The native probe shows a directional fence cost, but it does not yet combine
-  native Q4 execution with mixed SSD residency. Production is unchanged.
-- The Flash-Next test suite passes all 137 tests. Current diagnostics cover
-  Metal trace, context decay, resident working set, wired limits, GPU capture,
-  RMSNorm compilation, the bounded Q4 kernel, and native scheduling.
+- The `flashnext-runtime` branch integrates a specialized SIMD Q4/G32 Metal MoE
+  executor (`FLASHNEXT_METAL_RUNTIME=1`) fusing down-projection and router score
+  combination directly to bfloat16. It eliminates intermediate `(tokens, slots, hidden)`
+  tensor allocations and removes 48 `astype` kernel launches per token.
+- Controlled production evaluation (`bench_production.py --compare metal-runtime`)
+  in a 16-arm interleaved reversed-pair test verified 100% bit-identical greedy token
+  digests (`29d04075ed7021b3`), with rate difference at +0.7% to +2.0% (unresolved
+  inside the 7.8% resolution band).
+- Issue #45 remains OPEN: The native scheduler probe's background I/O read without
+  `F_NOCACHE` from offset 0, so barrier behavior under true physical SSD DMA remains
+  unproven.
+- A single-pass unified resident slab architecture (`SLAB_ENABLED`) is implemented
+  using bit-31 pointer encoding, eliminating dual-pass MLX graph splits. Functional
+  parity is verified; performance sweeps must be kept small (`SLAB <= 4`) to prevent
+  crowding Darwin's page cache.
+- The Flash-Next test suite passes all 145 tests.
 
 The cache-aware quality comparison remains open under Next work. Its gate result
 was measured under greedy decoding, which causes repetition on its own, so it

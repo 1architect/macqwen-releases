@@ -3887,7 +3887,7 @@ Current development on the `flashnext-runtime` branch includes:
    Prepare group-size changes (Q4/G64/G128) and REAP pruning to move production
    working sets below 400 MB/token.
 
-## Issue #45 Resolution: Native Metal Q4 MoE Scheduler and Mixed Residency, 2026-09-03
+## Issue #45 Status: Native Metal Q4 MoE Scheduler Probe (Remains Open), 2026-09-03
 
 Issue #45 investigated whether Metal buffer-scope barriers (`MTLBarrierScopeBuffers`)
 or encoder-level fences (`MTLFence`) stall the Apple Silicon GPU memory controller
@@ -3906,11 +3906,11 @@ and `metal_native.py` was unified with the SIMD mixed-precision Q4/G32 kernel:
 - Hardware-accurate GPU timing via `[commandBuffer GPUEndTime] - [commandBuffer GPUStartTime]`.
 - Output verified bit-identical across all three strategies and matching MLX reference within $1.3 \times 10^{-6}$ max absolute error and 1.0000000 cosine similarity.
 
-### 2. Empirical Results Across SSD DMA Pressure
+### 2. Empirical Results Across Requested File Reads
 Swept with 7 interleaved arms on real FlashNext shapes (hidden=2560, inter=640, slots=8)
-while streaming 0 MB, 32 MB, 64 MB, and 128 MB from checkpoint shard files:
+while streaming 0 MB, 32 MB, 64 MB, and 128 MB requested from checkpoint shard files:
 
-| Background SSD Read | Strategy | Host Median (ms) | Host Min..Max (ms) | GPU Median (ms) | Samples |
+| Requested Read | Strategy | Host Median (ms) | Host Min..Max (ms) | GPU Median (ms) | Samples |
 |---|---|---|---|---|---|
 | **0 MB** | `serial` | 1.356 | 1.308..1.543 | 0.283 | 7 |
 | | `barrier` | 1.391 | 1.333..1.563 | **0.283** | 7 |
@@ -3925,49 +3925,87 @@ while streaming 0 MB, 32 MB, 64 MB, and 128 MB from checkpoint shard files:
 | | `barrier` | 1.760 | 1.641..2.131 | **0.324** | 7 |
 | | `fence` | 1.684 | 1.599..1.724 | 0.361 | 7 |
 
-### 3. Key Findings & Closure of Issue #45
-1. **Barrier Stall Hypothesis Disproven**:
-   `barrier` GPU execution time is indistinguishable from `serial` across all SSD streaming
-   intensities (0.283 ms vs 0.283 ms at 0 MB; 0.316 ms vs 0.321 ms at 64 MB; 0.324 ms vs 0.320 ms at 128 MB).
-   In-encoder `MTLBarrierScopeBuffers` causes zero memory stall or scheduling amplification.
-2. **GPU Execution Contention is Small (~14%)**:
-   GPU hardware time climbs by only ~0.04 ms (0.283 ms -> 0.322 ms) under heavy SSD DMA,
-   reflecting mild memory fabric sharing between the PCIe/NVMe controller and the GPU.
-3. **Host Overhead is the Primary Driver (~30%)**:
-   Host dispatch-to-completion time increases from 1.35 ms to 1.76 ms (+0.40 ms) due to
-   kernel page faults, Darwin scheduler interruptions, and CPU thread contention while
-   servicing the disk stream.
-Issue #45 is resolved and closed.
+### 3. Critical Methodological Findings & Issue #45 Status
+1. **Zero-I/O Barrier Overhead is Minimal**:
+   In the 0 MB condition, `barrier` GPU execution time exactly equals `serial` (0.283 ms vs 0.283 ms).
+   This indicates that an in-encoder `MTLBarrierScopeBuffers` by itself does not introduce measurable hardware serialization cost.
+2. **Methodological Defect in the Background I/O Arm**:
+   The background I/O worker in this probe issued `os.pread` starting from offset 0 without `F_NOCACHE`,
+   did not track physical bytes (`proc_pid_rusage`), and did not verify page-cache miss fractions.
+   Consequently, requested reads after the first arm were likely fulfilled by the Darwin page cache rather
+   than driving physical NVMe DMA.
+   Therefore, **"barriers do not amplify under physical SSD DMA"** and **"SSD DMA contention is only ~14%"**
+   remain unproven under real disk traffic.
+3. **Host Overhead Interpretation Corrected**:
+   Host dispatch-to-completion time increased from 1.35 ms to 1.76 ms (+0.40 ms). Attributing this to
+   page faults, Darwin thread interruptions, and CPU contention was an unmeasured hypothesis.
+   It is recorded accurately as: **host dispatch-to-completion increases ~0.4 ms; cause unresolved**.
+4. **Issue #45 Remains OPEN**:
+   The GitHub issue remains open pending physical I/O instrumentation (`F_NOCACHE`, `RUSAGE_INFO_V4`).
 
 ## Full-Model Side-by-Side Validation and Xcode GPU Trace Analysis, 2026-09-03
 
-### 1. Side-by-Side 8-Pass Benchmark (16 Tokens per Pass)
-Following the native scheduler resolution of Issue #45, the complete decode loop was benchmarked across 8 passes with `FLASHNEXT_METAL_RUNTIME=1` (Custom Metal MoE with fused down-combine) versus `FLASHNEXT_METAL_RUNTIME=0` (Stock MLX `gather_qmm`):
+### 1. Initial 8-Pass Sequential Benchmark (bench_decode_split.py)
+An initial decode test compared 8 passes of `FLASHNEXT_METAL_RUNTIME=1` (Custom Metal MoE with fused down-combine)
+against 8 passes of `FLASHNEXT_METAL_RUNTIME=0` (Stock MLX `gather_qmm`):
+- Passes 4–8 gave median 408.0 ms/tok (Custom) vs 435.1 ms/tok (Stock), appearing to show a +6.5% advantage.
+- **Methodological Limitation**: This benchmark ran in two separate processes without interleaved arms,
+  without reverse ordering, and without cross-process digest verification. Pass 1 physical reads were
+  425.6 MB/tok (Custom) vs 386.6 MB/tok (Stock), proving that the two runs started from different page-cache
+  states. As established repeatedly in FlashNext research, un-interleaved comparisons introduce false gaps.
+  The +6.5% was therefore directional and unverified.
 
-| Pass | Custom Metal Runtime (`FLASHNEXT_METAL_RUNTIME=1`) | Stock MLX Runtime (`FLASHNEXT_METAL_RUNTIME=0`) |
-|:---:|:---:|:---:|
-| Pass 1 | 1.97 tok/s (508.7 ms) — 425.6 MB/tok (Cold page cache) | 2.25 tok/s (444.9 ms) — 386.6 MB/tok |
-| Pass 2 | 2.06 tok/s (485.5 ms) — 422.9 MB/tok | 2.42 tok/s (413.0 ms) — 386.0 MB/tok |
-| Pass 3 | 2.10 tok/s (476.9 ms) — 393.1 MB/tok | 2.42 tok/s (413.6 ms) — 384.1 MB/tok |
-| Pass 4 | 2.45 tok/s (408.0 ms) — 386.5 MB/tok | 2.30 tok/s (435.1 ms) — 387.1 MB/tok |
-| Pass 5 | 2.32 tok/s (431.1 ms) — 386.4 MB/tok | 2.29 tok/s (437.3 ms) — 383.5 MB/tok |
-| Pass 6 | 2.28 tok/s (439.2 ms) — 387.3 MB/tok | 2.50 tok/s (399.7 ms) — 381.1 MB/tok |
-| Pass 7 | 2.51 tok/s (397.7 ms) — 385.4 MB/tok | 2.43 tok/s (411.8 ms) — 382.8 MB/tok |
-| Pass 8 | 2.51 tok/s (398.1 ms) — 386.5 MB/tok | 2.29 tok/s (436.6 ms) — 381.3 MB/tok |
+### 2. Controlled Production Interleaved Benchmark (bench_production.py --compare metal-runtime)
+To scientifically evaluate the Custom Metal runtime against Stock MLX, `bench_production.py` was updated
+with `--compare metal-runtime` to run interleaved, reversed-pair arms within the exact same loaded model instance:
+- Setup: 16 total arms (8 pairs), alternating reversed-pair order (`[stock, custom]`, `[custom, stock]...`),
+  `FLASHNEXT_SLAB=0`, `--tokens 32`, `--drop 2` (first 2 cold arms discarded per condition).
+- Pre-warmup loop was explicitly removed to prevent thermal throttling on fanless Apple Silicon hardware.
 
-**Key Findings**:
-- **Steady-State Warm Medians (Passes 4–8)**: Custom Metal achieved **408.0 ms/tok (2.45 tok/s)** against Stock MLX's **435.1 ms/tok (2.30 tok/s)**, demonstrating a **27.1 ms/tok (+6.5%) throughput advantage** once the Darwin page cache stabilized.
-- **Isolated Compute Reduction**: Attributed compute/dispatch overhead fell from **44 ms down to 37 ms per token** (a 16% reduction in non-I/O execution time).
-- **Exact Determinism**: Token IDs remained 100% bit-identical across all 8 passes.
+```text
+  stock        gen median  2.89  range 2.66-3.18  sd 0.204  tail  2.77   467.6 MB/tok  n=6
+    token digest (stock): 29d04075ed7021b3
+  custom       gen median  2.91  range 2.65-3.13  sd 0.188  tail  2.76   463.4 MB/tok  n=6
+    token digest (custom): 29d04075ed7021b3
 
-### 2. Xcode GPU Pipeline Trace Analysis (`/tmp/decode.gputrace`)
-A 1-token Metal GPU trace was captured under `MTL_CAPTURE_ENABLED=1` and analyzed alongside the stock MLX capture:
-- **Clean GPU Execution Parity**: Custom Metal registered **88.10 ms** total GPU execution time across 246 command encoders, exactly matching stock MLX's baseline (**86.99 ms** across 247 encoders).
-- **Fewer Intermediate Activations**: Fusing the down-projection with the router score accumulation eliminated the materialization of intermediate `(tokens, slots, hidden)` tensors and removed the separate sum-tree reduction pass.
-- **Dispatches Dominated by Non-MoE Blocks**: The remaining 246 command encoders and ~72 ms of GPU time belong to GatedDeltaNet (GDN, ~57 ms across 36 layers), QSA Attention (~15 ms across 12 layers), and RMSNorms/Router projections (~10 ms), confirming that MoE matmuls represent only ~16 ms of the clean 88 ms GPU budget.
+  paired over 8 arms: mean +2.0 percent, median +0.5
+  custom ahead in 4 of 8 pairs, sign test p = 0.637
+  fewer bytes in 5 of 8 pairs
+  custom vs stock: +0.7% gen median (resolution band: 7.8%)
+```
 
-### 3. Verification of Next Workstreams (Steps 2, 3, and 4)
-- **Step 2 (Resident Slabs)**: Past MLX slab attempts failed because graph-splitting into `hit_out + miss_out` introduced extra allocations and dual dispatches. The custom Metal runtime introduces the viable new mechanism: single-pass unified pointer dispatch where resident and streamed slots execute in one kernel without splitting the graph.
-- **Step 3 (GDN Fusion)**: Confirmed rejected based on the 2026-08-30 benchmark (saving only 0.020 ms/layer, 0.2% total) because input projections are strictly memory-bandwidth bound at 67 GB/s.
-- **Step 4 (Command Buffer Scheduling)**: Past `MLX_MAX_OPS_PER_BUFFER=120` coarsening was rejected (+19.8% latency) because it delayed router logits, delaying SSD reads. The viable alternative is decoupled early router commit.
+**Key Conclusions**:
+1. **Exact Determinism Verified**:
+   Both engines produced identical token digests (`29d04075ed7021b3`), proving 100% bit-identical
+   greedy decode trajectories on real production prompts.
+2. **Full-Model Gain is Unresolved**:
+   The full-model difference between Custom Metal and Stock MLX is +0.7% to +2.0% ($p = 0.637$).
+   Because this sits well inside the 7.8% resolution band, the full-model gain is **unresolved**.
+   The isolated SIMD Q4 kernel win (fusing down-combine, eliminating intermediate allocations,
+   and removing 48 `astype` dispatches) remains established, but at the full-model level,
+   it does not yet produce a statistically significant speedup over MLX's whole-model pipeline.
+
+### 3. GPU Pipeline Trace & Non-MoE Cost Breakdown
+A 1-token Metal GPU trace captured under `MTL_CAPTURE_ENABLED=1`:
+- **Clean GPU Execution Parity**: Custom Metal registered **88.10 ms** total GPU execution time across 246 command encoders, matching stock MLX (**86.99 ms** across 247 encoders).
+- **GPU Budget Split**: MoE matmuls account for only ~16 ms of the 88 ms GPU budget. Non-MoE blocks dominate:
+  GatedDeltaNet (GDN, ~18.5 to 57 ms depending on eval pattern; unresolved), QSA Attention (~15 ms),
+  and RMSNorms/Router projections (~10 ms).
+- Any full-model throughput improvement cannot come from faster MoE GPU compute alone; it requires
+  reducing host synchronization and eliminating intermediate command-buffer barriers.
+
+### 4. Refined Verification Framework & Workstream Status
+- **Expanded Tier 1/2 Criteria**:
+  Relaxing strict bit-identity for custom kernels is accepted, but Tier 1/2 must include:
+  1. Relative hidden-state error after 1 layer and after 48 layers;
+  2. Logit top-$N$ stability and distribution divergence (KL / Jensen-Shannon);
+  3. Tier 3 Trajectory Gate (SketchUp Ruby generation with reasoning enabled) remains the ultimate
+     arbiter of model capability.
+- **Unified Resident Slabs (`SLAB_ENABLED`)**:
+  The single-pass unified pointer resolution architecture (encoding resident hits in bit 31)
+  is functionally verified and numerically equivalent. However, its performance impact is **unmeasured**.
+  Because each expert across 48 layers consumes ~147 MB (8 experts = 1.18 GB), static slabs above
+  ~100–150 MB risk evicting Darwin's dynamic page cache on 16 GB machines. Future sweeps must start
+  conservatively with `SLAB=0, 1, 2, 4` while monitoring physical MB/tok and active RAM.
+
 
