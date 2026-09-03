@@ -482,7 +482,7 @@ def resolution_note(base, other, change) -> str:
     )
 
 
-def report_paired(results) -> None:
+def report_paired(results, drop: int = 0) -> None:
     """Compare arm against arm, which cancels drift.
 
     Arms alternate, so the two conditions sit at the same point in the run.
@@ -495,7 +495,7 @@ def report_paired(results) -> None:
     base, other = results
     pairs = [
         (x["gen_rate"], y["gen_rate"])
-        for x, y in zip(base["arms"], other["arms"])
+        for x, y in zip(base["arms"][drop:], other["arms"][drop:])
     ]
     if len(pairs) < 4:
         return
@@ -506,7 +506,7 @@ def report_paired(results) -> None:
 
     tail = sum(comb(total, k) for k in range(wins, total + 1)) / 2 ** total
     bytes_down = sum(
-        1 for x, y in zip(base["arms"], other["arms"])
+        1 for x, y in zip(base["arms"][drop:], other["arms"][drop:])
         if y["mb_per_token"] < x["mb_per_token"]
     )
     print()
@@ -656,7 +656,7 @@ def main() -> None:
             print(f"    token digest ({name}): {h}", flush=True)
     print(f"  system load average after: {os.getloadavg()}", flush=True)
 
-    report_paired(results)
+    report_paired(results, args.drop)
     report_drift(results)
 
     if len(results) == 2:

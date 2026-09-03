@@ -220,6 +220,7 @@ Use `/new` before enabling the one-shot fused draft for a new conversation.
 | `models/flashnext/patch_rmsnorm.py` | Correct upstream RMSNorm behavior |
 | `models/flashnext/bench_read_ceiling.py` | Price the drive at zero to find the rate ceiling |
 | `models/flashnext/bench_production.py` | The standard benchmark protocol; use it for every published number |
+| `models/flashnext/bench_slab_sweep.py` | Measure physical MB saved per resident MB added across layer/capacity configurations |
 | `models/flashnext/diskio.py` | Physical bytes read, to tell a cold run from a warm one |
 | `models/flashnext/metal_trace.py` | Export Metal command-buffer spans and nesting depth |
 | `models/flashnext/capture_dispatches.py` | Capture a small `.gputrace` for Xcode dispatch inventory |
@@ -454,6 +455,7 @@ Open exact-quality performance experiments:
 - [#23](https://github.com/1architect/macqwen-releases/issues/23) Recheck the bit-exact RMSNorm compile with the zero-drive gate and production arms.
 - [#24](https://github.com/1architect/macqwen-releases/issues/24) Probe routed-expert Q4 group sizes 64 and 128.
 - [#25](https://github.com/1architect/macqwen-releases/issues/25) Gate and benchmark REAP-288. Use REAP-384 as the fallback.
+- [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under mixed residency. Reopened 2026-09-03: initial probe used buffered I/O without `F_NOCACHE` or physical byte telemetry. True unbuffered NVMe DMA contention test pending.
 
 Closed exact-quality performance issues:
 
@@ -463,7 +465,6 @@ Closed exact-quality performance issues:
 - [#27](https://github.com/1architect/macqwen-releases/issues/27) Attribute the remaining FlashNext GPU layer cost. Closed after Metal trace attribution.
 - [#41](https://github.com/1architect/macqwen-releases/issues/41) Resolve reusable destination-ring performance. Closed with no resolved benefit; diagnostic remains disabled.
 - [#42](https://github.com/1architect/macqwen-releases/issues/42) Characterize the GPU-busy hump across drive miss levels. Closed after the reversed-order sweep.
-- [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under mixed residency. Closed on 2026-09-03: native Metal Q4 MoE scheduler (`metal_runtime_native.mm`) proved buffer memory barriers (`MTLBarrierScopeBuffers`) add 0.000 ms penalty over serial execution across 0 to 128 MB streaming SSD DMA (0.283 ms at 0 MB, 0.324 ms at 128 MB). GPU hardware execution increases by only ~14% due to memory bus fabric sharing; host CPU page fault and driver sync overhead accounts for the remaining ~30% rise.
 
 Follow-up issues from the 2026-09-01 sweep:
 
@@ -478,6 +479,7 @@ Follow-up issues from the 2026-09-01 sweep:
 
 ### Standing decisions
 
+- Selective unified slabs (`FLASHNEXT_SLAB=4, FLASHNEXT_SLAB_LAYERS=12`) save 273.5 MB/tok physical reads for +149 MB active RAM (ratio 1.84). Uniform slabs across 48 layers degrade above SLAB=1 by evicting Darwin's dynamic page cache on 16 GB machines.
 - `pin-parts` is rejected. Its positive isolated reading disappeared when
 stacked with prewarm; the pair lost 1.4% and read 8% more.
 - Weight-preserving expert substitution is not bit-perfect. Keep the current

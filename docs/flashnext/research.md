@@ -4003,9 +4003,41 @@ A 1-token Metal GPU trace captured under `MTL_CAPTURE_ENABLED=1`:
      arbiter of model capability.
 - **Unified Resident Slabs (`SLAB_ENABLED`)**:
   The single-pass unified pointer resolution architecture (encoding resident hits in bit 31)
-  is functionally verified and numerically equivalent. However, its performance impact is **unmeasured**.
-  Because each expert across 48 layers consumes ~147 MB (8 experts = 1.18 GB), static slabs above
-  ~100–150 MB risk evicting Darwin's dynamic page cache on 16 GB machines. Future sweeps must start
-  conservatively with `SLAB=0, 1, 2, 4` while monitoring physical MB/tok and active RAM.
+  is functionally verified and numerically equivalent. Controlled sweep measurements are recorded below.
+
+### 5. Unified Resident Slab Efficiency Sweep (bench_slab_sweep.py)
+To evaluate the trade-off between resident memory consumption and physical disk reads on a 16 GB Apple Silicon machine,
+`bench_slab_sweep.py` executed a controlled sweep across 7 configurations with 24 tokens per arm, cool-down pauses,
+and live tracking of active MLX memory and `proc_pid_rusage` physical bytes:
+
+| Configuration | Hit % | Phys MB/tok | Saved MB/tok | Active MB | Added MB | Saved / Added | Gen tok/s | Token Digest |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `SLAB=0` (baseline) | 0.0% | 857.5 | +0.0 | 3453.3 | +0.0 | 0.0000 | 1.86 | `b8f20bd0dbc71940` |
+| `SLAB=1` (48 layers) | 1.4% | 694.9 | +162.6 | 3591.6 | +138.3 | 1.1757 | 2.50 | `b8f20bd0dbc71940` |
+| `SLAB=2` (48 layers) | 2.3% | 708.9 | +148.6 | 3743.1 | +289.8 | 0.5128 | 2.33 | `b8f20bd0dbc71940` |
+| `SLAB=4` (48 layers) | 3.6% | 738.2 | +119.3 | 4025.7 | +572.4 | 0.2084 | 2.18 | `b8f20bd0dbc71940` |
+| `SLAB=4` (8 layers) | 4.6% | 646.2 | +211.3 | 3552.4 | +99.1 | **2.1322** | 2.63 | `b8f20bd0dbc71940` |
+| `SLAB=4` (12 layers)| 3.9% | 584.0 | **+273.5** | 3602.3 | +149.0 | **1.8356** | 2.77 | `b8f20bd0dbc71940` |
+| `SLAB=4` (16 layers)| 3.5% | 596.9 | +260.6 | 3649.8 | +196.5 | 1.3262 | **2.91** | `b8f20bd0dbc71940` |
+
+**Key Conclusions**:
+1. **Exact Determinism Verified Across All Slabs**:
+   All 7 slab configurations produced the exact same token digest (`b8f20bd0dbc71940`), demonstrating that
+   single-pass pointer bit-encoding (`0x80000000 | slot`) preserves 100% numerical bit-identity.
+2. **The 48-Layer Page-Cache Eviction Threshold**:
+   Uniformly allocating slabs across all 48 layers degrades rapidly as capacity increases.
+   While `SLAB=1` yields +162.6 MB/tok savings for +138.3 MB RAM (ratio 1.18), widening to `SLAB=4` across 48 layers
+   allocates +572.4 MB of active RAM and causes physical reads to rebound from 694.9 to 738.2 MB/tok (ratio drops to 0.21).
+   Static pinned memory in MLX evicts Darwin's file-backed page cache on a 16 GB machine.
+3. **The Selective Layer Advantage (`FLASHNEXT_SLAB_LAYERS`)**:
+   Restricting `SLAB=4` to early recurrent layers (8, 12, or 16 layers) avoids page-cache eviction while capturing
+   the high-frequency router slots:
+   - `SLAB=4 (8 layers)`: Adds only +99.1 MB active RAM and saves 211.3 MB/tok (**ratio 2.13 MB saved per MB added**).
+   - `SLAB=4 (12 layers)`: Adds +149.0 MB active RAM and achieves the highest physical reduction (**+273.5 MB/tok saved**,
+     cutting reads from 857.5 to 584.0 MB/tok, lifting generation from 1.86 to 2.77 tok/s, ratio 1.84).
+   - `SLAB=4 (16 layers)`: Reaches **2.91 tok/s** with +260.6 MB/tok saved (ratio 1.33).
+   Selective slab allocation is the first architectural mechanism in FlashNext to yield a high positive physical efficiency
+   ratio (>1.8) without shrinking the OS page cache.
+
 
 
