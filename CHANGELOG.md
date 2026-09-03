@@ -1,5 +1,35 @@
 # Changelog
 
+## MACQWEN 0.3.5 - 2026-09-02
+
+### Added
+
+- Add FlashNext diagnostics for context decay, evaluation cost, glue work,
+  layer locality, GPU utilization, Metal spans, and Xcode GPU captures.
+- Add FlashNext tests for imports, expert-cache behavior, GPU reporting, and
+  prefill contracts.
+- Add MLX Metal source notes, trace graphics, residual plots, and session
+  records to the documentation.
+
+### Changed
+
+- Make FlashNext prefill and speculative paths use the shared prefill contract.
+- Remove the unreachable row-level expert LRU path from the active reader.
+- Mark IOKit GPU utilization as a relative signal. Use Metal trace for absolute
+  GPU timing.
+- Update FlashNext research documentation with Session 4 findings, revised
+  work fronts, and current issue links.
+
+### Fixed
+
+- Keep JSON benchmark runs within their answer-token limit instead of adding a
+  saved reasoning budget to the decode ceiling.
+- Restore the FlashNext tokenizer import after limiting the Transformers
+  advisory environment to the import itself.
+- Correct host-window and evaluation-cost reports that converted relative IOKit
+  utilization into false GPU milliseconds.
+- Keep session, CLI, loader, and benchmark behavior covered by the new tests.
+
 ## MACQWEN 0.3.4 - 2026-09-02
 
 ### Added
