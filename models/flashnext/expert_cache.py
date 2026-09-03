@@ -79,6 +79,14 @@ def reset_profile() -> None:
         _TIMERS[key] = 0.0
     _TIMERS["io_calls"] = 0
 
+
+def set_metal_runtime(enabled: bool) -> None:
+    os.environ["FLASHNEXT_METAL_RUNTIME"] = "1" if enabled else "0"
+
+
+def metal_runtime() -> bool:
+    return os.environ.get("FLASHNEXT_METAL_RUNTIME") == "1"
+
 # Reading whole tensors instead of gathering rows was measured and rejected.
 # The arithmetic looked right (a scattered gather runs ~900 MB/s, a sequential
 # one ~2.5 GB/s, crossing near 185 experts), but on a 93-token prefill it ran

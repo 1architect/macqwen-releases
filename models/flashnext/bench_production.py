@@ -111,6 +111,10 @@ COMPARISONS = {
         "two-syncs": {"FLASHNEXT_ONE_SYNC": "0"},
         "one-sync": {"FLASHNEXT_ONE_SYNC": "1"},
     },
+    "metal-runtime": {
+        "stock": {"FLASHNEXT_METAL_RUNTIME": "0", "FLASHNEXT_SLAB": "0"},
+        "custom": {"FLASHNEXT_METAL_RUNTIME": "1", "FLASHNEXT_SLAB": "0"},
+    },
     # Compile the elementwise chains around the matmuls. Bit-exact, checked
     # with mx.array_equal before install. The probe's own per-call figures
     # sum to about 1 ms per token, so expect this inside the band.
@@ -328,6 +332,15 @@ LIVE_SETTINGS = {
             "models.flashnext.adaptive_topk", fromlist=["_SWAP_EPSILON"]
         )._SWAP_EPSILON[0],
         lambda value: float(value),
+    ),
+    "FLASHNEXT_METAL_RUNTIME": (
+        lambda backend, value: __import__(
+            "models.flashnext.expert_cache", fromlist=["set_metal_runtime"]
+        ).set_metal_runtime(value == "1"),
+        lambda backend: __import__(
+            "models.flashnext.expert_cache", fromlist=["metal_runtime"]
+        ).metal_runtime(),
+        lambda value: value == "1",
     ),
 }
 
@@ -604,7 +617,16 @@ def main() -> None:
         from macqwen.backends.flashnext import FlashNextBackend
 
         backend = FlashNextBackend()
-        order = list(conditions) * args.arms
+        cond_keys = list(conditions.keys())
+        print(f"  system load average before: {os.getloadavg()}", flush=True)
+
+        order = []
+        for i in range(args.arms):
+            if i % 2 == 0:
+                order.extend(cond_keys)
+            else:
+                order.extend(reversed(cond_keys))
+
         for index, name in enumerate(order, 1):
             os.environ.update(conditions[name])
             apply_condition(backend, conditions[name])
@@ -624,9 +646,15 @@ def main() -> None:
                 print(f"  every median settled after {index} arms")
                 break
 
+    import hashlib
     print()
     for name, arms in collected.items():
         results.append(report(name, arms, args.drop))
+        kept = arms[args.drop:]
+        if kept and kept[0]["ids"]:
+            h = hashlib.sha256(bytes(str(kept[0]["ids"]), "utf-8")).hexdigest()[:16]
+            print(f"    token digest ({name}): {h}", flush=True)
+    print(f"  system load average after: {os.getloadavg()}", flush=True)
 
     report_paired(results)
     report_drift(results)
