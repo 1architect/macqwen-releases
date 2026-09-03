@@ -3720,3 +3720,80 @@ The clean-boot baseline is 2.83 tok/s. The practical target is about 353 to
 333 ms/token, or about 20 ms/token. The work order is #43, then #45, followed
 by #24 and #25 if the first two do not expose a path to that target. Do not
 run unrelated optimisation experiments between these tests.
+
+## Custom Metal runtime prototype, 2026-09-02
+
+The `flashnext-runtime` branch adds two bounded probes. Neither changes the
+production loader or routing path.
+
+The first probe runs one real layer's three Q4/G32 expert projections through
+an `mx.fast.metal_kernel` implementation. A controlled sweep pins the hot
+rows and reads a distant cold pool with `F_NOCACHE`. The premise passed at
+0%, 25%, 50%, and 100% misses: median physical reads were 0.0, 6.4, 12.9,
+and 25.6 MB. Three reversed-order arms with 16 calls per arm measured:
+
+| Miss | MLX `gather_qmm`, ms | custom kernel, ms | max absolute error |
+|---:|---:|---:|---:|
+| 0% | 0.27 | 2.32 | 4.39e-7 |
+| 25% | 0.25 | 1.96 | 4.47e-7 |
+| 50% | 0.26 | 1.94 | 4.67e-7 |
+| 100% | 0.26 | 2.01 | 6.90e-7 |
+
+The output passes the 0.01 absolute and relative tolerance, but it is not
+bit-identical. The straightforward scalar dequantized-dot reduction has a
+different accumulation order from MLX. It is also about 7 to 8 times slower
+than warm `gather_qmm`. This closes the scalar kernel design. These timings
+are diagnostic because the machine was not rebooted.
+
+The second probe is independent of MLX. An Objective-C++ bridge owns its
+`MTLDevice`, command queue, command buffers, compute encoders, and resource
+synchronization. It compares 48 dependent dispatches in three forms:
+
+- one serial compute encoder;
+- one concurrent encoder with a buffer barrier after each dispatch;
+- one encoder per dispatch with fence waits and updates.
+
+All forms return the same float32 result. After native pipeline warmup, 45
+interleaved samples per form measured medians of 0.529 ms for serial, 0.538
+ms for barriers, and 2.088 ms for fences. Large scheduler outliers make the
+serial-to-barrier difference unresolved. The fence path is directionally
+slower, but this checkpoint-free probe does not test mixed SSD residency.
+
+The two probes answer separate halves of issue #45. They do not yet form the
+required native Q4 mixed-residency A/B. Production stays unchanged.
+
+### SIMD Q4 follow-up
+
+The scalar kernel was replaced with the installed MLX Q4 fast-kernel shape:
+two SIMD groups per threadgroup, four output rows per SIMD group, sixteen Q4
+values per lane, packed mask arithmetic, and 512-value K tiles. Reading MLX
+route values on the host was also removed from the timed path. Gate and up
+stay separate because fusing them raised register pressure and measured
+slower. The down projection now applies router scores and writes one combined
+float32 hidden vector, so it removes the routed output tensor and its separate
+multiply and reduction.
+
+A 15-arm controlled run with 256 calls per arm measured:
+
+| Miss | MLX, ms | custom, ms | custom gain | resolution band |
+|---:|---:|---:|---:|---:|
+| 0% | 0.34 | 0.33 | 4.4% | 9.6% |
+| 25% | 0.34 | 0.32 | 3.8% | 2.9% |
+| 50% | 0.33 | 0.32 | 3.5% | 1.8% |
+| 100% | 0.32 | 0.31 | 3.8% | 2.3% |
+
+The SSD-loaded cells clear their bands. The zero-miss result stays positive,
+but does not clear its band. Every cell is bit-identical to MLX, with zero
+maximum absolute and relative error. A separate production-shape test also
+passes the exact-output gate.
+
+This fixes the first kernel's performance failure and proves that a specialized
+Q4 MoE path can beat the current MLX operation on the production shapes. It
+uses the active MLX wheel's exact Q4 matrix-vector helpers and exact SwiGLU
+operation. This keeps arithmetic order identical while removing the separate
+router-score multiply and reduction. The helper extraction is coupled to the
+installed MLX kernel layout.
+
+The prototype still uses MLX to launch the custom Metal kernels. Do not
+integrate it into production yet. The next step is to port this exact topology
+to the Objective-C++ command-buffer scheduler and connect the real buffers.

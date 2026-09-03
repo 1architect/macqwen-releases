@@ -85,9 +85,15 @@ What changed in the code recently:
   remains unresolved in production. Keep it disabled by default.
 - The remaining cost is still scheduling and graph execution, not a named
   removable stage.
-- The Flash-Next test suite passes all 98 tests. Current diagnostics cover
+- The `flashnext-runtime` branch now has a bounded Q4/G32 Metal kernel and a
+  native scheduler probe. The first scalar Q4 kernel was 7 to 8 times slower.
+  Its exact SIMD replacement is 3.5% to 3.8% faster than MLX in the resolved
+  SSD-loaded cells. It is bit-identical and still launches through MLX.
+  The native probe shows a directional fence cost, but it does not yet combine
+  native Q4 execution with mixed SSD residency. Production is unchanged.
+- The Flash-Next test suite passes all 137 tests. Current diagnostics cover
   Metal trace, context decay, resident working set, wired limits, GPU capture,
-  and RMSNorm compilation.
+  RMSNorm compilation, the bounded Q4 kernel, and native scheduling.
 
 The cache-aware quality comparison remains open under Next work. Its gate result
 was measured under greedy decoding, which causes repetition on its own, so it
