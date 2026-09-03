@@ -34,11 +34,13 @@ class BenchmarkBackend(FakeBackend):
     def __init__(self):
         self.tape = []
         self.pending = []
+        self.requested_limits = []
 
     def open_conversation(self, *_args, **_kwargs):
         self.pending = [10, 11]
 
     def generate(self, max_tokens):
+        self.requested_limits.append(max_tokens)
         self.tape.extend(self.pending)
         self.pending = []
         self.tape.extend([7, 8][:max_tokens])
@@ -229,6 +231,21 @@ class SessionTests(unittest.TestCase):
             result = run_benchmark(session, "hello", 1.0)
             self.assertEqual(result["token_ids"], [7, 8])
             self.assertEqual(result["generated_tokens"], 2)
+
+    def test_benchmark_max_tokens_bounds_saved_thinking_budget(self):
+        prefs = dict(
+            preferences.DEFAULTS,
+            thinking_enabled=True,
+            max_tokens=2,
+            think_budget=4096,
+        )
+        with tempfile.TemporaryDirectory() as root:
+            backend = BenchmarkBackend()
+            session = Session(
+                backend, "plain", prefs, "unused.json", Path(root) / "keys.json"
+            )
+            run_benchmark(session, "hello", 1.0)
+            self.assertEqual(backend.requested_limits, [2])
 
     def test_api_key_input_is_hidden_and_saved(self):
         with tempfile.TemporaryDirectory() as root:

@@ -3,7 +3,7 @@
 Stock mlx-vlm materializes every weight. These checkpoints exceed 16 GB of
 unified memory, so macOS swaps heavily. Two large tensor families stay on disk:
 
-    MoE experts   ->  bounded LRU of routed experts
+    MoE experts   ->  routed rows read from the checkpoint
     n-gram table  ->  rows read per lookup
 
 The loader infers each selected checkpoint's quantization layout.

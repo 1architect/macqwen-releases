@@ -695,7 +695,11 @@ def run_benchmark(session, prompt: str, ready_seconds: float) -> dict:
         backend.sampling = Sampling.greedy_settings()
     open_or_continue(session, prompt)
     prefs = session.preferences
-    limit = preferences.generation_limit(
+    # A JSON benchmark is a short validation run. Treat its answer limit as
+    # the total decode ceiling, so a saved reasoning budget cannot expand a
+    # `--max-tokens 32` check into thousands of tokens. Interactive turns use
+    # generation_limit() and keep their separate answer and thinking budgets.
+    limit = preferences.answer_limit(
         prefs, preferences.DEFAULT_PLAIN_ANSWER_TOKENS
     )
     # Physical reads make a rate comparable. Decode rate on this machine spans

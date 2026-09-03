@@ -1,4 +1,4 @@
-"""GPU busy time from IOKit, without sudo and without forking.
+"""Relative GPU utilization from IOKit, without sudo and without forking.
 
 Every timing in this project so far is wall-clock on the host: `perf_counter`
 around an `mx.eval`, which measures the main thread blocked, not the GPU
@@ -16,10 +16,11 @@ through IOKit directly, so a sample costs microseconds.
 administrator access, which the research log already recorded when it could
 not measure energy.
 
-Read `Device Utilization %` as the fraction of the sampling interval the GPU
-had work in flight. It is not kernel time and it does not separate one kernel
-from another. It answers one question: is the GPU busy for most of a decode
-token, or is the host waiting on something else.
+Read `Device Utilization %` as a relative signal for comparing runs. It is not
+validated kernel time, and it does not separate one kernel from another. The
+counter undercounts short kernels, so never convert this value to milliseconds
+or present it as absolute GPU time. Use Metal System Trace or another validated
+source for absolute GPU measurements.
 """
 from __future__ import annotations
 
@@ -92,7 +93,7 @@ def _accelerators():
 
 
 class GPUMeter:
-    """Poll `Device Utilization %` on a background thread.
+    """Poll the relative `Device Utilization %` signal on a background thread.
 
     The thread is a sampler, not a load. Each sample is one IOKit property
     read plus a plist parse of a small dictionary, so it does not compete with
@@ -165,5 +166,8 @@ class GPUMeter:
             "median": ordered[len(ordered) // 2],
             "p90": ordered[int(len(ordered) * 0.9)],
             "max": ordered[-1],
-            "busy_fraction": mean / 100.0,
+            # This fraction supports comparisons between runs only. It is not
+            # a duration and must not be multiplied by wall-clock time.
+            "relative_busy_fraction": mean / 100.0,
+            "relative_only": True,
         }

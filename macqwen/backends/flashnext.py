@@ -6,6 +6,7 @@ checkpoint, so a token costs an SSD read rather than resident memory.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 import time
@@ -20,6 +21,32 @@ from macqwen.sampling import Sampler, Sampling
 from macqwen.text import stream_decode
 
 DEFAULT_FUSION_MODEL = FLASHNEXT_DEFAULTS["fusion_model"]
+_TRANSFORMERS_ADVISORY_ENV = "TRANSFORMERS_NO_ADVISORY_WARNINGS"
+
+
+@contextmanager
+def _transformers_import_environment():
+    """Hide Transformers' irrelevant PyTorch advisory during its import.
+
+    Flash-Next uses MLX and only imports Transformers tokenizer utilities.
+    Keep the environment change limited to the import, so later warnings and
+    all real errors still reach the user.
+    """
+    previous = os.environ.get(_TRANSFORMERS_ADVISORY_ENV)
+    os.environ[_TRANSFORMERS_ADVISORY_ENV] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(_TRANSFORMERS_ADVISORY_ENV, None)
+        else:
+            os.environ[_TRANSFORMERS_ADVISORY_ENV] = previous
+
+
+def _load_transformers_tokenizer():
+    with _transformers_import_environment():
+        from transformers import AutoTokenizer
+    return AutoTokenizer
 
 
 @dataclass
@@ -75,7 +102,7 @@ class FlashNextBackend(Conversation):
                  fusion_max_prompt: int = FLASHNEXT_DEFAULTS["fusion_max_prompt"],
                  fusion_model: str = DEFAULT_FUSION_MODEL,
                  session_dir: str = "~/.cache/flashnext/sessions"):
-        from transformers import AutoTokenizer
+        AutoTokenizer = _load_transformers_tokenizer()
         from models.flashnext.loader import load_streaming
         from models.flashnext.qsa_chunk import apply as apply_qsa
 
@@ -569,7 +596,7 @@ class FlashNextBackend(Conversation):
         from mlx_vlm import load as load_mlx_vlm
         from models.flashnext.speculative import FastDraftGreedy
         from models.flashnext.transient import materialize_model
-        from transformers import AutoTokenizer
+        AutoTokenizer = _load_transformers_tokenizer()
 
         if not self.fusion_model:
             raise RuntimeError(

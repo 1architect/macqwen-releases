@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import mlx.core as mx
 
-from models.flashnext.prefill import prefill_language
+from models.flashnext.prefill import prefill_language, prefill_target
 from models.flashnext.expert_cache import (
     StreamingSwitchGLU,
     set_prefill_progress,
@@ -28,6 +28,7 @@ class _Language:
     def __init__(self):
         self.calls = []
         self.argmax_shapes = []
+        self.args = SimpleNamespace(hidden_size=1, hc_count=1)
 
     def __call__(
         self,
@@ -35,8 +36,11 @@ class _Language:
         cache,
         skip_logits=False,
         return_hidden=False,
+        capture_layer_ids=None,
     ):
-        self.calls.append((int(ids.shape[1]), skip_logits, return_hidden))
+        self.calls.append(
+            (int(ids.shape[1]), skip_logits, return_hidden, capture_layer_ids)
+        )
         cache[0].state = cache[0].state + ids.sum()
         logits = (
             None
@@ -78,7 +82,7 @@ class PrefillTests(unittest.TestCase):
 
         logits, token = prefill_language(language, ids, cache)
 
-        self.assertEqual(language.calls, [(3, False, False)])
+        self.assertEqual(language.calls, [(3, False, False, None)])
         self.assertIsNone(logits)
         self.assertEqual(int(token.item()), 3)
 
@@ -104,11 +108,83 @@ class PrefillTests(unittest.TestCase):
         with patch("models.flashnext.prefill.QSA_CHUNK_THRESHOLD", 4):
             logits, token = prefill_language(language, ids, cache)
 
-        self.assertEqual(language.calls, [(10, True, True)])
+        self.assertEqual(language.calls, [(10, True, True, None)])
         self.assertEqual(language.argmax_shapes, [(1, 1, 1)])
         self.assertIsNone(logits)
         self.assertEqual(int(token.item()), 10)
         self.assertEqual(int(cache[0].state.item()), 55)
+
+    def test_target_contract_can_request_logits_and_hidden_states(self):
+        language = _Language()
+        cache = [_Cache()]
+        ids = mx.arange(1, 11, dtype=mx.int32)[None]
+
+        with (
+            patch("models.flashnext.prefill.QSA_CHUNK_THRESHOLD", 4),
+            patch("models.flashnext.prefill.mx.clear_cache") as clear_cache,
+        ):
+            logits, hidden, token = prefill_target(
+                language, ids, cache, want_logits=True, want_hidden=True
+            )
+
+        self.assertEqual(language.calls, [(10, False, True, [])])
+        self.assertEqual(tuple(logits.shape), (1, 10, 32))
+        self.assertEqual(tuple(hidden[0].shape), (1, 10, 1))
+        self.assertEqual(int(token.item()), 10)
+        clear_cache.assert_called_once_with()
+
+    def test_fast_draft_target_prefill_uses_shared_contract(self):
+        from models.flashnext.speculative import FastDraftGreedy
+
+        language = _Language()
+        cache = [_Cache()]
+        decoder = FastDraftGreedy.__new__(FastDraftGreedy)
+        decoder.language = language
+        decoder.target_cache = cache
+        decoder.external_draft = False
+        decoder.draft_disabled = True
+        decoder._exact_profile = lambda: None
+        ids = mx.arange(1, 11, dtype=mx.int32)[None]
+
+        with (
+            patch("models.flashnext.speculative.QSA_CHUNK_THRESHOLD", 4),
+            patch("models.flashnext.prefill.QSA_CHUNK_THRESHOLD", 4),
+            patch(
+                "models.flashnext.speculative.prefill_target",
+                wraps=prefill_target,
+            ) as shared,
+        ):
+            decoder.append(ids)
+
+        shared.assert_called_once_with(language, ids, cache)
+        self.assertEqual(language.calls, [(10, True, True, None)])
+        self.assertEqual(int(decoder.next_main.item()), 10)
+
+    def test_mtp_target_capture_uses_shared_contract(self):
+        from models.flashnext.speculative import MTPGreedy
+
+        language = _Language()
+        cache = [_Cache()]
+        decoder = MTPGreedy.__new__(MTPGreedy)
+        decoder.language = language
+        decoder.target_cache = cache
+        ids = mx.arange(1, 11, dtype=mx.int32)[None]
+
+        with (
+            patch("models.flashnext.prefill.QSA_CHUNK_THRESHOLD", 4),
+            patch(
+                "models.flashnext.speculative.prefill_target",
+                wraps=prefill_target,
+            ) as shared,
+        ):
+            logits, hidden = decoder._target_capture(ids)
+
+        shared.assert_called_once_with(
+            language, ids, cache, want_logits=True, want_hidden=True
+        )
+        self.assertEqual(language.calls, [(10, False, True, [])])
+        self.assertEqual(tuple(logits.shape), (1, 10, 32))
+        self.assertEqual(tuple(hidden.shape), (1, 10, 1))
 
 
 if __name__ == "__main__":

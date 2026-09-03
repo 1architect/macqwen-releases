@@ -14,6 +14,9 @@ kernels, and the first thing to know is how many there are and how the block
 time is distributed across them. A hundred evals at 0.2 ms is a different
 problem from ten at 2 ms.
 
+The IOKit value is a relative comparison signal only. It is not converted to
+milliseconds here. Use Metal System Trace for absolute GPU time.
+
 `mx.eval` is wrapped for the duration of a decode. That is a Python-level
 count, so it sees what the model asks for and not any eval MLX runs inside
 C++. The `profile_totals` timers bracket two of these per layer by name;
@@ -110,10 +113,11 @@ def main() -> int:
                              "graph. The result is multiplied by zero before "
                              "it reaches the output, so tokens stay identical "
                              "while the GPU is given known extra work. If eval "
-                             "block time grows by what the matmul costs, eval "
-                             "time is GPU time and the IOKit counter is wrong. "
-                             "If it barely moves, the GPU is idle inside the "
-                             "eval and something else holds the main thread.")
+                             "block time grows by what the matmul costs, the "
+                             "eval block includes more device work. The IOKit "
+                             "value remains a relative signal only. If it barely "
+                             "moves, use Metal trace before attributing the "
+                             "difference to GPU idle time.")
     parser.add_argument("--dummy-ops", type=int, default=0,
                         help="count of trivial cancelled elementwise ops added "
                              "to every layer. The matmul sweep showed cost per "
@@ -272,9 +276,9 @@ def main() -> int:
     print(f"  mean per eval            {statistics.mean(durations)*1000:8.3f} ms")
     print(f"  median per eval          {statistics.median(durations)*1000:8.3f} ms")
     if gpu.get("samples"):
-        busy = gpu["busy_fraction"] * token_ms
-        print(f"  GPU busy, IOKit          {busy:8.1f} ms  "
-              f"{gpu['busy_fraction']*100:5.1f}%")
+        relative = gpu["relative_busy_fraction"]
+        print(f"  IOKit relative signal       {relative*100:5.1f}%  "
+              "comparison only; not GPU ms")
 
     if counter.submits and counter.waits:
         sub = sum(counter.submits) / args.tokens * 1000

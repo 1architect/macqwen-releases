@@ -67,6 +67,22 @@ class LauncherTests(unittest.TestCase):
         index = command.index("--model-path")
         self.assertEqual(command[index + 1], "oq4")
 
+    def test_flashnext_forwards_benchmark_token_limits_together(self):
+        with tempfile.TemporaryDirectory() as root:
+            python = Path(root, "python")
+            python.touch()
+            with patch.dict(
+                os.environ, {"MACQWEN_FLASHNEXT_PYTHON": str(python)}, clear=False
+            ):
+                command, _ = cli.command([
+                    "--model", "flashnext", "--profile", "plain",
+                    "--max-tokens", "32", "--think-budget", "4096",
+                    "--benchmark-json", "--benchmark-prompt", "hello",
+                ])
+        self.assertEqual(command[command.index("--max-tokens") + 1], "32")
+        self.assertEqual(command[command.index("--think-budget") + 1], "4096")
+        self.assertIn("--benchmark-json", command)
+
     def test_setup_installs_the_pinned_extra_in_a_local_environment(self):
         with tempfile.TemporaryDirectory() as root:
             target = Path(root, ".venv")

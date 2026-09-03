@@ -12,13 +12,10 @@ import mlx.core as mx
 from . import mtp
 from .qsa_chunk import QSA_CHUNK_THRESHOLD
 
-# Same gate as chat.py so both prefill paths A/B together. A large prefill
-# leaves several GB in the MLX allocator; holding it through decode starves
-# the page cache the expert bank depends on.
-# One definition, imported. The fused path duplicates the release itself
-# because it works on a different cache and token, but the two must never
-# disagree about whether the release happens at all.
-from .prefill import PREFILL_CLEAR_CACHE
+# A large prefill leaves several GB in the MLX allocator; holding it through
+# decode starves the page cache the expert bank depends on. Target prefills
+# use the shared helper below. Draft-specific releases remain local.
+from .prefill import prefill_target
 from .routing import DEFAULT_READ_MODE
 
 
@@ -230,33 +227,9 @@ class FastDraftGreedy:
         if self.external_draft and not self.draft_disabled and long_prefill:
             self._release_transient_draft()
         self._exact_profile()
-        if long_prefill:
-            out = self.language(
-                ids,
-                cache=self.target_cache,
-                return_hidden=True,
-                skip_logits=True,
-            )
-            self.next_main = self.language.speculative_argmax_from_hidden(
-                out.hidden_states[-1][:, -1:]
-            ).reshape(-1).astype(mx.uint32)
-            mx.eval(
-                self.next_main,
-                [entry.state for entry in self.target_cache],
-            )
-            # Same release as prefill_language: a large prefill leaves several
-            # GB in the MLX allocator, and holding it through decode starves
-            # the page cache the expert bank depends on. The token and the
-            # cache are already evaluated, so no value can change.
-            out = None
-            if PREFILL_CLEAR_CACHE:
-                mx.clear_cache()
-        else:
-            out = self.language(ids, cache=self.target_cache)
-            self.next_main = mx.argmax(
-                out.logits[:, -1, :], axis=-1
-            ).astype(mx.uint32)
-            mx.eval(self.next_main)
+        _logits, _hidden, self.next_main = prefill_target(
+            self.language, ids, self.target_cache
+        )
         if self.external_draft and not self.draft_disabled:
             draft_out = self.draft_language(ids, cache=self.draft_cache)
             self.draft_next = mx.argmax(
@@ -720,19 +693,20 @@ class MTPGreedy:
         self.stats = MTPStats()
 
     def _target_capture(self, ids):
-        out = self.language(
+        logits, hidden_states, _token = prefill_target(
+            self.language,
             ids,
-            cache=self.target_cache,
-            capture_layer_ids=[],
-            return_hidden=True,
+            self.target_cache,
+            want_logits=True,
+            want_hidden=True,
         )
-        hidden = out.hidden_states[0]
+        hidden = hidden_states[0]
         expected = self.language.args.hidden_size * self.language.args.hc_count
         if hidden.shape[-1] != expected:
             raise RuntimeError(
                 f"MTP hidden width is {hidden.shape[-1]}, expected {expected}"
             )
-        return out.logits, hidden
+        return logits, hidden
 
     def _target_replay(self, snapshot, ids) -> None:
         restore_cache(self.target_cache, snapshot)

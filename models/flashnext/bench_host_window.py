@@ -10,10 +10,9 @@ This measures the size of that window before anything is moved. It changes no
 model behavior and asserts identical token IDs across passes, so a perturbed
 runtime cannot report a result.
 
-Read `hostwindow.py` for how each device is judged idle. The short version:
-the drive is measured with a counter around every pool submission, and the GPU
-is idle by construction because MLX drains its one stream at `mx.eval` and
-every window here sits between two evals.
+Read `hostwindow.py` for how host windows are recorded. The drive is measured
+with a counter around every pool submission. The IOKit meter supplies a cheap
+relative GPU signal, but this benchmark does not measure absolute GPU time.
 
     FLASHNEXT_HOST_WINDOW=1 python models/flashnext/bench_host_window.py \\
         --tokens 24 --passes 3
@@ -54,9 +53,8 @@ def decode_pass(language, ids, count):
     produced = []
     reset_profile()
     hostwindow.reset()
-    # Every other number here is the main thread blocked. This one is the GPU
-    # itself, read from IOKit, so the "GPU running" row can be checked instead
-    # of assumed.
+    # This meter provides a relative IOKit signal only. It does not measure
+    # absolute GPU time, so the report must not use it as a device timer.
     meter = GPUMeter(interval=0.004)
     meter.start() if meter.available() else None
     read_before = disk_bytes_read()
@@ -67,8 +65,8 @@ def decode_pass(language, ids, count):
         step = language(token[None], cache=cache)
         token = mx.argmax(step.logits[:, -1, :], axis=-1)
         # The head and everything the layer loop left unevaluated land here.
-        # It is GPU time like any other eval block, so it is counted with the
-        # per-layer syncs rather than lost to the residual.
+        # It is host eval-block time like any other sync, so it is counted with
+        # the per-layer syncs rather than lost to the residual.
         drain_began = time.perf_counter()
         mx.eval(token)
         drain += time.perf_counter() - drain_began
@@ -77,7 +75,9 @@ def decode_pass(language, ids, count):
     read_bytes = disk_bytes_read() - read_before
     timers = profile_totals()
     timers["final_eval"] = drain
-    timers["gpu_busy_fraction"] = gpu.get("busy_fraction", -1.0)
+    timers["gpu_relative_busy_fraction"] = gpu.get(
+        "relative_busy_fraction", -1.0
+    )
     timers["gpu_samples"] = gpu.get("samples", 0)
     return (
         produced,
@@ -155,7 +155,7 @@ def main() -> int:
 
     print("\nprofile timers, last pass, ms per token:")
     for key in sorted(last_timers):
-        if key == "io_calls":
+        if key in ("io_calls", "gpu_relative_busy_fraction", "gpu_samples"):
             continue
         print(f"  {key:22s} {last_timers[key]/args.tokens*1000:8.2f}")
 
@@ -181,14 +181,14 @@ def main() -> int:
 
     windows, tokens = kept
     if last_timers.get("score_sync", 0.0) or last_timers.get("router_sync", 0.0):
-        # Every eval blocks the main thread until MLX drains its one stream,
-        # so the time spent inside an eval is the GPU actually running. The
-        # drive's busy time is the io_await window, which the read counter
+        # Every eval blocks the main thread until MLX drains its one stream.
+        # This is host-side eval block time, not an absolute GPU measurement.
+        # The drive's busy time is the io_await window, which the read counter
         # backs. What is left over belongs to neither device.
         # `ngram_wait` brackets `_direct_rows` in ngram.py, which reads n-gram
         # rows off the drive. It is storage time, not GPU time. Counting it
-        # with the eval blocks overstated the GPU by 6.3 ms per token.
-        gpu = (
+        # with the eval blocks overstated device time by 6.3 ms per token.
+        eval_block = (
             last_timers["score_sync"]
             + last_timers["router_sync"]
             + last_timers["final_eval"]
@@ -202,11 +202,11 @@ def main() -> int:
         ) + last_timers.get("ngram_wait", 0.0)
         idle = sum(slot[0] for slot in windows.values())
         token_ms = seconds * 1000
-        accounted = (gpu + drive + idle) / tokens * 1000
-        print("\ndevice duty, last pass, per token:")
+        accounted = (eval_block + drive + idle) / tokens * 1000
+        print("\ntimed windows, last pass, per token:")
         print(f"  {'state':26s} {'ms':>8}  {'share':>6}")
         for label, value in (
-            ("GPU running", gpu),
+            ("eval block, GPU unknown", eval_block),
             ("drive reading", drive),
             ("neither, host only", idle),
         ):
@@ -214,28 +214,15 @@ def main() -> int:
             print(f"  {label:26s} {ms:8.1f}  {ms/token_ms*100:5.1f}%")
         print(f"  {'unaccounted':26s} {token_ms-accounted:8.1f}  "
               f"{(token_ms-accounted)/token_ms*100:5.1f}%")
-        frac = last_timers.get("gpu_busy_fraction", -1.0)
+        frac = last_timers.get("gpu_relative_busy_fraction", -1.0)
         if frac >= 0:
-            measured = frac * token_ms
             print(f"  {'':26s} {'':8}  {'':6}")
-            print(f"  {'GPU busy, IOKit counter':26s} {measured:8.1f}  "
+            print(f"  {'IOKit relative signal':26s} {'':8}  "
                   f"{frac*100:5.1f}%   over "
                   f"{int(last_timers.get('gpu_samples', 0))} samples")
-            # `gpu` is a total in seconds; every other figure here is
-            # milliseconds per token.
-            gpu_ms = gpu / tokens * 1000
-            print(f"  {'eval block time claims':26s} {gpu_ms:8.1f}  "
-                  f"{gpu_ms/token_ms*100:5.1f}%")
-            if measured < gpu_ms * 0.7:
-                print("  The GPU is idle for much of what the eval blocks on,")
-                print("  so eval block time is not GPU time and the unattributed")
-                print("  part of score_sync is the host waiting, not kernels.")
-            elif measured > gpu_ms * 1.3:
-                print("  The GPU is busier than the eval blocks account for,")
-                print("  so work is running outside the timed evals.")
-            else:
-                print("  The two agree, so eval block time is GPU time and the")
-                print("  component table is missing real kernels.")
+            print("  Do not convert this signal to milliseconds or compare it")
+            print("  with eval-block duration. Use Metal System Trace for")
+            print("  absolute GPU time.")
         print(f"  {'token':26s} {token_ms:8.1f}")
         print(
             f"  drive: expert timer "

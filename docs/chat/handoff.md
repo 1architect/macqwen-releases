@@ -64,7 +64,9 @@ tolerance. Exact-quality remains the default.
 The command-line forms are `--max-tokens N` and `--think-budget N`. A legacy saved `think_budget` value of `0` resolves to the 512-token
 default. Use `-1` to keep extra reasoning capacity disabled.
 
-The backend receives the sum as one ceiling. It does not enforce separate reasoning and answer counters.
+Interactive turns pass the sum as one backend ceiling. JSON benchmark mode
+uses `--max-tokens` as its total ceiling, so a saved thinking budget cannot
+extend a short validation run.
 
 ## Terminal state flow
 

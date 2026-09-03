@@ -661,11 +661,11 @@ footer code { font-family: "IBM Plex Mono", monospace; }
           page cache cannot use.
         </li>
       <li>
-          <b>Corrected.</b> Earlier versions of this page put the GPU at about
-          <code>9%</code> busy and called the remainder not work. That came
-          from the IOKit <code>Device Utilization %</code> counter, which a
-          Metal System Trace shows undercounts by <code>3.2x</code>. Measured
-          by Instruments over 16,554 intervals, the GPU is busy
+          <b>Corrected.</b> Earlier versions of this page used the IOKit
+          <code>Device Utilization %</code> counter as absolute GPU time. A
+          Metal System Trace shows that this counter undercounts short kernels
+          by <code>3.2x</code>. The IOKit reading is a relative signal only.
+          Measured by Instruments over 16,554 intervals, the GPU is busy
           <code>12,278 ms</code> of a <code>44,306 ms</code> span, which is
           <code>27.7%</code>, or about <code>149 ms</code> per token. Two
           independent estimates predicted that factor before the trace existed:
@@ -727,9 +727,9 @@ const BLOCKS = [
       { n: "MoE output combine",   ms:  1.02, k: "m", note: "48 x 0.0213 ms, measured directly" },
       { n: "router gate",          ms:  0.94, k: "m", note: "48 x 0.0196 ms" },
       { n: "injection combine",    ms:  0.69, k: "m", note: "96 x 0.0071 ms, measured directly" },
-      { n: "GPU work and submission latency", ms: 84.56, k: "d", note: "This was labelled unexplained through nine failed hypotheses. A Metal System Trace settled it: the IOKit utilisation counter undercounts by 3.2x. Real GPU busy is 149 ms per token, 27.7 percent of it, against the 46.4 ms the counter reported. At 149 ms of compute inside 237.7 ms of eval block, the remainder is CPU to GPU submission latency, which the trace measures at about 1.6 ms across each of 16,554 intervals. Derived rather than measured, because the split between the two comes from the trace total and not from a reading on this block." }
+      { n: "GPU work and submission latency", ms: 84.56, k: "d", note: "This was labelled unexplained through nine failed hypotheses. A Metal System Trace settled it: the trace measures 149 ms per token of GPU execution, while the IOKit utilisation counter provides only a relative 8.6% signal and undercounts short kernels by 3.2x. At 149 ms of compute inside 237.7 ms of eval block, the remainder is CPU to GPU submission latency, which the trace measures at about 1.6 ms across each of 16,554 intervals. Derived rather than measured, because the split between the two comes from the trace total and not from a reading on this block." }
     ],
-    desc: "<code>mx.eval(scores)</code> in <code>_moe_call</code>. Blocks the main thread while MLX drains its one stream, so this is the GPU actually running: the previous layer's MoE gather, then this layer's attention, GatedDeltaNet, hyper-connections and the router. The largest single GPU item in a token. It does depend on the previous layer's <code>moe_issue</code>, but that edge wraps around 48 times and cannot be drawn in a collapsed one-token view, so it is not enforced here."
+    desc: "<code>mx.eval(scores)</code> in <code>_moe_call</code>. This host block waits while MLX drains its one stream. Metal System Trace attributes the GPU work here to the previous layer's MoE gather, then this layer's attention, GatedDeltaNet, hyper-connections and the router. It is the largest single traced GPU item in a token. It does depend on the previous layer's <code>moe_issue</code>, but that edge wraps around 48 times and cannot be drawn in a collapsed one-token view, so it is not enforced here."
   },
   {
     id: "router_sync", lane: "gpu", ms: 22.81, calls: LAYERS,
@@ -1239,4 +1239,3 @@ zoomEl.addEventListener("input", () => {
 state = layoutMeasured();
 render();
 </script>
-

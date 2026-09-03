@@ -1,8 +1,8 @@
 """Expert weights that live on disk and visit memory only when routed to.
 
 A dense SwitchLinear holds every expert resident: 512 experts x 48 layers is
-45 GB. Only `top_k` experts run per token, so this class keeps a bounded LRU
-of expert rows and reads the rest from the checkpoint on demand.
+45 GB. Only `top_k` experts run per token, so this class reads routed rows
+from the checkpoint on demand.
 
 The gather still runs against a contiguous tensor. Rather than maintaining one
 big cache buffer and paying a full copy on every miss, the needed rows are
@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import os
 import time
-from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -240,39 +239,19 @@ class _SharedRead:
 
 
 class ExpertLRU:
-    """Per-projection reader, with an optional and unhelpful row cache.
+    """Per-projection reader for routed expert rows.
 
-    Caching routed experts was tried three ways and lost every time. Decode at
-    capacity 0 runs 1390 ms/token; at 16 it runs 2824, at 96 it runs 4257 with
-    a 76.5% hit rate. The reasons, in the order they were found:
-
-      1. Merging hits with `mx.stack` leaves a lazy node per call for the next
-         `mx.eval` to materialize, which cost more than re-reading.
-      2. Merging with `np.stack` instead still loses: cached rows are views
-         into the buffer they were read in, so one cached row pins the whole
-         chunk and the process starts paging.
-      3. Routed sets never repeat between tokens (0% over 480 samples, 35.7%
-         overlap), so no whole-result cache can hit at all.
-
-    Decode is I/O bound at the drive's limit: a token needs 1475 MB and the
-    gather runs at 1068 MB/s, which is 1381 ms against 1390 ms measured. The
-    48 host syncs cost 8 ms in total. Reading fewer bytes is the only lever
-    left, and that means a lower-bit checkpoint, not a code change.
+    The old row-level LRU merged cached and fresh rows in numpy. That path was
+    never used by the runtime and made `capacity` appear to control caching.
+    The active path submits all routed rows as one read and converts them once.
     """
 
-    __slots__ = ("store", "prefix", "capacity", "_rows", "hits", "misses",
-                 "_missing")
+    __slots__ = ("store", "prefix", "capacity")
 
     def __init__(self, store: SafeTensorStore, prefix: str, capacity: int):
         self.store = store
         self.prefix = prefix
         self.capacity = capacity
-        self._rows: "OrderedDict[int, Tuple[mx.array, mx.array, mx.array]]" = (
-            OrderedDict()
-        )
-        self.hits = 0
-        self.misses = 0
-        self._missing = []
 
 
     def submit(self, experts: List[int], bulk: bool = False):
@@ -393,48 +372,9 @@ class ExpertLRU:
             for p in _PARTS
         )
 
-    def fetch_np(self, experts: List[int], fresh):
-        """Merge cached rows with freshly read ones, in numpy.
-
-        The first version of this cache merged with mx.stack and was slower
-        than no cache at all: every stack left a lazy node for the next
-        mx.eval to materialize, and that dominated decode. np.stack copies in
-        C and leaves nothing behind, so the 76% hit rate finally pays.
-        """
-        # Build the answer before evicting anything: when the routed set is
-        # larger than the cache, inserting first drops rows this call needs.
-        current = {}
-        if fresh is not None:
-            for slot, expert in enumerate(self._missing):
-                current[expert] = tuple(part[slot] for part in fresh)
-
-        picked = [current.get(e) or self._rows[e] for e in experts]
-        out = []
-        for index in range(3):
-            rows = [row[index] for row in picked]
-            out.append(np.stack(rows) if len(rows) > 1 else rows[0][None])
-
-        for expert in experts:
-            if expert in self._rows:
-                self._rows.move_to_end(expert)
-        for expert, row in current.items():
-            self._rows[expert] = row
-            if len(self._rows) > self.capacity:
-                self._rows.popitem(last=False)
-        return tuple(
-            self.store.to_mx(f"{self.prefix}.{part}", block)
-            for part, block in zip(_PARTS, out)
-        )
-
-    def plan_missing(self, experts: List[int]):
-        """Which experts this call must read. Records them for fetch_np."""
-        self._missing = [e for e in experts if e not in self._rows]
-        self.hits += len(experts) - len(self._missing)
-        self.misses += len(self._missing)
-        return self._missing
-
-    def clear(self) -> None:
-        self._rows.clear()
+    def fetch(self, experts: List[int]):
+        """Read routed rows synchronously for a standalone projection call."""
+        return self._read(experts)
 
 
 def _await_read(pending):
@@ -756,10 +696,3 @@ class StreamingSwitchGLU(nn.Module):
         if _PROFILE:
             _TIMERS["moe_issue"] += time.perf_counter() - issue_began
         return o
-
-    def stats(self):
-        hits = sum(p.cache.hits for p in (self.gate_proj, self.up_proj, self.down_proj))
-        misses = sum(
-            p.cache.misses for p in (self.gate_proj, self.up_proj, self.down_proj)
-        )
-        return hits, misses

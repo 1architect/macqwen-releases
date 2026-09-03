@@ -2560,20 +2560,22 @@ work. It does not change the quality gate or the shipped read default.
 
 \`gpustat.py\` reads IOKit \`Device Utilization %\` through \`ctypes\`. It needs no
 sudo and no child process. A sample takes 59 microseconds and the meter can
-sample at 17 kHz.
+sample at 17 kHz. The result is a relative comparison signal only. It must not
+be converted to milliseconds or quoted as absolute GPU time.
 
-Three real-decode runs produced these lower-bound GPU readings:
+Three real-decode runs produced these IOKit readings:
 
-| Run | Token time | GPU busy | Eval block time |
+| Run | Token time | IOKit relative signal | Eval block time |
 |---|---:|---:|---:|
-| Loaded machine | 530.6 ms | 49.4 ms, 9.3% | 249.3 ms, 47.0% |
-| Clean boot | 449.4 ms | 30.9 ms, 6.9% | 197.0 ms, 43.8% |
-| Stack sampling | 481.1 ms | 38.3 ms, 8.0% | 212.0 ms, 44.1% |
+| Loaded machine | 530.6 ms | 9.3% | 249.3 ms, 47.0% |
+| Clean boot | 449.4 ms | 6.9% | 197.0 ms, 43.8% |
+| Stack sampling | 481.1 ms | 8.0% | 212.0 ms, 44.1% |
 
 The meter samples every 4 ms while kernels run for 0.02 to 0.5 ms. Its
 counter reads 0 or 100 in two bands. A saturating matmul measured 32.4% when
 it should approach 100%, so the meter undercounts short bursts by about 3x.
-Treat its absolute GPU values as lower bounds.
+Treat its values as relative only. Use Metal System Trace for absolute GPU
+time.
 
 During steady decode, \`sample <pid> 30\` collected 826 main-thread samples:
 
@@ -2607,7 +2609,7 @@ evals per token              98.0
 blocked in eval             236.7 ms   50.3% of the token
 mean per eval                 2.415 ms
 median per eval               1.278 ms
-GPU busy, IOKit               50.6 ms  10.7%
+IOKit relative signal                     10.7%
 \`\`\`
 
 | Eval duration | Evals/token | ms/token | Share |
@@ -2752,7 +2754,7 @@ time.
 
 | File | Measurement |
 |---|---|
-| \`gpustat.py\` | GPU busy from IOKit through \`ctypes\`, 59 microseconds per sample |
+| \`gpustat.py\` | Relative IOKit GPU signal through \`ctypes\`, 59 microseconds per sample |
 | \`bench_eval_cost.py\` | Eval count and block-time distribution per token |
 | \`bench_glue.py\` | Elementwise operations across both sync buckets |
 | \`bench_layer_locality.py\` | One layer repeated against 36 distinct layers |
@@ -2769,7 +2771,7 @@ do not identify a stage that can be removed. Merging evals makes the result
 slower. REAP-288 still needs its quality gate.
 ## Session continuation: Metal trace and overnight experiments, 2026-09-02
 
-Part 3 replaces the IOKit GPU estimate from the previous session. Metal System
+Part 3 replaces the prior IOKit reading for absolute GPU claims. Metal System
 Trace measures GPU spans directly.
 
 ### Metal System Trace result
@@ -2792,13 +2794,13 @@ The traced run took 539.4 ms per token:
 | Measure | ms/token | Share |
 |---|---:|---:|
 | GPU busy, Metal trace | 149 | 27.7% |
-| GPU busy, IOKit counter | 46.4 | 8.6% |
+| IOKit relative signal | n/a | 8.6% |
 | Eval block time | 237.7 | 44.1% |
 
-The IOKit counter undercounts by about 3.2x. The injected-matmul sweep
+The IOKit counter undercounts short kernels by about 3.2x. The injected-matmul sweep
 predicted 2.9x, and the saturating-matmul calibration predicted about 3x.
-`gpustat.py` remains useful for relative comparisons, but its absolute values
-must not be quoted.
+`gpustat.py` remains useful for relative comparisons. Its values must not be
+converted to milliseconds or quoted as absolute GPU time.
 
 The corrected token shape is:
 
@@ -2976,8 +2978,8 @@ of greedy decoding, and checkpoint selection.
 
 ### Open items from this session
 
-1. `gpustat.py` absolute values are wrong by about 3.2x. Use Metal trace values
-   for absolute GPU claims.
+1. `gpustat.py` provides a relative signal only. Use Metal trace values for
+   absolute GPU claims.
 2. GPU busy still varies between clean-boot conditions. The production and
    zero-drive pair measured 182.5 and 86.1 ms/token. The cause is open.
 3. The 256 MB resident arm is inside measurement noise. Test that boundary if

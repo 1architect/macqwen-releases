@@ -244,8 +244,13 @@ Run the complete JSON benchmark path:
 
 ```bash
 ./chat.sh --model flashnext --profile plain --exact-quality \
-  --max-tokens 32 --benchmark-json --benchmark-prompt 'Explain virtual memory.'
+  --max-tokens 32 --think-budget=-1 --benchmark-json \
+  --benchmark-prompt 'Explain virtual memory.'
 ```
+
+In JSON benchmark mode, `--max-tokens` is the total decode ceiling. The
+explicit `--think-budget=-1` also makes the short-run intent clear. Interactive
+turns keep separate answer and thinking budgets.
 
 Standard output must contain one JSON object. Diagnostic text goes to standard error.
 
