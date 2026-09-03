@@ -289,6 +289,21 @@ def _moe_call(self, x: mx.array) -> mx.array:
         _LAST_KEEPS[layer_id] = (k,) * (inds.size // k)
         _KEEP_SUM[0] += inds.size
         _KEEP_COUNT[0] += inds.size // k
+
+        flat_inds = None
+        routed_host = None
+        if _ONE_SYNC or _EARLY_SUBMIT:
+            flat_inds = inds.reshape(-1)
+            mx.eval(flat_inds)
+            routed_host = flat_inds.tolist()
+            self.switch_mlp._routed_host = (routed_host, (*scores.shape[:-1], k))
+            if _EARLY_SUBMIT:
+                wanted = list(dict.fromkeys(routed_host))
+                record_layer(layer_id, wanted)
+                prefetch = getattr(self.switch_mlp, "prefetch", None)
+                if prefetch is not None:
+                    prefetch(wanted)
+
         # At threshold 1.0 nothing is dropped, but the observer still has to
         # run: exact-quality selects its resident experts from it, so without
         # this the profile pinned nothing and silently lost its own feature.
@@ -296,7 +311,10 @@ def _moe_call(self, x: mx.array) -> mx.array:
         if observer is not None:
             limit = _OBSERVER_MAX_ROWS[0]
             rows_here = inds.size // k
-            if limit is not None and rows_here > limit:
+            if routed_host is not None and limit is None and rows_here <= 1:
+                rows = [routed_host]
+                score_rows = scores.reshape(-1, k).tolist()
+            elif limit is not None and rows_here > limit:
                 rows_here = limit
                 rows = inds.reshape(-1, k)[:limit].tolist()
                 score_rows = scores.reshape(-1, k)[:limit].tolist()

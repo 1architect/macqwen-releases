@@ -309,7 +309,7 @@ if (simd_lid == 0) {
 #pragma unroll
     for (uint row = 0; row < 4; ++row)
         if (out_base + row < OUT_WIDTH)
-            out[token * OUT_WIDTH + out_base + row] = combined[row];
+            out[token * OUT_WIDTH + out_base + row] = static_cast<T>(combined[row]);
 }
 """
 
@@ -454,12 +454,9 @@ class MetalMoEExecutor:
             grid=(((output_width + 7) // 8) * 64, 1, tokens),
             threadgroup=(64, 1, 1),
             output_shapes=[(tokens, slots, output_width), (tokens, output_width)],
-            output_dtypes=[x.dtype, mx.float32],
+            output_dtypes=[x.dtype, x.dtype],
         )
-        out = result[1]
-        if str(out.dtype) != str(x.dtype):
-            out = out.astype(x.dtype)
-        return out
+        return result[1]
 
     def _metal_projection(
         self,

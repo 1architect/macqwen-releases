@@ -516,9 +516,11 @@ class StreamingSwitchGLU(nn.Module):
         self.layer_id = layer_id
         self.next_prefix = next_prefix
         slab_size = int(os.environ.get("FLASHNEXT_SLAB", 0))
+        max_slab_layer = int(os.environ.get("FLASHNEXT_SLAB_LAYERS", -1))
+        has_slab = slab_size > 0 and (max_slab_layer < 0 or (0 <= layer_id < max_slab_layer))
         make = lambda name: StreamingSwitchLinear(
             store, f"{prefix}.{name}", group_size, bits, mode, capacity,
-            slab=ResidentSlab(store, f"{prefix}.{name}", slab_size) if slab_size else None,
+            slab=ResidentSlab(store, f"{prefix}.{name}", slab_size) if has_slab else None,
         )
         self.hits = 0
         self.misses = 0
