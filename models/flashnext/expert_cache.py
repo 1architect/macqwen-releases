@@ -533,7 +533,6 @@ class StreamingSwitchGLU(nn.Module):
         """Report the opt-in decode path to the patched MoE block."""
         return (
             os.environ.get("FLASHNEXT_METAL_RUNTIME") == "1"
-            and self.gate_proj.slab is None
             and self.layer_id != 0
         )
 
@@ -548,11 +547,13 @@ class StreamingSwitchGLU(nn.Module):
         if _EARLY_SUBMIT_MODE == "2":
             return
         projections = (self.gate_proj, self.up_proj, self.down_proj)
-        if projections[0].slab is not None:
-            return
         wanted = list(wanted)
         if self.gate_proj.cache.store._sort_reads:
             wanted.sort()
+        if projections[0].slab is not None:
+            wanted = [e for e in wanted if e not in projections[0].slab.slot]
+            if not wanted:
+                return
         self._prefetch = (
             wanted,
             [p.cache.submit(wanted, False) for p in projections],
@@ -588,6 +589,75 @@ class StreamingSwitchGLU(nn.Module):
             for sl in slabs:
                 sl.admit(list(dict.fromkeys(routed)))
             use_slab = slabs[0].ready()
+
+        if (
+            use_slab
+            and self.metal_combines_scores
+            and scores is not None
+            and flat_input is not None
+            and flat_input.shape[0] <= 8
+        ):
+            hit = [e for e in routed if e in slabs[0].slot]
+            miss = [e for e in routed if e not in slabs[0].slot]
+            self.hits += len(hit)
+            self.misses += len(miss)
+
+            wanted = list(dict.fromkeys(miss))
+            if self.gate_proj.cache.store._sort_reads:
+                wanted.sort()
+
+            projections = (self.gate_proj, self.up_proj, self.down_proj)
+            prefetched = getattr(self, "_prefetch", None)
+            self._prefetch = None
+            if wanted:
+                if prefetched is not None and prefetched[0] == wanted:
+                    pending = prefetched[1]
+                else:
+                    pending = [p.cache.submit(wanted, False) for p in projections]
+                weights = [p.cache.to_mx(_await_read(fs)) for p, fs in zip(projections, pending)]
+                miss_order = {e: i for i, e in enumerate(wanted)}
+            else:
+                weights = [
+                    (sl.parts[0][:1], sl.parts[1][:1], sl.parts[2][:1])
+                    for sl in slabs
+                ]
+                miss_order = {}
+
+            encoded_routes = []
+            for e in routed:
+                if e in slabs[0].slot:
+                    encoded_routes.append(0x80000000 | slabs[0].slot[e])
+                else:
+                    encoded_routes.append(miss_order[e])
+
+            slots = indices.shape[-1]
+            local = mx.array(encoded_routes, dtype=mx.uint32).reshape(flat_input.shape[0], slots)
+            routed_scores = scores.reshape(flat_input.shape[0], slots)
+
+            from .metal_runtime import MetalMoEExecutor
+            key = ("slab", flat_input.shape[-1], slots)
+            executor = self._metal_executors.get(key)
+            if executor is None:
+                total_exp = max(slabs[0].capacity + len(wanted), slots)
+                executor = MetalMoEExecutor(total_exp, flat_input.shape[-1], slots)
+                self._metal_executors[key] = executor
+
+            streamed_packs = {
+                "gate_proj": weights[0],
+                "up_proj": weights[1],
+                "down_proj": weights[2],
+            }
+            slab_packs = {
+                "gate_proj": slabs[0].parts,
+                "up_proj": slabs[1].parts,
+                "down_proj": slabs[2].parts,
+            }
+            output = executor.execute(
+                flat_input, local, streamed_packs,
+                scores=routed_scores,
+                slab_projections=slab_packs,
+            )
+            return output.reshape(*indices.shape[:-1], output.shape[-1]).astype(mx.bfloat16)
 
         if not use_slab:
             return self._one_pass(

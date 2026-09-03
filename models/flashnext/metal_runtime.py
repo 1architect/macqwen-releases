@@ -103,15 +103,16 @@ def _shape(value: Any) -> tuple[int, ...]:
 
 def _validate_projection(
     projection: Q4G32Projection,
-    expert_count: int,
+    expert_count: int | None,
     input_width: int,
     output_width: int,
 ) -> None:
     weight_shape = _shape(projection.weight)
     scale_shape = _shape(projection.scales)
     bias_shape = _shape(projection.biases)
-    expected_weight = (expert_count, output_width, input_width // 8)
-    expected_meta = (expert_count, output_width, input_width // GROUP_SIZE)
+    count = weight_shape[0] if expert_count is None else expert_count
+    expected_weight = (count, output_width, input_width // 8)
+    expected_meta = (count, output_width, input_width // GROUP_SIZE)
     if weight_shape != expected_weight:
         raise ValueError(f"weight shape {weight_shape} != {expected_weight}")
     if scale_shape != expected_meta or bias_shape != expected_meta:
@@ -176,17 +177,29 @@ _KERNEL_BODY = r"""
 uint pair = threadgroup_position_in_grid.z;
 uint token = pair / SLOTS;
 uint slot = pair % SLOTS;
-uint expert = routes[pair];
+uint raw_expert = routes[pair];
 const int in_size = IN_WIDTH;
 const int out_size = OUT_WIDTH;
 const device T* input = x +
     ((SLOT_INPUT != 0) ? pair * IN_WIDTH : token * IN_WIDTH);
 device T* output = out + pair * OUT_WIDTH;
 uint3 tid = uint3(0, threadgroup_position_in_grid.y, pair);
+
+#if SLAB_ENABLED
+bool in_slab = ((raw_expert & 0x80000000u) != 0);
+uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
+decltype(weight) w_ptr = (in_slab ? slab_weight : weight) + expert * OUT_WIDTH * (IN_WIDTH / 8);
+decltype(scales) s_ptr = (in_slab ? slab_scales : scales) + expert * OUT_WIDTH * (IN_WIDTH / 32);
+decltype(biases) b_ptr = (in_slab ? slab_biases : biases) + expert * OUT_WIDTH * (IN_WIDTH / 32);
+#else
+uint expert = raw_expert;
+decltype(weight) w_ptr = weight + expert * OUT_WIDTH * (IN_WIDTH / 8);
+decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / 32);
+decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / 32);
+#endif
+
 QMV_MIXED_IMPL<T, 32, 4>(
-    weight + expert * OUT_WIDTH * (IN_WIDTH / 8),
-    scales + expert * OUT_WIDTH * (IN_WIDTH / 32),
-    biases + expert * OUT_WIDTH * (IN_WIDTH / 32),
+    w_ptr, s_ptr, b_ptr,
     input, output, in_size, out_size, tid,
     simdgroup_index_in_threadgroup, thread_index_in_simdgroup);
 """
@@ -255,16 +268,28 @@ uint out_base = group.x * 8 + simd_gid * 4;
 if (token >= TOKENS || out_base >= OUT_WIDTH) return;
 float combined[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 for (uint slot = 0; slot < SLOTS; ++slot) {
-    uint expert = routes[token * SLOTS + slot];
+    uint raw_expert = routes[token * SLOTS + slot];
     const int in_size = IN_WIDTH;
     const int out_size = OUT_WIDTH;
     uint3 tid = uint3(0, group.x, token);
     device T* slot_output = scratch +
         (token * SLOTS + slot) * OUT_WIDTH;
+
+#if SLAB_ENABLED
+    bool in_slab = ((raw_expert & 0x80000000u) != 0);
+    uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
+    decltype(weight) w_ptr = (in_slab ? slab_weight : weight) + expert * OUT_WIDTH * (IN_WIDTH / 8);
+    decltype(scales) s_ptr = (in_slab ? slab_scales : scales) + expert * OUT_WIDTH * (IN_WIDTH / 32);
+    decltype(biases) b_ptr = (in_slab ? slab_biases : biases) + expert * OUT_WIDTH * (IN_WIDTH / 32);
+#else
+    uint expert = raw_expert;
+    decltype(weight) w_ptr = weight + expert * OUT_WIDTH * (IN_WIDTH / 8);
+    decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / 32);
+    decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / 32);
+#endif
+
     qmv_mixed_impl<T, 32, 4>(
-        weight + expert * OUT_WIDTH * (IN_WIDTH / 8),
-        scales + expert * OUT_WIDTH * (IN_WIDTH / 32),
-        biases + expert * OUT_WIDTH * (IN_WIDTH / 32),
+        w_ptr, s_ptr, b_ptr,
         x + (token * SLOTS + slot) * IN_WIDTH,
         slot_output, in_size, out_size, tid,
         simd_gid, simd_lid);
@@ -337,6 +362,7 @@ class MetalMoEExecutor:
         input_width: int,
         output_width: int,
         slot_input: bool,
+        has_slab: bool = False,
     ) -> Any:
         import mlx.core as mx
 
@@ -344,7 +370,7 @@ class MetalMoEExecutor:
         if maker is None:
             maker = mx.fast.metal_kernel
         dtype = getattr(x, "dtype", None)
-        key = (str(dtype), tokens, slots, input_width, output_width, slot_input)
+        key = (str(dtype), tokens, slots, input_width, output_width, slot_input, has_slab)
         kernel = self._kernels.get(key)
         if kernel is None:
             body = _KERNEL_BODY.replace("TOKENS", str(tokens))
@@ -354,13 +380,17 @@ class MetalMoEExecutor:
             body = body.replace("GROUPS", str(input_width // GROUP_SIZE))
             body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
             body = body.replace("SLOT_INPUT", "1" if slot_input else "0")
+            body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
             body = body.replace(
                 "QMV_MIXED_IMPL",
                 "qmv_fast_mixed_impl" if input_width % 512 == 0 else "qmv_mixed_impl",
             )
+            input_names = ["x", "weight", "scales", "biases", "routes"]
+            if has_slab:
+                input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
             kernel = maker(
-                name="flashnext_level1_q4g32",
-                input_names=["x", "weight", "scales", "biases", "routes"],
+                name="flashnext_level1_q4g32_slab" if has_slab else "flashnext_level1_q4g32",
+                input_names=input_names,
                 output_names=["out"],
                 source=body,
                 header=_mlx_qmv_header(),
@@ -370,14 +400,16 @@ class MetalMoEExecutor:
             self._kernels[key] = kernel
         return kernel
 
-    def _get_fused_down_kernel(self, x, tokens, slots, input_width, output_width):
+    def _get_fused_down_kernel(
+        self, x, tokens, slots, input_width, output_width, has_slab: bool = False
+    ):
         import mlx.core as mx
 
         maker = getattr(self.backend, "metal_kernel", None)
         if maker is None:
             maker = mx.fast.metal_kernel
         key = ("fused-down", str(getattr(x, "dtype", None)), tokens, slots,
-               input_width, output_width)
+               input_width, output_width, has_slab)
         kernel = self._kernels.get(key)
         if kernel is None:
             body = _FUSED_DOWN_COMBINE_BODY.replace("TOKENS", str(tokens))
@@ -386,9 +418,13 @@ class MetalMoEExecutor:
             body = body.replace("OUT_WIDTH", str(output_width))
             body = body.replace("GROUPS", str(input_width // GROUP_SIZE))
             body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
+            body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
+            input_names = ["x", "weight", "scales", "biases", "routes", "scores"]
+            if has_slab:
+                input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
             kernel = maker(
-                name="flashnext_level1_q4g32_down_combine",
-                input_names=["x", "weight", "scales", "biases", "routes", "scores"],
+                name="flashnext_level1_q4g32_down_combine_slab" if has_slab else "flashnext_level1_q4g32_down_combine",
+                input_names=input_names,
                 output_names=["scratch", "out"], source=body,
                 header=_mlx_qmv_header(), ensure_row_contiguous=True,
                 compile_options={"math_mode": "safe"},
@@ -396,18 +432,24 @@ class MetalMoEExecutor:
             self._kernels[key] = kernel
         return kernel
 
-    def _metal_fused_down_combine(self, x, routes, scores, down, output_width):
+    def _metal_fused_down_combine(
+        self, x, routes, scores, down, output_width, slab_down=None
+    ):
         import mlx.core as mx
 
         tokens, input_width = _shape(x)[0], _shape(x)[-1]
         slots = _shape(routes)[1]
         scales = down.scales
         biases = down.biases
+        has_slab = slab_down is not None
         kernel = self._get_fused_down_kernel(
-            x, tokens, slots, input_width, output_width
+            x, tokens, slots, input_width, output_width, has_slab=has_slab
         )
+        inputs = [x, down.weight, scales, biases, routes, scores]
+        if has_slab:
+            inputs.extend([slab_down.weight, slab_down.scales, slab_down.biases])
         result = kernel(
-            inputs=[x, down.weight, scales, biases, routes, scores],
+            inputs=inputs,
             template=[("T", x.dtype)],
             grid=(((output_width + 7) // 8) * 64, 1, tokens),
             threadgroup=(64, 1, 1),
@@ -426,19 +468,24 @@ class MetalMoEExecutor:
         projection: Q4G32Projection,
         output_width: int,
         slot_input: bool,
+        slab_projection: Q4G32Projection | None = None,
     ) -> Any:
         shape = _shape(x)
         tokens, input_width = shape[0], shape[-1]
         slots = _shape(routes)[1]
+        has_slab = slab_projection is not None
         kernel = self._get_metal_kernel(
-            x, tokens, slots, input_width, output_width, slot_input
+            x, tokens, slots, input_width, output_width, slot_input, has_slab=has_slab
         )
         import mlx.core as mx
 
         scales = projection.scales
         biases = projection.biases
+        inputs = [x, projection.weight, scales, biases, routes]
+        if has_slab:
+            inputs.extend([slab_projection.weight, slab_projection.scales, slab_projection.biases])
         result = kernel(
-            inputs=[x, projection.weight, scales, biases, routes],
+            inputs=inputs,
             template=[("T", x.dtype)],
             grid=(32, ((output_width + 7) // 8) * 2, tokens * slots),
             threadgroup=(32, 2, 1),
@@ -484,6 +531,7 @@ class MetalMoEExecutor:
         *,
         return_all: bool = False,
         scores: Any = None,
+        slab_projections: Mapping[str, Any] | Sequence[Any] | None = None,
     ) -> Any:
         """Run gate, up, activation, and down for bounded flattened inputs.
 
@@ -527,7 +575,7 @@ class MetalMoEExecutor:
         # The production route tensor is already bounded by the router.  Do
         # value validation only for NumPy callers, which are synchronous.
         if isinstance(routes, np.ndarray):
-            if np.any(routes < 0) or np.any(routes >= self.expert_count):
+            if np.any(routes < 0):
                 raise ValueError("routes contain an expert outside the configured bank")
         if isinstance(projections, Mapping):
             gate = _as_projection(projections["gate_proj"])
@@ -537,36 +585,55 @@ class MetalMoEExecutor:
             if len(projections) != 3:
                 raise ValueError("projections must contain gate, up, and down")
             gate, up, down = (_as_projection(item) for item in projections)
+
+        slab_gate = slab_up = slab_down = None
+        if slab_projections is not None:
+            if isinstance(slab_projections, Mapping):
+                slab_gate = _as_projection(slab_projections["gate_proj"])
+                slab_up = _as_projection(slab_projections["up_proj"])
+                slab_down = _as_projection(slab_projections["down_proj"])
+            else:
+                slab_gate, slab_up, slab_down = (_as_projection(item) for item in slab_projections)
+
         gate_width = _shape(gate.weight)[1]
         inter_width = _shape(up.weight)[1]
         if gate_width != inter_width or gate_width > self.max_width:
             raise ValueError("gate and up projection widths must match the bound")
-        _validate_projection(gate, self.expert_count, self.hidden_size, gate_width)
-        _validate_projection(up, self.expert_count, self.hidden_size, inter_width)
+        _validate_projection(gate, None, self.hidden_size, gate_width)
+        _validate_projection(up, None, self.hidden_size, inter_width)
         if self.hidden_size % GROUP_SIZE or inter_width % GROUP_SIZE:
             raise ValueError("Q4/G32 projection inputs must be group aligned")
-        _validate_projection(down, self.expert_count, inter_width, self.hidden_size)
+        _validate_projection(down, None, inter_width, self.hidden_size)
+        if slab_gate is not None:
+            _validate_projection(slab_gate, None, self.hidden_size, gate_width)
+            _validate_projection(slab_up, None, self.hidden_size, inter_width)
+            _validate_projection(slab_down, None, inter_width, self.hidden_size)
 
         use_metal = self.available
         if use_metal:
             # Separate gate and up projections outperform the fused variant
             # on M4. Fusion raises register pressure enough to exceed the
             # saved launch. The down-plus-router fusion remains profitable.
-            gate_out = self._metal_projection(x, routes, gate, gate_width, False)
-            up_out = self._metal_projection(x, routes, up, inter_width, False)
+            gate_out = self._metal_projection(
+                x, routes, gate, gate_width, False, slab_projection=slab_gate
+            )
+            up_out = self._metal_projection(
+                x, routes, up, inter_width, False, slab_projection=slab_up
+            )
             from mlx_vlm.models.activations import swiglu
 
             activation = swiglu(gate_out, up_out)
             if scores is not None and not return_all:
                 down_out = self._metal_fused_down_combine(
-                    activation, routes, scores, down, self.hidden_size
+                    activation, routes, scores, down, self.hidden_size, slab_down=slab_down
                 )
             else:
                 down_out = self._metal_projection(
-                    activation, routes, down, self.hidden_size, True
+                    activation, routes, down, self.hidden_size, True, slab_projection=slab_down
                 )
             self.last_path = "custom-metal"
             self.fallback_reason = None
+
         else:
             gate_out, up_out, down_out = self._reference_all(x, routes, gate, up, down)
             if scores is not None and not return_all:

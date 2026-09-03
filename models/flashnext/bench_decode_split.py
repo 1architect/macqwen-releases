@@ -231,6 +231,18 @@ def main() -> None:
         "is left for compute, dispatch, and host syncs"
     )
 
+    total_hits = 0
+    total_misses = 0
+    for layer in language.layers:
+        mlp = getattr(layer, "mlp", None)
+        s_mlp = getattr(mlp, "switch_mlp", None)
+        if s_mlp is not None and hasattr(s_mlp, "hits"):
+            total_hits += s_mlp.hits
+            total_misses += s_mlp.misses
+    if total_hits or total_misses:
+        hit_pct = total_hits / (total_hits + total_misses) * 100
+        print(f"slab total hits: {total_hits}, misses: {total_misses} (hit rate: {hit_pct:.1f}%)")
+
 
 if __name__ == "__main__":
     main()
