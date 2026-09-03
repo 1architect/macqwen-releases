@@ -1,5 +1,21 @@
 # Changelog
 
+## MACQWEN 0.3.6 - 2026-09-03
+
+### Fixed
+
+- Pause live agent-tool progress before approval prompts and resume it only
+  when approved execution starts.
+- Prevent progress rendering from racing with terminal cleanup during
+  interruption.
+- Keep unterminated tool-call protocol chunks hidden across streamed chunks.
+- Keep agent approval and denial states from restarting progress incorrectly.
+
+### Tests
+
+- Add regression coverage for agent approval and denial, progress cleanup,
+  streamed tool-call boundaries, and UI progress state.
+
 ## MACQWEN 0.3.5 - 2026-09-02
 
 ### Added

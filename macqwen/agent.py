@@ -129,6 +129,8 @@ def run_agent(engine: Backend, repo, out, limits: Limits = Limits(),
             else:
                 out(f"\n[tool] {name}({preview})")
             if name in MUTATING_TOOLS and approve is not None:
+                if ui is not None:
+                    ui.tool_approval()
                 if not approve(name, args):
                     results.append(json.dumps({
                         "error": "User denied this change. Do not retry it unless "

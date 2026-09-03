@@ -206,13 +206,13 @@ class IngestGlow:
             chunked = self._chunked
             rate = self._rate
             elapsed = time.perf_counter() - self._started
-        columns = shutil.get_terminal_size(fallback=(100, 24)).columns
-        width = max(8, min(28, columns - 74))
-        line = self._line(done, total, elapsed, chunked, rate, width)
-        travel = len(line) + 16
-        center = ((elapsed / 1.35) * travel) % travel - 8
-        self.output.write("\r" + self.colorize(line, center) + "\033[K")
-        self.output.flush()
+            columns = shutil.get_terminal_size(fallback=(100, 24)).columns
+            width = max(8, min(28, columns - 74))
+            line = self._line(done, total, elapsed, chunked, rate, width)
+            travel = len(line) + 16
+            center = ((elapsed / 1.35) * travel) % travel - 8
+            self.output.write("\r" + self.colorize(line, center) + "\033[K")
+            self.output.flush()
 
     def _animate(self) -> None:
         while not self._stop.wait(0.10):
@@ -303,6 +303,7 @@ class AgentUI:
         self._tool = None
         self._tool_started = None
         self._tool_pending = False
+        self._approval_paused = False
 
     MIN_TOOL_SECONDS = 0.20
 
@@ -322,6 +323,7 @@ class AgentUI:
         """Attach parsed tool details to an existing pending tool display."""
         self._tool = (name, args)
         self._tool_started = None
+        self._approval_paused = False
         label = tool_action(name, args)
         if self._tool_pending:
             self.glow.set_label(label)
@@ -343,6 +345,15 @@ class AgentUI:
     def tool_executing(self) -> None:
         """Start the execution-only duration clock immediately before dispatch."""
         self._tool_started = time.perf_counter()
+        if self._approval_paused and self._tool is not None:
+            name, args = self._tool
+            self.glow.start(label=tool_action(name, args))
+        self._approval_paused = False
+
+    def tool_approval(self) -> None:
+        """Stop live progress before an approval prompt writes to the terminal."""
+        self.glow.finish()
+        self._approval_paused = True
 
     def tool_finished(self, error: bool = False, result=None) -> None:
         """Stop execution timing, then satisfy the visual display interval."""
@@ -356,6 +367,7 @@ class AgentUI:
             time.sleep(remaining)
         self.glow.finish()
         if self._tool is None:
+            self._approval_paused = False
             return
         name, args = self._tool
         label = tool_action(name, args, complete=True)
@@ -368,6 +380,7 @@ class AgentUI:
         self._tool = None
         self._tool_started = None
         self._tool_pending = False
+        self._approval_paused = False
 
     def finish(self) -> None:
         """Clear any live progress line during interruption or final shutdown."""

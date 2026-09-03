@@ -97,6 +97,44 @@ class GlowLineTests(unittest.TestCase):
             self.glow.start(100)
         self.assertFalse(self.glow._active)
 
+    def test_interrupt_waits_for_progress_render_before_clearing(self):
+        class BlockingTTY(StringIO):
+            def __init__(self):
+                super().__init__()
+                self.render_started = threading.Event()
+                self.release_render = threading.Event()
+                self.block_next = False
+
+            def isatty(self):
+                return True
+
+            def write(self, text):
+                if "\r" in text:
+                    if self.block_next:
+                        self.block_next = False
+                        self.render_started.set()
+                        self.release_render.wait(1.0)
+                return super().write(text)
+
+        output = BlockingTTY()
+        glow = IngestGlow(output)
+        glow.start(100)
+        output.block_next = True
+        self.assertTrue(output.render_started.wait(1.0))
+
+        finished = threading.Event()
+        stopper = threading.Thread(
+            target=lambda: (glow.finish(), finished.set())
+        )
+        stopper.start()
+        self.assertFalse(finished.wait(0.05))
+        self.assertNotIn(C["clear"], output.getvalue())
+
+        output.release_render.set()
+        stopper.join(1.0)
+        self.assertTrue(finished.is_set())
+        self.assertTrue(output.getvalue().endswith(C["clear"]))
+
 
 class AgentUITests(unittest.TestCase):
     def test_pending_tool_renders_immediately(self):
@@ -111,6 +149,38 @@ class AgentUITests(unittest.TestCase):
             self.assertIn("Listing files", output.getvalue())
         finally:
             ui.finish()
+
+    def test_approval_stops_live_progress_output(self):
+        class TTYOutput(StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYOutput()
+        ui = AgentUI(output)
+        ui.tool_started("run_command", {"command": "echo hi"})
+        self.assertTrue(ui.glow._active)
+        ui.tool_approval()
+        self.assertFalse(ui.glow._active)
+        self.assertTrue(ui._approval_paused)
+        ui.tool_executing()
+        try:
+            self.assertTrue(ui.glow._active)
+            self.assertIn("echo hi", output.getvalue())
+        finally:
+            ui.tool_finished()
+
+    def test_denial_does_not_restart_progress_after_approval(self):
+        class TTYOutput(StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYOutput()
+        ui = AgentUI(output)
+        ui.tool_started("run_command", {"command": "echo hi"})
+        ui.tool_approval()
+        ui.tool_finished(error=True)
+        self.assertFalse(ui._approval_paused)
+        self.assertFalse(ui.glow._active)
 
     def test_completed_tool_has_no_success_badge(self):
         class TTYOutput(StringIO):

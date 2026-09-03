@@ -124,6 +124,18 @@ class ToolCallStreamTests(unittest.TestCase):
         output = stream_filter.feed("normal answer") + stream_filter.finish()
         self.assertEqual(output, "normal answer")
 
+    def test_unterminated_protocol_stays_hidden_across_chunks(self):
+        stream_filter = ToolCallStreamFilter()
+        output = []
+        for piece in (
+            "<tool_", "call><function=run_", "command>",
+            "<parameter=command>echo hi</parameter>",
+        ):
+            output.append(stream_filter.feed(piece))
+        output.append(stream_filter.finish())
+        self.assertEqual("".join(output), "")
+        self.assertEqual(stream_filter.take_events(), (True, "run_command"))
+
 
 if __name__ == "__main__":
     unittest.main()

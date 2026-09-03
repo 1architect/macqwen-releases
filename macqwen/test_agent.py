@@ -154,6 +154,44 @@ class AgentLoopTests(unittest.TestCase):
         run_agent(engine, self.repo, self.out, approve=lambda _name, _args: True)
         self.assertEqual(Path(self.dir.name, "created.txt").read_text(), "new")
 
+    def test_ui_stops_progress_before_approval_and_resumes_execution(self):
+        engine = ScriptedEngine([
+            (WRITE, Stats(finish="stop")),
+            ("done", Stats(finish="stop")),
+        ])
+        events = []
+        ui = MagicMock()
+        ui.tool_started.side_effect = lambda *_args: events.append("started")
+        ui.tool_approval.side_effect = lambda: events.append("approval")
+        ui.tool_executing.side_effect = lambda: events.append("executing")
+        ui.tool_finished.side_effect = lambda **_kwargs: events.append("finished")
+        run_agent(
+            engine, self.repo, self.out,
+            approve=lambda *_args: (events.append("approved"), True)[1],
+            ui=ui,
+        )
+        self.assertEqual(
+            events[:5], ["started", "approval", "approved", "executing", "finished"]
+        )
+
+    def test_denial_stops_progress_without_execution(self):
+        engine = ScriptedEngine([
+            (WRITE, Stats(finish="stop")),
+            ("done", Stats(finish="stop")),
+        ])
+        events = []
+        ui = MagicMock()
+        ui.tool_started.side_effect = lambda *_args: events.append("started")
+        ui.tool_approval.side_effect = lambda: events.append("approval")
+        ui.tool_executing.side_effect = lambda: events.append("executing")
+        ui.tool_finished.side_effect = lambda **_kwargs: events.append("finished")
+        run_agent(
+            engine, self.repo, self.out,
+            approve=lambda *_args: (events.append("denied"), False)[1],
+            ui=ui,
+        )
+        self.assertEqual(events[:4], ["started", "approval", "denied", "finished"])
+
     def test_unclosed_think_is_closed_once_then_gives_up(self):
         turns = [("<think>thinking", Stats(finish="length"))] * 5
         engine = ScriptedEngine(turns)
