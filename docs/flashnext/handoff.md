@@ -448,10 +448,6 @@ Open exact-quality performance experiments:
 - [#24](https://github.com/1architect/macqwen-releases/issues/24) Probe routed-expert Q4 group sizes 64 and 128.
 - [#25](https://github.com/1architect/macqwen-releases/issues/25) Gate and benchmark REAP-288. Use REAP-384 as the fallback.
 
-Open unexplained-cost experiment:
-
-- [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under mixed residency.
-
 Closed exact-quality performance issues:
 
 - [#21](https://github.com/1architect/macqwen-releases/issues/21) Host-only idle windows. Only 4.16 ms/token qualifies after bulk movement is excluded.
@@ -460,6 +456,7 @@ Closed exact-quality performance issues:
 - [#27](https://github.com/1architect/macqwen-releases/issues/27) Attribute the remaining FlashNext GPU layer cost. Closed after Metal trace attribution.
 - [#41](https://github.com/1architect/macqwen-releases/issues/41) Resolve reusable destination-ring performance. Closed with no resolved benefit; diagnostic remains disabled.
 - [#42](https://github.com/1architect/macqwen-releases/issues/42) Characterize the GPU-busy hump across drive miss levels. Closed after the reversed-order sweep.
+- [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under mixed residency. Closed on 2026-09-03: native Metal Q4 MoE scheduler (`metal_runtime_native.mm`) proved buffer memory barriers (`MTLBarrierScopeBuffers`) add 0.000 ms penalty over serial execution across 0 to 128 MB streaming SSD DMA (0.283 ms at 0 MB, 0.324 ms at 128 MB). GPU hardware execution increases by only ~14% due to memory bus fabric sharing; host CPU page fault and driver sync overhead accounts for the remaining ~30% rise.
 
 Follow-up issues from the 2026-09-01 sweep:
 
