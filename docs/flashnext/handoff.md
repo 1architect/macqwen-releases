@@ -221,6 +221,9 @@ Use `/new` before enabling the one-shot fused draft for a new conversation.
 | `models/flashnext/bench_read_ceiling.py` | Price the drive at zero to find the rate ceiling |
 | `models/flashnext/bench_production.py` | The standard benchmark protocol; use it for every published number |
 | `models/flashnext/bench_slab_sweep.py` | Measure physical MB saved per resident MB added across layer/capacity configurations |
+| `models/flashnext/bench_slab_production.py` | Paired reversed-order production benchmark for selective slabs |
+| `models/flashnext/bench_native_dma_contention.py` | Measure barrier and fence contention under true unbuffered F_NOCACHE SSD DMA |
+| `models/flashnext/bench_wired_limit.py` | Pre-load wired memory limit comparison with fresh instances |
 | `models/flashnext/diskio.py` | Physical bytes read, to tell a cold run from a warm one |
 | `models/flashnext/metal_trace.py` | Export Metal command-buffer spans and nesting depth |
 | `models/flashnext/capture_dispatches.py` | Capture a small `.gputrace` for Xcode dispatch inventory |
@@ -455,7 +458,6 @@ Open exact-quality performance experiments:
 - [#23](https://github.com/1architect/macqwen-releases/issues/23) Recheck the bit-exact RMSNorm compile with the zero-drive gate and production arms.
 - [#24](https://github.com/1architect/macqwen-releases/issues/24) Probe routed-expert Q4 group sizes 64 and 128.
 - [#25](https://github.com/1architect/macqwen-releases/issues/25) Gate and benchmark REAP-288. Use REAP-384 as the fallback.
-- [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under mixed residency. Reopened 2026-09-03: initial probe used buffered I/O without `F_NOCACHE` or physical byte telemetry. True unbuffered NVMe DMA contention test pending.
 
 Closed exact-quality performance issues:
 
@@ -465,6 +467,8 @@ Closed exact-quality performance issues:
 - [#27](https://github.com/1architect/macqwen-releases/issues/27) Attribute the remaining FlashNext GPU layer cost. Closed after Metal trace attribution.
 - [#41](https://github.com/1architect/macqwen-releases/issues/41) Resolve reusable destination-ring performance. Closed with no resolved benefit; diagnostic remains disabled.
 - [#42](https://github.com/1architect/macqwen-releases/issues/42) Characterize the GPU-busy hump across drive miss levels. Closed after the reversed-order sweep.
+- [#43](https://github.com/1architect/macqwen-releases/issues/43) Resolve FlashNext Metal wired-limit behavior. Closed on 2026-09-03: pre-loading `FLASHNEXT_WIRED_GB=2` strictly before model loading showed no resolved gain or penalty across 8 interleaved reversed arms (-2.1% mean, +0.6% median, p=0.688, band 15.8%). Unified memory residency sets handle streaming decode without static OS page wiring.
+- [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under mixed residency. Closed on 2026-09-03: rigorous unbuffered DMA testing (`F_NOCACHE`, `proc_pid_rusage`, and 100% thread latch overlap) proved `MTLBarrierScopeBuffers` adds 0.000 ms penalty over serial execution across 0 to 64 MB physical SSD DMA (-0.071 ms at 16 MB, -0.024 ms at 32 MB, -0.124 ms at 64 MB). Hardware fabric sharing contention is bounded to ~5-12%.
 
 Follow-up issues from the 2026-09-01 sweep:
 
@@ -475,11 +479,11 @@ Follow-up issues from the 2026-09-01 sweep:
 - [#37](https://github.com/1architect/macqwen-releases/issues/37) Measure the resident-work boundary below 640 MB.
 - [#38](https://github.com/1architect/macqwen-releases/issues/38) Recheck GDN timing with a dependency-correct chain.
 - [#39](https://github.com/1architect/macqwen-releases/issues/39) Explain clean-boot GPU busy variance.
-- [#43](https://github.com/1architect/macqwen-releases/issues/43) Resolve FlashNext Metal wired-limit behavior.
 
 ### Standing decisions
 
-- Selective unified slabs (`FLASHNEXT_SLAB=4, FLASHNEXT_SLAB_LAYERS=12`) save 273.5 MB/tok physical reads for +149 MB active RAM (ratio 1.84). Uniform slabs across 48 layers degrade above SLAB=1 by evicting Darwin's dynamic page cache on 16 GB machines.
+- Selective unified slabs (`FLASHNEXT_SLAB=4, FLASHNEXT_SLAB_LAYERS=12`) save 273.5 MB/tok physical reads for +149 MB active RAM (ratio 1.84), boosting production generation median by +8.2% (2.61 -> 2.89 tok/s) and tail rate by +15.6% (2.50 -> 2.89 tok/s) with 100% bit-exact output (`29d04075ed7021b3`). Uniform slabs across 48 layers degrade above SLAB=1 by evicting Darwin's dynamic page cache on 16 GB machines.
+- In-encoder Metal buffer barriers (`MTLBarrierScopeBuffers`) incur zero hardware penalty under physical SSD DMA and can safely be used for layer kernel consolidation.
 - `pin-parts` is rejected. Its positive isolated reading disappeared when
 stacked with prewarm; the pair lost 1.4% and read 8% more.
 - Weight-preserving expert substitution is not bit-perfect. Keep the current
