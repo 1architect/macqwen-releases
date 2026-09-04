@@ -12,11 +12,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import os
 from pathlib import Path
 import sys
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+
+from .boundary_profiler import BoundaryProfiler
 
 
 MAX_TOKENS = 8
@@ -227,6 +230,82 @@ QMV_MIXED_IMPL<T, 32, 4>(
 """
 
 
+_FUSED_UP_SWIGLU_BODY = r"""
+uint pair = threadgroup_position_in_grid.z;
+uint token = pair / SLOTS;
+uint slot = pair % SLOTS;
+uint raw_expert = routes[pair];
+const int in_size = IN_WIDTH;
+const int out_size = OUT_WIDTH;
+const device T* input = x + token * IN_WIDTH;
+device T* output = out + pair * OUT_WIDTH;
+const device T* gate_values = gate_out + pair * OUT_WIDTH;
+uint3 tid = uint3(0, threadgroup_position_in_grid.y, pair);
+
+#if SLAB_PACK_ENABLED
+bool in_slab = ((raw_expert & 0x80000000u) != 0);
+uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
+#if STREAM_PACK_ENABLED
+const device char* record_base = in_slab
+    ? ((const device char*)slab_pack) + 4096u + expert * 3072000u
+    : ((const device char*)stream_pack) + expert * 3072000u;
+decltype(weight) w_ptr = (decltype(weight))(record_base + PROJ_W_OFFSET);
+decltype(scales) s_ptr = (decltype(scales))(record_base + PROJ_S_OFFSET);
+decltype(biases) b_ptr = (decltype(biases))(record_base + PROJ_B_OFFSET);
+#else
+uint expert_offset = 4096u + expert * 3072000u;
+decltype(weight) w_ptr = in_slab
+    ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + PROJ_W_OFFSET)
+    : (weight + expert * OUT_WIDTH * (IN_WIDTH / 8));
+decltype(scales) s_ptr = in_slab
+    ? (decltype(scales))(((const device char*)slab_pack) + expert_offset + PROJ_S_OFFSET)
+    : (scales + expert * OUT_WIDTH * (IN_WIDTH / 32));
+decltype(biases) b_ptr = in_slab
+    ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + PROJ_B_OFFSET)
+    : (biases + expert * OUT_WIDTH * (IN_WIDTH / 32));
+#endif
+#elif SLAB_ENABLED
+bool in_slab = ((raw_expert & 0x80000000u) != 0);
+uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
+decltype(weight) w_ptr = (in_slab ? slab_weight : weight) + expert * OUT_WIDTH * (IN_WIDTH / 8);
+decltype(scales) s_ptr = (in_slab ? slab_scales : scales) + expert * OUT_WIDTH * (IN_WIDTH / 32);
+decltype(biases) b_ptr = (in_slab ? slab_biases : biases) + expert * OUT_WIDTH * (IN_WIDTH / 32);
+#else
+uint expert = raw_expert;
+decltype(weight) w_ptr = weight + expert * OUT_WIDTH * (IN_WIDTH / 8);
+decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / 32);
+decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / 32);
+#endif
+
+QMV_MIXED_IMPL<T, 32, 4>(
+    w_ptr, s_ptr, b_ptr,
+    input, output, in_size, out_size, tid,
+    simdgroup_index_in_threadgroup, thread_index_in_simdgroup);
+
+// MLX's bfloat16 sigmoid helper uses this stable, rounded sequence.
+uint out_base = threadgroup_position_in_grid.y * 8 +
+    simdgroup_index_in_threadgroup * 4;
+if (thread_index_in_simdgroup == 0) {
+#pragma unroll
+    for (uint row = 0; row < 4; ++row) {
+        uint col = out_base + row;
+        if (col < OUT_WIDTH) {
+            uint index = pair * OUT_WIDTH + col;
+            T gate_value = gate_values[col];
+            T up_value = output[col];
+            T magnitude = metal::abs(gate_value);
+            T exponent = metal::exp(magnitude);
+            T denominator = T(1) + exponent;
+            T small_sigmoid = T(1) / denominator;
+            T sigmoid = (gate_value < T(0)) ? small_sigmoid :
+                T(1) - small_sigmoid;
+            output[col] = (gate_value * sigmoid) * up_value;
+        }
+    }
+}
+"""
+
+
 @lru_cache(maxsize=1)
 def _mlx_qmv_header() -> str:
     """Load the exact Q4 vector helpers shipped with the active MLX wheel."""
@@ -391,6 +470,9 @@ class MetalMoEExecutor:
         *,
         max_tokens: int = MAX_TOKENS,
         max_width: int = MAX_WIDTH,
+        profile_boundaries: bool | None = None,
+        profile_boundary: str | None = None,
+        fused_up_swiglu: bool | None = None,
     ) -> None:
         if not 1 <= expert_count <= MAX_EXPERTS:
             raise ValueError(f"expert_count must be in 1..{MAX_EXPERTS}")
@@ -414,6 +496,31 @@ class MetalMoEExecutor:
         self.last_path = "reference"
         self.fallback_reason = self.capabilities["reason"]
         self._kernels: dict[tuple[Any, ...], Any] = {}
+        self._boundary_profiler = BoundaryProfiler(
+            profile_boundaries, boundary=profile_boundary
+        )
+        if fused_up_swiglu is None:
+            fused_up_swiglu = os.environ.get("FLASHNEXT_FUSED_UP_SWIGLU") == "1"
+        self.fused_up_swiglu = bool(fused_up_swiglu)
+
+    @property
+    def boundary_profile(self) -> dict[str, Any]:
+        """Return boundary events and totals for the latest executor calls."""
+        return self._boundary_profiler.snapshot()
+
+    def reset_boundary_profile(self) -> None:
+        """Discard collected boundary events without changing the opt-in flag."""
+        self._boundary_profiler.reset()
+
+    @staticmethod
+    def _complete_boundary(value: Any) -> None:
+        # Injected backends can return NumPy arrays in checkpoint-free tests.
+        # They have no deferred device graph to drain.
+        if isinstance(value, np.ndarray):
+            return
+        import mlx.core as mx
+
+        mx.eval(value)
 
     @property
     def available(self) -> bool:
@@ -479,13 +586,18 @@ class MetalMoEExecutor:
                     input_names.append("stream_pack")
             elif has_slab:
                 input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
+            kernel_name = (
+                f"flashnext_level1_q4g32_{proj_name}_pack"
+                + ("_stream" if has_stream_pack else "")
+                if has_slab_pack
+                else ("flashnext_level1_q4g32_slab" if has_slab else "flashnext_level1_q4g32")
+            )
+            if self._boundary_profiler.enabled and proj_name and self._boundary_profiler.selected_for(
+                proj_name.replace("_proj", "_qmv")
+            ):
+                kernel_name += f"_boundary_{proj_name.replace('_proj', '_qmv')}"
             kernel = maker(
-                name=(
-                    f"flashnext_level1_q4g32_{proj_name}_pack"
-                    + ("_stream" if has_stream_pack else "")
-                    if has_slab_pack
-                    else ("flashnext_level1_q4g32_slab" if has_slab else "flashnext_level1_q4g32")
-                ),
+                name=kernel_name,
                 input_names=input_names,
                 output_names=["out"],
                 source=body,
@@ -494,6 +606,84 @@ class MetalMoEExecutor:
                 compile_options={"math_mode": "safe"},
             )
             self._kernels[key] = kernel
+        return kernel
+
+    def _get_fused_up_swiglu_kernel(
+        self,
+        x: Any,
+        tokens: int,
+        slots: int,
+        input_width: int,
+        output_width: int,
+        has_slab: bool = False,
+        has_slab_pack: bool = False,
+        has_stream_pack: bool = False,
+        proj_name: str = "up_proj",
+    ) -> Any:
+        """Build the opt-in Up-QMV kernel with an inline SwiGLU epilogue."""
+        import mlx.core as mx
+
+        maker = getattr(self.backend, "metal_kernel", None)
+        if maker is None:
+            maker = mx.fast.metal_kernel
+        dtype = getattr(x, "dtype", None)
+        key = (
+            "fused-up-swiglu", str(dtype), tokens, slots, input_width,
+            output_width, has_slab, has_slab_pack, has_stream_pack, proj_name,
+        )
+        kernel = self._kernels.get(key)
+        if kernel is not None:
+            return kernel
+
+        body = _FUSED_UP_SWIGLU_BODY
+        body = body.replace("TOKENS", str(tokens))
+        body = body.replace("SLOTS", str(slots))
+        body = body.replace("IN_WIDTH", str(input_width))
+        body = body.replace("OUT_WIDTH", str(output_width))
+        body = body.replace("GROUPS", str(input_width // GROUP_SIZE))
+        body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
+        body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
+        body = body.replace(
+            "STREAM_PACK_ENABLED", "1" if has_stream_pack else "0"
+        )
+        body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
+        if has_slab_pack:
+            if proj_name == "up_proj":
+                w_off, s_off, b_off = 1024000, 1843200, 1945600
+            else:
+                w_off, s_off, b_off = 0, 819200, 921600
+            body = body.replace("PROJ_W_OFFSET", f"{w_off}u")
+            body = body.replace("PROJ_S_OFFSET", f"{s_off}u")
+            body = body.replace("PROJ_B_OFFSET", f"{b_off}u")
+        body = body.replace(
+            "QMV_MIXED_IMPL",
+            "qmv_fast_mixed_impl" if input_width % 512 == 0 else "qmv_mixed_impl",
+        )
+        input_names = ["x", "weight", "scales", "biases", "routes"]
+        if has_slab_pack:
+            input_names.append("slab_pack")
+            if has_stream_pack:
+                input_names.append("stream_pack")
+        elif has_slab:
+            input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
+        input_names.append("gate_out")
+        kernel = maker(
+            name=(
+                "flashnext_level1_q4g32_up_swiglu_pack"
+                if has_slab_pack
+                else (
+                    "flashnext_level1_q4g32_up_swiglu_slab"
+                    if has_slab else "flashnext_level1_q4g32_up_swiglu"
+                )
+            ),
+            input_names=input_names,
+            output_names=["out"],
+            source=body,
+            header=_mlx_qmv_header(),
+            ensure_row_contiguous=True,
+            compile_options={"math_mode": "safe"},
+        )
+        self._kernels[key] = kernel
         return kernel
 
     def _get_fused_down_kernel(
@@ -553,8 +743,11 @@ class MetalMoEExecutor:
                 suffix += "_shared"
             elif has_shared_parts:
                 suffix += "_shared_parts"
+            kernel_name = f"flashnext_level1_q4g32_down_combine{suffix}"
+            if self._boundary_profiler.selected_for("fused_down"):
+                kernel_name += "_boundary_fused_down"
             kernel = maker(
-                name=f"flashnext_level1_q4g32_down_combine{suffix}",
+                name=kernel_name,
                 input_names=input_names,
                 output_names=["out"],
                 source=body,
@@ -564,6 +757,68 @@ class MetalMoEExecutor:
             )
             self._kernels[key] = kernel
         return kernel
+
+    def _metal_fused_up_swiglu(
+        self,
+        x: Any,
+        routes: Any,
+        gate_out: Any,
+        up: Q4G32Projection,
+        output_width: int,
+        slab_up: Q4G32Projection | None = None,
+        slab_pack: Any = None,
+        stream_pack: Any = None,
+    ) -> Any:
+        """Run Up QMV and consume gate output in the same Metal dispatch."""
+        import mlx.core as mx
+
+        tokens, input_width = _shape(x)[0], _shape(x)[-1]
+        slots = _shape(routes)[1]
+        has_slab = slab_up is not None
+        has_slab_pack = slab_pack is not None
+        has_stream_pack = stream_pack is not None
+        if has_stream_pack and not has_slab_pack:
+            raise ValueError("stream pack requires a resident slab pack")
+        kernel = self._get_fused_up_swiglu_kernel(
+            x, tokens, slots, input_width, output_width,
+            has_slab=has_slab, has_slab_pack=has_slab_pack,
+            has_stream_pack=has_stream_pack,
+        )
+        inputs = [x, up.weight, up.scales, up.biases, routes]
+        if has_slab_pack:
+            inputs.append(slab_pack)
+            if has_stream_pack:
+                inputs.append(stream_pack)
+        elif has_slab:
+            inputs.extend([slab_up.weight, slab_up.scales, slab_up.biases])
+        # Keeping gate_out as the final input makes the dependency explicit.
+        inputs.append(gate_out)
+
+        if not self._boundary_profiler.enabled:
+            result = kernel(
+                inputs=inputs,
+                template=[("T", x.dtype)],
+                grid=(32, ((output_width + 7) // 8) * 2, tokens * slots),
+                threadgroup=(32, 2, 1),
+                output_shapes=[(tokens, slots, output_width)],
+                output_dtypes=[x.dtype],
+            )
+            return result[0] if isinstance(result, (tuple, list)) else result
+
+        def issue():
+            result = kernel(
+                inputs=inputs,
+                template=[("T", x.dtype)],
+                grid=(32, ((output_width + 7) // 8) * 2, tokens * slots),
+                threadgroup=(32, 2, 1),
+                output_shapes=[(tokens, slots, output_width)],
+                output_dtypes=[x.dtype],
+            )
+            return result[0] if isinstance(result, (tuple, list)) else result
+
+        return self._boundary_profiler.measure(
+            "swiglu", issue, self._complete_boundary
+        )
 
     def _metal_fused_down_combine(
         self, x, routes, scores, down, output_width, slab_down=None, slab_pack=None,
@@ -607,15 +862,31 @@ class MetalMoEExecutor:
                 shared.reshape(tokens, output_width),
                 shared_gate.reshape(tokens),
             ])
-        result = kernel(
-            inputs=inputs,
-            template=[("T", x.dtype)],
-            grid=(((output_width + 7) // 8) * 64, 1, tokens),
-            threadgroup=(64, 1, 1),
-            output_shapes=[(tokens, output_width)],
-            output_dtypes=[x.dtype],
+        if not self._boundary_profiler.enabled:
+            result = kernel(
+                inputs=inputs,
+                template=[("T", x.dtype)],
+                grid=(((output_width + 7) // 8) * 64, 1, tokens),
+                threadgroup=(64, 1, 1),
+                output_shapes=[(tokens, output_width)],
+                output_dtypes=[x.dtype],
+            )
+            return result[0] if isinstance(result, (tuple, list)) else result
+
+        def issue():
+            result = kernel(
+                inputs=inputs,
+                template=[("T", x.dtype)],
+                grid=(((output_width + 7) // 8) * 64, 1, tokens),
+                threadgroup=(64, 1, 1),
+                output_shapes=[(tokens, output_width)],
+                output_dtypes=[x.dtype],
+            )
+            return result[0] if isinstance(result, (tuple, list)) else result
+
+        return self._boundary_profiler.measure(
+            "fused_down", issue, self._complete_boundary
         )
-        return result[0] if isinstance(result, (tuple, list)) else result
 
     def _metal_projection(
         self,
@@ -653,14 +924,38 @@ class MetalMoEExecutor:
                 inputs.append(stream_pack)
         elif has_slab:
             inputs.extend([slab_projection.weight, slab_projection.scales, slab_projection.biases])
-        result = kernel(
-            inputs=inputs,
-            template=[("T", x.dtype)],
-            grid=(32, ((output_width + 7) // 8) * 2, tokens * slots),
-            threadgroup=(32, 2, 1),
-            output_shapes=[(tokens, slots, output_width)],
-            output_dtypes=[x.dtype],
-        )
+        if not self._boundary_profiler.enabled:
+            result = kernel(
+                inputs=inputs,
+                template=[("T", x.dtype)],
+                grid=(32, ((output_width + 7) // 8) * 2, tokens * slots),
+                threadgroup=(32, 2, 1),
+                output_shapes=[(tokens, slots, output_width)],
+                output_dtypes=[x.dtype],
+            )
+            return result[0] if isinstance(result, (tuple, list)) else result
+
+        def issue():
+            result = kernel(
+                inputs=inputs,
+                template=[("T", x.dtype)],
+                grid=(32, ((output_width + 7) // 8) * 2, tokens * slots),
+                threadgroup=(32, 2, 1),
+                output_shapes=[(tokens, slots, output_width)],
+                output_dtypes=[x.dtype],
+            )
+            return result[0] if isinstance(result, (tuple, list)) else result
+
+        label = {
+            "gate_proj": "gate_qmv",
+            "up_proj": "up_qmv",
+            "down_proj": "down_qmv",
+        }.get(proj_name)
+        if label is not None:
+            return self._boundary_profiler.measure(
+                label, issue, self._complete_boundary
+            )
+        result = issue()
         return result[0] if isinstance(result, (tuple, list)) else result
 
     def _reference_projection(
@@ -801,14 +1096,30 @@ class MetalMoEExecutor:
                 slab_pack=slab_pack, stream_pack=stream_pack,
                 proj_name="gate_proj"
             )
-            up_out = self._metal_projection(
-                x, routes, up, inter_width, False, slab_projection=slab_up,
-                slab_pack=slab_pack, stream_pack=stream_pack,
-                proj_name="up_proj"
-            )
-            from mlx_vlm.models.activations import swiglu
+            # return_all exposes the raw Up projection for verification. Keep
+            # that diagnostic API unchanged when the fusion flag is enabled.
+            if self.fused_up_swiglu and not return_all:
+                activation = self._metal_fused_up_swiglu(
+                    x, routes, gate_out, up, inter_width,
+                    slab_up=slab_up, slab_pack=slab_pack,
+                    stream_pack=stream_pack,
+                )
+            else:
+                up_out = self._metal_projection(
+                    x, routes, up, inter_width, False, slab_projection=slab_up,
+                    slab_pack=slab_pack, stream_pack=stream_pack,
+                    proj_name="up_proj"
+                )
+                from mlx_vlm.models.activations import swiglu
 
-            activation = swiglu(gate_out, up_out)
+                if self._boundary_profiler.enabled:
+                    activation = self._boundary_profiler.measure(
+                        "swiglu",
+                        lambda: swiglu(gate_out, up_out),
+                        self._complete_boundary,
+                    )
+                else:
+                    activation = swiglu(gate_out, up_out)
             if scores is not None and not return_all:
                 down_out = self._metal_fused_down_combine(
                     activation, routes, scores, down, self.hidden_size,
@@ -900,6 +1211,7 @@ __all__ = [
     "MAX_TOKENS",
     "MAX_TOP_K",
     "MAX_WIDTH",
+    "BoundaryProfiler",
     "MetalCapabilities",
     "MetalMoEExecutor",
     "Q4G32Projection",

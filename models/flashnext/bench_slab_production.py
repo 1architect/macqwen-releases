@@ -35,6 +35,8 @@ sys.path.insert(
 
 import mlx.core as mx
 
+from models.flashnext.boundary_profiler import BOUNDARY_LABELS
+
 PROMPT = (
     "<|im_start|>user\nExplique a fotossintese em duas frases."
     "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
@@ -50,6 +52,72 @@ CAPACITY_PINS = Path("~/.cache/flashnext/capacity-sweep-pins.json").expanduser()
 CAPACITY_OBSERVED_PINS = Path(
     "~/.cache/flashnext/capacity-sweep-observed.json"
 ).expanduser()
+
+
+def aggregate_boundary_profiles(
+    snapshots: list[dict], tokens: int,
+) -> dict:
+    """Combine executor boundary totals and report milliseconds per token."""
+    totals = {
+        label: {
+            "count": 0,
+            "issue_ms": 0.0,
+            "completion_ms": 0.0,
+            "total_ms": 0.0,
+        }
+        for label in BOUNDARY_LABELS
+    }
+    selected = []
+    enabled = False
+    for snapshot in snapshots:
+        enabled = enabled or bool(snapshot.get("enabled", False))
+        for label in snapshot.get("selected", ()):
+            if label in BOUNDARY_LABELS and label not in selected:
+                selected.append(label)
+        for label, values in snapshot.get("totals", {}).items():
+            if label not in totals:
+                continue
+            total = totals[label]
+            for key in ("count", "issue_ms", "completion_ms", "total_ms"):
+                total[key] += values.get(key, 0)
+    per_token = {}
+    divisor = float(tokens) if tokens > 0 else 0.0
+    for label, values in totals.items():
+        per_token[label] = {
+            "issue_ms": round(values["issue_ms"] / divisor, 3) if divisor else 0.0,
+            "completion_ms": round(values["completion_ms"] / divisor, 3)
+            if divisor else 0.0,
+            "total_ms": round(values["total_ms"] / divisor, 3) if divisor else 0.0,
+        }
+    return {
+        "enabled": enabled,
+        "selected": selected,
+        "executor_count": len(snapshots),
+        "totals": totals,
+        "per_token": per_token,
+    }
+
+
+def collect_boundary_profiles(backend) -> list[dict]:
+    """Collect snapshots from every cached Metal executor in the backend."""
+    snapshots = []
+    language = getattr(backend, "language", None)
+    layers = getattr(language, "layers", ()) if language is not None else ()
+    seen = set()
+    for layer in layers:
+        mlp = getattr(layer, "mlp", None)
+        switch = getattr(mlp, "switch_mlp", None)
+        executors = getattr(switch, "_metal_executors", None)
+        if not hasattr(executors, "values"):
+            continue
+        for executor in executors.values():
+            if id(executor) in seen:
+                continue
+            seen.add(id(executor))
+            profile = getattr(executor, "boundary_profile", None)
+            if profile is not None:
+                snapshots.append(profile)
+    return snapshots
 
 
 def system_boot_time() -> int:
@@ -159,7 +227,8 @@ def require_prepared_capacity_packs(allow_same_boot: bool = False) -> None:
 def configure_arm(
     slab: int, layers: int, global_budget: int, slab_pack: bool,
     policy: str, fuse_shared: bool, fuse_shared_parts: bool, stream_pack: int,
-    require_existing_pack: bool,
+    require_existing_pack: bool, boundary_profile: str | None = None,
+    fuse_up_swiglu: bool = False,
 ) -> None:
     """Apply one complete slab configuration before importing the backend."""
     os.environ["FLASHNEXT_METAL_RUNTIME"] = "1"
@@ -186,10 +255,18 @@ def configure_arm(
     )
     os.environ["FLASHNEXT_STREAM_PACK"] = "1" if stream_pack else "0"
     os.environ["FLASHNEXT_STREAM_PACK_CHUNK"] = str(max(0, stream_pack))
+    os.environ["FLASHNEXT_FUSED_UP_SWIGLU"] = "1" if fuse_up_swiglu else "0"
     os.environ["FLASHNEXT_PREWARM"] = "0"
     os.environ["FLASHNEXT_WARM"] = "0"
     os.environ["FLASHNEXT_EARLY_SUBMIT"] = "0"
     os.environ["FLASHNEXT_PROFILE_IO"] = "1"
+    os.environ.pop("FLASHNEXT_PROFILE_BOUNDARIES", None)
+    if boundary_profile is None:
+        os.environ.pop("FLASHNEXT_PROFILE_BOUNDARY", None)
+    else:
+        if boundary_profile not in BOUNDARY_LABELS:
+            raise ValueError(f"unknown boundary profile: {boundary_profile}")
+        os.environ["FLASHNEXT_PROFILE_BOUNDARY"] = boundary_profile
 
 
 def close_store(store) -> None:
@@ -247,11 +324,15 @@ def run_arm(
     slab: int, layers: int, tokens: int, global_budget: int = 0, slab_pack: bool = False,
     policy: str = "skew", fuse_shared: bool = True,
     fuse_shared_parts: bool = False, stream_pack: int = 0,
+    boundary_profile: str | None = None,
+    fuse_up_swiglu: bool = False,
 ) -> dict:
     configure_arm(
         slab, layers, global_budget, slab_pack, policy, fuse_shared,
         fuse_shared_parts, stream_pack,
         require_existing_pack=True,
+        boundary_profile=boundary_profile,
+        fuse_up_swiglu=fuse_up_swiglu,
     )
 
     from macqwen.backends.flashnext import FlashNextBackend
@@ -302,6 +383,11 @@ def run_arm(
         raise RuntimeError("Physical read telemetry is unavailable")
     vm_after = vm_counters()
     profile = profile_totals()
+    boundary_summary = None
+    if boundary_profile is not None:
+        boundary_summary = aggregate_boundary_profiles(
+            collect_boundary_profiles(backend), stats.tokens
+        )
 
     # Collect slab statistics
     hits, misses = 0, 0
@@ -347,7 +433,7 @@ def run_arm(
     del backend
     close_store(store)
 
-    return {
+    result = {
         "slab": slab,
         "layers": layers,
         "global_budget": global_budget,
@@ -377,6 +463,9 @@ def run_arm(
         "vm_per_token": vm_per_token,
         "wall_s": round(wall, 2),
     }
+    if boundary_summary is not None:
+        result["boundary_profile"] = boundary_summary
+    return result
 
 
 def prepare_pack(name: str, definition: tuple) -> dict:
@@ -509,6 +598,12 @@ def main():
     )
     parser.add_argument("--pause", type=float, default=2.5, help="Pause seconds between arms")
     parser.add_argument(
+        "--boundary-profile",
+        choices=BOUNDARY_LABELS,
+        default=None,
+        help="Force completion at one Metal graph boundary per arm",
+    )
+    parser.add_argument(
         "--capacity-sweep", action="store_true",
         help="Run the trusted 56, 60, and 64-slot skew sweep",
     )
@@ -529,6 +624,7 @@ def main():
             "slabpack56_uniform", "slabpack56_skew", "slabpack56_skew_unfused",
             "slabpack60_skew", "slabpack60_skew_f5",
             "slabpack60_skew_f5c2", "slabpack60_skew_f5c3",
+            "slabpack60_skew_f10_up",
             "slabpack60_skew_8a", "slabpack60_skew_8b",
             "slabpack60_skew_unfused", "slabpack64_skew",
         ],
@@ -543,6 +639,7 @@ def main():
             "slabpack56_uniform", "slabpack56_skew", "slabpack56_skew_unfused",
             "slabpack60_skew", "slabpack60_skew_f5",
             "slabpack60_skew_f5c2", "slabpack60_skew_f5c3",
+            "slabpack60_skew_f10_up",
             "slabpack60_skew_8a", "slabpack60_skew_8b",
             "slabpack60_skew_unfused", "slabpack64_skew",
         ],
@@ -569,6 +666,7 @@ def main():
         "slabpack60_skew_f5": (0, 0, 60, True, "skew", True, False, -1),
         "slabpack60_skew_f5c2": (0, 0, 60, True, "skew", True, False, 2),
         "slabpack60_skew_f5c3": (0, 0, 60, True, "skew", True, False, 3),
+        "slabpack60_skew_f10_up": (0, 0, 60, True, "skew", True, False, False),
         "slabpack60_skew_8a": (0, 0, 60, True, "skew", True, False, False),
         "slabpack60_skew_8b": (0, 0, 60, True, "skew", True, True, False),
         "slabpack60_skew_unfused": (0, 0, 60, True, "skew", False, False, False),
@@ -648,12 +746,17 @@ def main():
         if stream_pack:
             chunk = "all" if stream_pack < 0 else str(stream_pack)
             fuse_str += f", STREAM_PACK={chunk}"
+        fuse_up_swiglu = name == "slabpack60_skew_f10_up"
+        if fuse_up_swiglu:
+            fuse_str += ", FUSED_UP_SWIGLU=1"
         print(f"Arm {idx:2d}/{len(schedule)}: Running {name:<24} (SLAB={slab}, LAYERS={layers}, GLOBAL={global_b}{pack_str}{fuse_str})...", flush=True)
         res = run_arm(
             slab, layers, args.tokens, global_b, slab_pack=s_pack,
             policy=policy, fuse_shared=f_shared,
             fuse_shared_parts=f_shared_parts,
             stream_pack=stream_pack,
+            boundary_profile=args.boundary_profile,
+            fuse_up_swiglu=fuse_up_swiglu,
         )
         collected[name].append(res)
         print(
@@ -678,6 +781,15 @@ def main():
             f"requested={res['pread_mb_tok']:.1f} MB/tok",
             flush=True,
         )
+        if args.boundary_profile is not None:
+            selected = res["boundary_profile"]["per_token"][args.boundary_profile]
+            print(
+                f"     Boundary {args.boundary_profile}: "
+                f"issue={selected['issue_ms']:.3f}, "
+                f"completion={selected['completion_ms']:.3f}, "
+                f"total={selected['total_ms']:.3f} ms/tok",
+                flush=True,
+            )
         if idx < len(schedule):
             time.sleep(args.pause)
 

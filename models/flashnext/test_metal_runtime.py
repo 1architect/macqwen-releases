@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import os
 import sys
 import unittest
 import unittest.mock
@@ -95,6 +96,25 @@ class MetalRuntimeArgumentTests(unittest.TestCase):
 
 
 class MetalRuntimeCapabilityTests(unittest.TestCase):
+    def test_up_swiglu_fusion_defaults_off_and_constructor_can_enable_it(self):
+        old = os.environ.pop("FLASHNEXT_FUSED_UP_SWIGLU", None)
+        try:
+            default = MetalMoEExecutor(expert_count=2, hidden_size=32, top_k=1)
+            self.assertFalse(default.fused_up_swiglu)
+            enabled = MetalMoEExecutor(
+                expert_count=2, hidden_size=32, top_k=1,
+                fused_up_swiglu=True,
+            )
+            self.assertTrue(enabled.fused_up_swiglu)
+            os.environ["FLASHNEXT_FUSED_UP_SWIGLU"] = "1"
+            from_env = MetalMoEExecutor(expert_count=2, hidden_size=32, top_k=1)
+            self.assertTrue(from_env.fused_up_swiglu)
+        finally:
+            if old is None:
+                os.environ.pop("FLASHNEXT_FUSED_UP_SWIGLU", None)
+            else:
+                os.environ["FLASHNEXT_FUSED_UP_SWIGLU"] = old
+
     def test_capabilities_report_unavailable_backend_without_constructing_kernel(self):
         backend = SimpleNamespace(available=False, supports_custom_moe=False)
 
@@ -133,6 +153,67 @@ class MetalRuntimeCapabilityTests(unittest.TestCase):
                 np.zeros((1, 1), dtype=np.int32),
                 np.ones((1, 1), dtype=np.float32),
             )
+
+
+class MetalRuntimeFusedUpSwiGLUTests(unittest.TestCase):
+    def test_production_shape_fused_up_swiglu_is_bit_exact(self):
+        import mlx.core as mx
+
+        caps = probe_capabilities()
+        if not caps["available"]:
+            raise unittest.SkipTest(caps["reason"])
+
+        hidden = 2560
+        inter = 640
+        experts = 4
+        rng = np.random.default_rng(123)
+
+        def make_projection(out_width, in_width, seed):
+            local = np.random.default_rng(seed)
+            weights = mx.array(
+                local.integers(
+                    0, 16, size=(experts, out_width, in_width // 8),
+                    dtype=np.uint32,
+                )
+            )
+            scales = mx.array(
+                local.normal(0.08, 0.01, size=(experts, out_width, in_width // 32))
+                .astype(np.float16)
+            ).astype(mx.bfloat16)
+            biases = mx.array(
+                local.normal(0.0, 0.01, size=(experts, out_width, in_width // 32))
+                .astype(np.float16)
+            ).astype(mx.bfloat16)
+            return weights, scales, biases
+
+        projections = {
+            "gate_proj": make_projection(inter, hidden, 1),
+            "up_proj": make_projection(inter, hidden, 2),
+            "down_proj": make_projection(hidden, inter, 3),
+        }
+        x = mx.array(rng.normal(0.0, 0.1, size=(1, hidden)).astype(np.float32)).astype(
+            mx.bfloat16
+        )
+
+        for top_k in (1, 4):
+            with self.subTest(top_k=top_k):
+                routes = mx.array([list(range(top_k))], dtype=mx.uint32)
+                scores = mx.array(
+                    [[1.0 / top_k] * top_k], dtype=mx.float32
+                )
+                fused = MetalMoEExecutor(
+                    expert_count=experts, hidden_size=hidden, top_k=top_k,
+                    fused_up_swiglu=True,
+                ).execute(x, routes, projections, scores=scores)
+                normal = MetalMoEExecutor(
+                    expert_count=experts, hidden_size=hidden, top_k=top_k,
+                    fused_up_swiglu=False,
+                ).execute(x, routes, projections, scores=scores)
+                mx.eval(fused, normal)
+                np.testing.assert_array_equal(
+                    np.asarray(fused.view(mx.uint16)),
+                    np.asarray(normal.view(mx.uint16)),
+                )
 
 
 class MetalRuntimeMathTests(unittest.TestCase):

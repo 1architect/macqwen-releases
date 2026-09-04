@@ -4423,3 +4423,56 @@ components occupy separate file ranges. Task coalescing does not remove those
 positioned reads. It only changes destination layout and worker grouping.
 Keep `FLASHNEXT_STREAM_PACK=0`. Retain the implementation as an opt-in
 experiment. Do not add its 37.9 MB active-memory cost to the standard path.
+
+### 19. Incremental Frontier 10 Boundary Attribution and Up-to-SwiGLU Fusion
+Measured 2026-09-04.
+
+Frontier 10 now profiles one forced completion boundary per diagnostic arm.
+The profiler records host issue time and the `mx.eval` completion drain for
+Gate QMV, Up QMV, SwiGLU, down QMV, or fused down. It stays disabled by default.
+
+Four separate same-boot, 16-token standard-control probes measured:
+
+| Forced boundary | Issue ms/token | Completion ms/token | Total ms/token |
+|---|---:|---:|---:|
+| Gate QMV | 0.34 | 68.70 | 69.04 |
+| Up QMV | 0.24 | 61.23 | 61.47 |
+| SwiGLU | 0.15 | 57.29 | 57.44 |
+| Fused down | 0.24 | 90.69 | 90.93 |
+
+The runs had different physical-read states, from 850 to 1,110 MB/token.
+Do not rank the boundaries from these absolute values. The result establishes
+that each nominal boundary can pay substantial deferred work. Issue time is
+below 0.4 ms/token in every arm.
+
+Score-sync attribution confirms that the threshold path is active in all 48
+layers. After the first token, tokens 3 through 8 blocked for 102.71 to
+143.46 ms/token. The read pool had zero queued and zero running tasks at both
+edges. Physical reads were zero on five of those six tokens and 0.229 MB on
+the other. Score sync primarily pays outstanding GPU work from earlier graph
+operations.
+
+The SwiGLU arithmetic gate tested all 65,536 bfloat16 gate encodings at Up
+patterns `0x3f80` and `0x3f9e`. A float32 Metal sigmoid sequence produced
+1,379 and 1,671 mismatches. The MLX Metal-header bfloat16 sequence produced
+zero mismatches for both Up patterns.
+
+The production prototype keeps Gate QMV separate. The Up-QMV kernel reads the
+completed gate output, applies the exact MLX-header SwiGLU sequence in its
+store epilogue, and writes activation directly. It removes `up_out` and the
+separate SwiGLU dispatch. `FLASHNEXT_FUSED_UP_SWIGLU` controls the path and
+defaults to `0`.
+
+A 12-arm, six-pair reversed comparison used the 60-slot Frontier 8A control:
+
+| Condition | Gen median | Range | Tail median | Physical MB/token | I/O wait ms/token | Active MB |
+|---|---:|---:|---:|---:|---:|---:|
+| Standard 60-slot 8A | 2.81 | 2.51..2.92 | 2.80 | 575.8 | 313.43 | 3620.7 |
+| Up-QMV to SwiGLU | 2.87 | 2.70..2.92 | 2.83 | 557.9 | 306.97 | 3620.7 |
+
+The fusion measured +3.3% mean and +2.0% median paired speedup. It won four
+of six pairs with sign-test value 0.344. The result stays inside the 14.8%
+resolution band. Every arm kept digest `29d04075ed7021b3`.
+
+Keep the fusion disabled. The experiment supports incremental boundary work,
+but it does not support promotion from this same-boot run.

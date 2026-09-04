@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Tuple
@@ -45,16 +46,79 @@ _POOL = ThreadPoolExecutor(
 )
 
 
+# This state is diagnostic only. It does not control submission or worker
+# selection. Set FLASHNEXT_PROFILE_SCORE_SYNC=1 to collect score-sync data.
+# Keep it disabled unless score-sync or full I/O profiling is on.
+_SCORE_SYNC_PROFILE = os.environ.get("FLASHNEXT_PROFILE_SCORE_SYNC") == "1"
+_POOL_STATE_LOCK = threading.Lock()
+_POOL_STATE = {"queued": 0, "running": 0, "completed": 0}
+
+
+def _pool_state_profile_enabled() -> bool:
+    return _PROFILE or _SCORE_SYNC_PROFILE
+
+
+def _pool_submit() -> None:
+    if not _pool_state_profile_enabled():
+        return
+    with _POOL_STATE_LOCK:
+        _POOL_STATE["queued"] += 1
+
+
+def _pool_started() -> None:
+    with _POOL_STATE_LOCK:
+        _POOL_STATE["queued"] -= 1
+        _POOL_STATE["running"] += 1
+
+
+def _pool_finished() -> None:
+    with _POOL_STATE_LOCK:
+        _POOL_STATE["running"] -= 1
+        _POOL_STATE["completed"] += 1
+
+
+def read_pool_state() -> dict:
+    """Return the diagnostic read-pool state without changing scheduling."""
+    with _POOL_STATE_LOCK:
+        return dict(_POOL_STATE)
+
+
+def _tracked_read_call(function, *args):
+    _pool_started()
+    try:
+        return function(*args)
+    finally:
+        _pool_finished()
+
+
+def _physical_bytes_read() -> int:
+    """Return physical bytes, or -1 when the platform counter is unavailable."""
+    from models.flashnext.diskio import disk_bytes_read
+
+    return disk_bytes_read()
+
+
 def _submit_read(*args):
     """Hand one read to the pool, counted while `hostwindow` is on.
 
     The counter is what lets a host window claim the drive was idle. Without
     it the claim is an argument about the code rather than a measurement.
     """
-    if _PROFILE:
-        future = _POOL.submit(_profiled_read_call, time.perf_counter(), *args)
-    else:
-        future = _POOL.submit(*args)
+    tracked = _pool_state_profile_enabled()
+    if tracked:
+        _pool_submit()
+    try:
+        if _PROFILE:
+            future = _POOL.submit(_profiled_read_call, time.perf_counter(), *args)
+        elif tracked:
+            future = _POOL.submit(_tracked_read_call, *args)
+        else:
+            future = _POOL.submit(*args)
+    except BaseException:
+        if tracked:
+            with _POOL_STATE_LOCK:
+                _POOL_STATE["queued"] -= 1
+        raise
     return hostwindow.track(future) if hostwindow.ENABLED else future
 
 
@@ -87,6 +151,16 @@ _TIMERS = {
     "topk_python": 0.0,
     "shared_expert": 0.0,
     "score_sync_bytes": 0.0,
+    "score_sync_physical_bytes": 0,
+    "score_sync_calls": 0,
+    "score_sync_threshold_active": 0,
+    "score_sync_threshold_inactive": 0,
+    "score_sync_pool_queued_before": 0,
+    "score_sync_pool_queued_after": 0,
+    "score_sync_pool_running_before": 0,
+    "score_sync_pool_running_after": 0,
+    "score_sync_pool_completed_before": 0,
+    "score_sync_pool_completed_after": 0,
     "io_calls": 0,
     "read_tasks": 0,
     "pread_calls": 0,
@@ -115,6 +189,9 @@ def reset_profile() -> None:
     for key in _TIMERS:
         _TIMERS[key] = 0.0
     _TIMERS["io_calls"] = 0
+    with _POOL_STATE_LOCK:
+        if _POOL_STATE["queued"] == 0 and _POOL_STATE["running"] == 0:
+            _POOL_STATE["completed"] = 0
 
 
 def set_profile(enabled: bool) -> None:
@@ -125,6 +202,78 @@ def set_profile(enabled: bool) -> None:
 
 def profile_enabled() -> bool:
     return bool(_PROFILE)
+
+
+def set_score_sync_profile(enabled: bool) -> None:
+    """Enable score-sync attribution without enabling other I/O timers."""
+    global _SCORE_SYNC_PROFILE
+    _SCORE_SYNC_PROFILE = bool(enabled)
+
+
+def score_sync_profile_enabled() -> bool:
+    return bool(_SCORE_SYNC_PROFILE or _PROFILE)
+
+
+def score_sync_begin(threshold_active: bool):
+    """Start one opt-in score-sync attribution span.
+
+    A false threshold records an inactive path and returns no timing handle.
+    """
+    if not (_SCORE_SYNC_PROFILE or _PROFILE):
+        return None
+    if not threshold_active:
+        _TIMERS["score_sync_threshold_inactive"] += 1
+        return None
+    _TIMERS["score_sync_threshold_active"] += 1
+    return (
+        time.perf_counter(),
+        _physical_bytes_read(),
+        read_pool_state(),
+    )
+
+
+def score_sync_end(handle) -> None:
+    """Finish one score-sync span and add its wall, byte, and pool totals."""
+    if handle is None:
+        return
+    began, bytes_before, pool_before = handle
+    ended = time.perf_counter()
+    bytes_after = _physical_bytes_read()
+    pool_after = read_pool_state()
+    elapsed = ended - began
+    physical = (
+        bytes_after - bytes_before
+        if bytes_before >= 0 and bytes_after >= bytes_before
+        else 0
+    )
+    _TIMERS["score_sync"] += elapsed
+    _TIMERS["score_sync_bytes"] += physical
+    _TIMERS["score_sync_physical_bytes"] += physical
+    _TIMERS["score_sync_calls"] += 1
+    for state in ("queued", "running", "completed"):
+        _TIMERS[f"score_sync_pool_{state}_before"] += pool_before[state]
+        _TIMERS[f"score_sync_pool_{state}_after"] += pool_after[state]
+
+
+def score_sync_totals() -> dict:
+    """Return score-sync attribution in stable, human-readable fields."""
+    totals = profile_totals()
+    active = totals["score_sync_threshold_active"]
+    return {
+        "wall_seconds": totals["score_sync"],
+        "physical_bytes": totals["score_sync_physical_bytes"],
+        "calls": totals["score_sync_calls"],
+        "threshold_active_calls": active,
+        "threshold_inactive_calls": totals["score_sync_threshold_inactive"],
+        "threshold_path_active": bool(active),
+        "pool": {
+            state: {
+                "before": totals[f"score_sync_pool_{state}_before"],
+                "after": totals[f"score_sync_pool_{state}_after"],
+            }
+            for state in ("queued", "running", "completed")
+        },
+    }
 
 
 class _ProfiledRead:
@@ -145,11 +294,13 @@ class _ProfiledRead:
 
 def _profiled_read_call(submitted, function, *args):
     started = time.perf_counter()
+    _pool_started()
     begin_read_profile()
     try:
         value = function(*args)
     finally:
         stats = finish_read_profile()
+        _pool_finished()
     ended = time.perf_counter()
     return _ProfiledRead(value, submitted, started, ended, stats)
 

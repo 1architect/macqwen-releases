@@ -76,9 +76,12 @@ def _moe_call(self, x: mx.array) -> mx.array:
     from models.flashnext.expert_cache import (
         _EARLY_SUBMIT,
         _PROFILE,
+        _SCORE_SYNC_PROFILE,
         _TIMERS,
         _WARM_ON,
         record_layer,
+        score_sync_begin,
+        score_sync_end,
         warm_layer,
     )
 
@@ -99,6 +102,10 @@ def _moe_call(self, x: mx.array) -> mx.array:
         "_flashnext_threshold",
         _LAYER_THRESHOLDS.get(layer_id, _THRESHOLD[0]),
     )
+    score_profile_enabled = _PROFILE or _SCORE_SYNC_PROFILE
+    if score_profile_enabled and threshold >= 1.0:
+        # Keep the profiler's activation count explicit for the exact path.
+        score_sync_begin(False)
     if threshold < 1.0:
         order = mx.argsort(-scores, axis=-1)
         inds = mx.take_along_axis(inds, order, axis=-1)
@@ -113,23 +120,20 @@ def _moe_call(self, x: mx.array) -> mx.array:
             and scores.size // k <= _SWAP_MAX_ROWS[0]
         )
         needed = _EARLY_SUBMIT or _WARM_ON or swap_active or _ONE_SYNC
-        if _PROFILE:
-            # Count physical bytes across the drain as well as time. The dense
-            # core is file-backed and this machine runs near zero free memory,
-            # so a GPU drain that is really a page fault storm would look the
-            # same on the clock and completely different here.
-            from models.flashnext.diskio import disk_bytes_read
-
-            read_before = disk_bytes_read()
-            began = time.perf_counter()
-            mx.eval(scores, inds) if needed else mx.eval(scores)
-            _TIMERS["score_sync"] += time.perf_counter() - began
-            _TIMERS["score_sync_bytes"] += disk_bytes_read() - read_before
-            python_began = time.perf_counter()
+        if score_profile_enabled:
+            score_handle = score_sync_begin(True)
+            try:
+                if needed:
+                    mx.eval(scores, inds)
+                else:
+                    mx.eval(scores)
+            finally:
+                score_sync_end(score_handle)
         elif needed:
             mx.eval(scores, inds)
         else:
             mx.eval(scores)
+        python_began = time.perf_counter()
         keeps = []
         fit_keeps = []
         minimum = max(

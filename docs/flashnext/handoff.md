@@ -132,7 +132,18 @@ What changed in the code recently:
   one. The full-record A/B measured +2.8% median inside a 32.4% band. Chunk sizes 2
   and 3 measured +0.5% and -1.5% inside an 8.4% band. All token digests match.
   Keep `FLASHNEXT_STREAM_PACK=0`. The path adds 37.9 MB of active memory.
-- The Flash-Next test suite passes all 161 tests.
+- Frontier 10 now has single-boundary diagnostics for Gate QMV, Up QMV, SwiGLU,
+  and fused-down completion. Separate 16-token probes measured 68.70, 61.23,
+  57.29, and 90.69 ms/token. These same-boot values include different physical
+  read states, so use them as dependency-debt evidence, not a ranked cost table.
+- Score-sync attribution confirms the threshold path runs in all 48 layers.
+  Steady tokens blocked for 102.71 to 143.46 ms with no queued or running reads
+  and almost no physical I/O. Score sync pays deferred GPU work.
+- The opt-in Up-QMV to SwiGLU fusion matches the MLX Metal-header arithmetic for
+  all 65,536 bfloat16 gate patterns at two Up values. Its 12-arm comparison
+  measured +2.0% median and +3.3% mean, inside the 14.8% resolution band.
+  Keep `FLASHNEXT_FUSED_UP_SWIGLU=0`.
+- The Flash-Next test suite passes all 187 tests.
 
 The cache-aware quality comparison remains open under Next work. Its gate result
 was measured under greedy decoding, which causes repetition on its own, so it
@@ -164,10 +175,11 @@ The practical target is breaking through **3.0 tok/s** (<333 ms/token), requirin
 
 The next performance work focuses on the SSD $\rightarrow$ Memory $\rightarrow$ Metal frontier roadmap detailed in
 [Next work](#next-work), prioritizing:
-1. Keep Frontier 5 disabled because its gain did not clear the resolution band.
-2. Keep Frontier 8B disabled because its gain did not clear the resolution band.
-3. Wait for the Frontier 10 reevaluation.
-4. Return to slabs later with physical-miss-aware selection.
+1. Keep Frontier 5 and Frontier 8B disabled.
+2. Keep Up-QMV to SwiGLU fusion disabled until a clean-boot result clears its band.
+3. Use the boundary profiler to identify the next producer-consumer boundary.
+4. Investigate the deferred GPU work paid inside score sync.
+5. Return to slabs later with physical-miss-aware selection.
 
 ## Download
 
