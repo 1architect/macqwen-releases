@@ -5,7 +5,13 @@ import unittest
 import mlx.core as mx
 import numpy as np
 
-from models.flashnext.expert_cache import ExpertLRU
+from models.flashnext.expert_cache import (
+    ExpertLRU,
+    _ProfiledRead,
+    _record_read_timing,
+    profile_totals,
+    reset_profile,
+)
 
 
 class FakeStore:
@@ -49,6 +55,31 @@ class ExpertReaderTests(unittest.TestCase):
         reader.fetch([1])
 
         self.assertEqual(len(store.calls), 6)
+
+
+class ReadProfileTests(unittest.TestCase):
+    def test_completion_wait_has_distinct_service_components(self):
+        reset_profile()
+        timing = _ProfiledRead(
+            value=None,
+            submitted=0.0,
+            started=2.0,
+            ended=10.0,
+            stats={
+                "pread_intervals": [(3.0, 7.0)],
+                "pread_calls": 1,
+                "pread_bytes": 4096,
+            },
+        )
+
+        _record_read_timing([timing], wait_started=1.0, wait_ended=11.0)
+        profile = profile_totals()
+
+        self.assertEqual(profile["critical_queue"], 1.0)
+        self.assertEqual(profile["critical_pread"], 4.0)
+        self.assertEqual(profile["critical_task_overhead"], 4.0)
+        self.assertEqual(profile["completion_overhead"], 1.0)
+        self.assertEqual(profile["pread_bytes"], 4096)
 
 
 if __name__ == "__main__":

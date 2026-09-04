@@ -24,7 +24,19 @@ import numpy as np
 from mlx_vlm.models.switch_layers import _gather_sort, _scatter_unsort
 
 from . import hostwindow
-from .store import SafeTensorStore
+from .slab_pack import (
+    DOWN_BIASES_OFFSET,
+    DOWN_SCALES_OFFSET,
+    DOWN_WEIGHT_OFFSET,
+    GATE_BIASES_OFFSET,
+    GATE_SCALES_OFFSET,
+    GATE_WEIGHT_OFFSET,
+    RECORD_STRIDE,
+    UP_BIASES_OFFSET,
+    UP_SCALES_OFFSET,
+    UP_WEIGHT_OFFSET,
+)
+from .store import SafeTensorStore, begin_read_profile, finish_read_profile
 
 
 _POOL = ThreadPoolExecutor(
@@ -39,11 +51,25 @@ def _submit_read(*args):
     The counter is what lets a host window claim the drive was idle. Without
     it the claim is an argument about the code rather than a measurement.
     """
-    future = _POOL.submit(*args)
+    if _PROFILE:
+        future = _POOL.submit(_profiled_read_call, time.perf_counter(), *args)
+    else:
+        future = _POOL.submit(*args)
     return hostwindow.track(future) if hostwindow.ENABLED else future
 
 
 _PARTS = ("weight", "scales", "biases")
+_STREAM_RECORD_PARTS = (
+    ("gate_proj", "weight", GATE_WEIGHT_OFFSET),
+    ("gate_proj", "scales", GATE_SCALES_OFFSET),
+    ("gate_proj", "biases", GATE_BIASES_OFFSET),
+    ("up_proj", "weight", UP_WEIGHT_OFFSET),
+    ("up_proj", "scales", UP_SCALES_OFFSET),
+    ("up_proj", "biases", UP_BIASES_OFFSET),
+    ("down_proj", "weight", DOWN_WEIGHT_OFFSET),
+    ("down_proj", "scales", DOWN_SCALES_OFFSET),
+    ("down_proj", "biases", DOWN_BIASES_OFFSET),
+)
 
 # Optional wall-clock split of a decode token. Off by default: the counters
 # add two time.perf_counter calls per layer. Set FLASHNEXT_PROFILE_IO=1 and
@@ -62,6 +88,16 @@ _TIMERS = {
     "shared_expert": 0.0,
     "score_sync_bytes": 0.0,
     "io_calls": 0,
+    "read_tasks": 0,
+    "pread_calls": 0,
+    "pread_bytes": 0,
+    "queue_delay_sum": 0.0,
+    "task_service_sum": 0.0,
+    "pread_service_sum": 0.0,
+    "critical_queue": 0.0,
+    "critical_pread": 0.0,
+    "critical_task_overhead": 0.0,
+    "completion_overhead": 0.0,
 }
 
 
@@ -79,6 +115,90 @@ def reset_profile() -> None:
     for key in _TIMERS:
         _TIMERS[key] = 0.0
     _TIMERS["io_calls"] = 0
+
+
+def set_profile(enabled: bool) -> None:
+    """Enable or disable I/O timing for an already imported runtime."""
+    global _PROFILE
+    _PROFILE = bool(enabled)
+
+
+def profile_enabled() -> bool:
+    return bool(_PROFILE)
+
+
+class _ProfiledRead:
+    __slots__ = (
+        "value", "submitted", "started", "ended", "pread_intervals",
+        "pread_calls", "pread_bytes",
+    )
+
+    def __init__(self, value, submitted, started, ended, stats):
+        self.value = value
+        self.submitted = submitted
+        self.started = started
+        self.ended = ended
+        self.pread_intervals = stats["pread_intervals"]
+        self.pread_calls = stats["pread_calls"]
+        self.pread_bytes = stats["pread_bytes"]
+
+
+def _profiled_read_call(submitted, function, *args):
+    started = time.perf_counter()
+    begin_read_profile()
+    try:
+        value = function(*args)
+    finally:
+        stats = finish_read_profile()
+    ended = time.perf_counter()
+    return _ProfiledRead(value, submitted, started, ended, stats)
+
+
+def _resolve_future(future, timings):
+    value = future.result()
+    if isinstance(value, _ProfiledRead):
+        if timings is not None:
+            timings.append(value)
+        return value.value
+    return value
+
+
+def _overlap(start, end, lower, upper):
+    return max(0.0, min(end, upper) - max(start, lower))
+
+
+def _record_read_timing(timings, wait_started, wait_ended) -> None:
+    if not timings:
+        return
+    for timing in timings:
+        _TIMERS["read_tasks"] += 1
+        _TIMERS["pread_calls"] += timing.pread_calls
+        _TIMERS["pread_bytes"] += timing.pread_bytes
+        _TIMERS["queue_delay_sum"] += max(
+            0.0, timing.started - timing.submitted
+        )
+        _TIMERS["task_service_sum"] += max(0.0, timing.ended - timing.started)
+        _TIMERS["pread_service_sum"] += sum(
+            max(0.0, ended - started)
+            for started, ended in timing.pread_intervals
+        )
+
+    critical = max(timings, key=lambda timing: timing.ended)
+    queue = _overlap(
+        wait_started, critical.started, wait_started, wait_ended
+    )
+    service = _overlap(
+        critical.started, critical.ended, wait_started, wait_ended
+    )
+    pread = sum(
+        _overlap(started, ended, wait_started, wait_ended)
+        for started, ended in critical.pread_intervals
+    )
+    wait = max(0.0, wait_ended - wait_started)
+    _TIMERS["critical_queue"] += queue
+    _TIMERS["critical_pread"] += pread
+    _TIMERS["critical_task_overhead"] += max(0.0, service - pread)
+    _TIMERS["completion_overhead"] += max(0.0, wait - queue - service)
 
 
 def set_metal_runtime(enabled: bool) -> None:
@@ -232,6 +352,29 @@ def record_layer(layer_id, experts) -> None:
         _LAST[layer_id] = list(experts)
 
 
+def stream_pack_enabled() -> bool:
+    """Return whether cold experts use one expert-major destination buffer."""
+    return os.environ.get("FLASHNEXT_STREAM_PACK", "0") == "1"
+
+
+class _StreamedPackRead:
+    """One expert-major buffer filled by nine coalesced worker tasks."""
+
+    __slots__ = ("buffer", "futures")
+
+    def __init__(self, buffer, futures):
+        self.buffer = buffer
+        self.futures = futures
+
+    def wait(self, timings=None):
+        for future in self.futures:
+            _resolve_future(future, timings)
+        return self
+
+    def to_mx(self):
+        return mx.from_dlpack(self.buffer, copy=False)
+
+
 class _SharedRead:
     """A destination plus the futures filling its disjoint slices."""
 
@@ -241,9 +384,9 @@ class _SharedRead:
         self.buffer = buffer
         self.futures = futures
 
-    def wait(self):
+    def wait(self, timings=None):
         for future in self.futures:
-            future.result()
+            _resolve_future(future, timings)
         return self
 
 
@@ -386,11 +529,11 @@ class ExpertLRU:
         return self._read(experts)
 
 
-def _await_read(pending):
+def _await_read(pending, timings=None):
     """Resolve one projection's pending reads into what `to_mx` expects."""
     return [
-        item.wait() if isinstance(item, _SharedRead)
-        else [f.result() for f in item]
+        item.wait(timings) if isinstance(item, _SharedRead)
+        else [_resolve_future(future, timings) for future in item]
         for item in pending
     ]
 
@@ -816,10 +959,48 @@ class StreamingSwitchGLU(nn.Module):
             wanted = [e for e in wanted if e not in projections[0].slab.slot]
             if not wanted:
                 return
-        self._prefetch = (
-            wanted,
-            [p.cache.submit(wanted, False) for p in projections],
+        pending = (
+            self._submit_stream_pack(wanted)
+            if pack is not None and stream_pack_enabled()
+            else [p.cache.submit(wanted, False) for p in projections]
         )
+        self._prefetch = (wanted, pending)
+
+    def _submit_stream_pack(self, wanted) -> _StreamedPackRead:
+        """Read all cold components into one slab-compatible destination."""
+        store = self.gate_proj.cache.store
+        mode = store._read_mode
+        if mode == "hybrid":
+            mode = "shared_mmap" if len(wanted) <= store._hybrid_cutoff else "pread"
+        buffer = np.empty(len(wanted) * RECORD_STRIDE, dtype=np.uint8)
+        switch_prefix = self.gate_proj.cache.prefix.rsplit(".", 1)[0]
+        configured_chunk = int(os.environ.get("FLASHNEXT_STREAM_PACK_CHUNK", "0"))
+        chunk = configured_chunk if configured_chunk > 0 else len(wanted)
+        futures = []
+        for projection, part, offset in _STREAM_RECORD_PARTS:
+            part_mode = mode
+            if mode == "mixed":
+                part_mode = "pread" if part == "weight" else "shared_mmap"
+            name = f"{switch_prefix}.{projection}.{part}"
+            for start in range(0, len(wanted), chunk):
+                piece = wanted[start : start + chunk]
+                destination = store.expert_record_view(
+                    name,
+                    buffer,
+                    len(piece),
+                    offset + start * RECORD_STRIDE,
+                    RECORD_STRIDE,
+                )
+                futures.append(
+                    _submit_read(
+                        store.rows_into,
+                        name,
+                        piece,
+                        destination,
+                        part_mode,
+                    )
+                )
+        return _StreamedPackRead(buffer, futures)
 
     def _get_dummy_streamed_weights(self, hidden_size: int):
         dummy = getattr(self, "_cached_dummy_weights", None)
@@ -841,8 +1022,14 @@ class StreamingSwitchGLU(nn.Module):
             self._cached_dummy_weights = dummy
         return dummy
 
-    def __call__(self, x, indices, allow_sort=True, scores=None, shared_y=None) -> mx.array:
+    def __call__(
+        self, x, indices, allow_sort=True, scores=None, shared_y=None,
+        shared=None, shared_gate=None,
+    ) -> mx.array:
         self._last_fused_shared = False
+        has_shared = shared_y is not None or (
+            shared is not None and shared_gate is not None
+        )
         flat_input = x.reshape(-1, x.shape[-1])
         x = mx.expand_dims(x, (-2, -3))
         # `_moe_call` leaves the routed list here when one-sync is on. It is
@@ -907,12 +1094,52 @@ class StreamingSwitchGLU(nn.Module):
                 projections = (self.gate_proj, self.up_proj, self.down_proj)
                 prefetched = getattr(self, "_prefetch", None)
                 self._prefetch = None
+                streamed_record = None
                 if wanted:
                     if prefetched is not None and prefetched[0] == wanted:
                         pending = prefetched[1]
+                    elif stream_pack_enabled():
+                        pending = self._submit_stream_pack(wanted)
                     else:
                         pending = [p.cache.submit(wanted, False) for p in projections]
-                    weights = [p.cache.to_mx(_await_read(fs)) for p, fs in zip(projections, pending)]
+                    if isinstance(pending, _StreamedPackRead):
+                        timings = [] if _PROFILE else None
+                        began = time.perf_counter()
+                        pending.wait(timings)
+                        ended = time.perf_counter()
+                        if _PROFILE:
+                            _TIMERS["io_wait"] += ended - began
+                            _TIMERS["io_calls"] += 1
+                            _record_read_timing(timings, began, ended)
+                        began = time.perf_counter()
+                        streamed_record = pending.to_mx()
+                        weights = self._get_dummy_streamed_weights(
+                            flat_input.shape[-1]
+                        )
+                        if _PROFILE:
+                            _TIMERS["to_mx"] += time.perf_counter() - began
+                    elif _PROFILE:
+                        timings = []
+                        began = time.perf_counter()
+                        raw = [
+                            _await_read(futures, timings)
+                            for futures in pending
+                        ]
+                        ended = time.perf_counter()
+                        _TIMERS["io_wait"] += ended - began
+                        _TIMERS["io_calls"] += 1
+                        _record_read_timing(timings, began, ended)
+                        began = time.perf_counter()
+                        weights = [
+                            projection.cache.to_mx(chunks)
+                            for projection, chunks in zip(projections, raw)
+                        ]
+                        _TIMERS["to_mx"] += time.perf_counter() - began
+                    else:
+                        weights = [
+                            projection.cache.to_mx(_await_read(futures))
+                            for projection, futures in zip(projections, pending)
+                        ]
                     miss_order = {e: i for i, e in enumerate(wanted)}
                 else:
                     weights = self._get_dummy_streamed_weights(flat_input.shape[-1])
@@ -946,9 +1173,12 @@ class StreamingSwitchGLU(nn.Module):
                     flat_input, local, streamed_packs,
                     scores=routed_scores,
                     slab_pack=pack.buffer_mx,
+                    stream_pack=streamed_record,
                     shared_y=shared_y,
+                    shared=shared,
+                    shared_gate=shared_gate,
                 )
-                if shared_y is not None:
+                if has_shared:
                     self._last_fused_shared = True
                 return output.reshape(*indices.shape[:-1], output.shape[-1]).astype(mx.bfloat16)
 
@@ -1012,8 +1242,10 @@ class StreamingSwitchGLU(nn.Module):
                 scores=routed_scores,
                 slab_projections=slab_packs,
                 shared_y=shared_y,
+                shared=shared,
+                shared_gate=shared_gate,
             )
-            if shared_y is not None:
+            if has_shared:
                 self._last_fused_shared = True
             return output.reshape(*indices.shape[:-1], output.shape[-1]).astype(mx.bfloat16)
 
@@ -1022,6 +1254,7 @@ class StreamingSwitchGLU(nn.Module):
                 x, indices, routed, None, allow_sort=allow_sort,
                 flat_input=flat_input, scores=scores,
                 shared_y=shared_y,
+                shared=shared, shared_gate=shared_gate,
             )
 
         hit = [e for e in routed if e in slabs[0].slot]
@@ -1053,7 +1286,8 @@ class StreamingSwitchGLU(nn.Module):
 
     def _one_pass(
         self, x, indices, routed, slabs, mask=None, allow_sort=True,
-        flat_input=None, scores=None, shared_y=None,
+        flat_input=None, scores=None, shared_y=None, shared=None,
+        shared_gate=None,
     ):
         projections = (self.gate_proj, self.up_proj, self.down_proj)
         if slabs is not None:
@@ -1083,11 +1317,17 @@ class StreamingSwitchGLU(nn.Module):
             else:
                 pending = [p.cache.submit(wanted, False) for p in projections]
             if _PROFILE:
+                timings = []
                 began = time.perf_counter()
                 with hostwindow.window("io_await"):
-                    raw = [_await_read(fs) for fs in pending]
-                _TIMERS["io_wait"] += time.perf_counter() - began
+                    raw = [
+                        _await_read(futures, timings)
+                        for futures in pending
+                    ]
+                ended = time.perf_counter()
+                _TIMERS["io_wait"] += ended - began
                 _TIMERS["io_calls"] += 1
+                _record_read_timing(timings, began, ended)
                 began = time.perf_counter()
                 with hostwindow.window("to_mx_host"):
                     weights = [
@@ -1145,8 +1385,12 @@ class StreamingSwitchGLU(nn.Module):
                     flat_input, local, projection_packs,
                     scores=routed_scores,
                     shared_y=shared_y,
+                    shared=shared,
+                    shared_gate=shared_gate,
                 )
-                if shared_y is not None:
+                if shared_y is not None or (
+                    shared is not None and shared_gate is not None
+                ):
                     self._last_fused_shared = True
                 output = output.reshape(
                     *indices.shape[:-1], output.shape[-1]

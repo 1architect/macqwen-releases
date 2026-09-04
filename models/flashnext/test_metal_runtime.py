@@ -599,6 +599,146 @@ class MLXQ4G32SmokeTests(unittest.TestCase):
         mismatches = int(mx.sum(fused.view(mx.uint16) != expected.view(mx.uint16)).item())
         self.assertEqual(mismatches, 0, f"slab pack shared_y epilogue diverged with {mismatches} mismatches")
 
+    def test_fused_shared_parts_preserve_bfloat16_product_rounding(self):
+        mx = self.mx
+        hidden_size, intermediate_size = 2560, 640
+        packs = {
+            "gate_proj": self.pack(0, intermediate_size, hidden_size, 2),
+            "up_proj": self.pack(1, intermediate_size, hidden_size, 2),
+            "down_proj": self.pack(2, hidden_size, intermediate_size, 2),
+        }
+        x = (((mx.arange(hidden_size, dtype=mx.float32) % 31) - 15) / 64)
+        x = x.reshape(1, hidden_size).astype(mx.bfloat16)
+        routes = mx.array([[0, 1]], dtype=mx.uint32)
+        scores = mx.array([[0.375, 0.625]], dtype=mx.float32)
+        shared = (((mx.arange(hidden_size, dtype=mx.float32) % 29) - 14) / 32)
+        shared = shared.reshape(1, hidden_size).astype(mx.bfloat16)
+        shared_gate = mx.array([[0.333984375]], dtype=mx.bfloat16)
+
+        executor = MetalMoEExecutor(2, hidden_size, 2, backend="metal")
+        unfused = executor.execute(x, routes, packs, scores=scores)
+        expected = unfused + shared_gate * shared
+        fused = executor.execute(
+            x, routes, packs, scores=scores,
+            shared=shared, shared_gate=shared_gate,
+        )
+
+        mx.eval(expected, fused)
+        mismatches = int(
+            mx.sum(fused.view(mx.uint16) != expected.view(mx.uint16)).item()
+        )
+        self.assertEqual(
+            mismatches, 0,
+            f"shared parts epilogue diverged with {mismatches} mismatches",
+        )
+
+    def test_fused_shared_parts_slab_pack_is_bit_identical(self):
+        mx = self.mx
+        hidden_size, intermediate_size = 2560, 640
+        packs = {
+            "gate_proj": self.pack(0, intermediate_size, hidden_size, 2),
+            "up_proj": self.pack(1, intermediate_size, hidden_size, 2),
+            "down_proj": self.pack(2, hidden_size, intermediate_size, 2),
+        }
+        x = (((mx.arange(hidden_size, dtype=mx.float32) % 31) - 15) / 64)
+        x = x.reshape(1, hidden_size).astype(mx.bfloat16)
+        routes = mx.array([[0, 0x80000000]], dtype=mx.uint32)
+        scores = mx.array([[0.375, 0.625]], dtype=mx.float32)
+        shared = (((mx.arange(hidden_size, dtype=mx.float32) % 29) - 14) / 32)
+        shared = shared.reshape(1, hidden_size).astype(mx.bfloat16)
+        shared_gate = mx.array([[0.333984375]], dtype=mx.bfloat16)
+        slab_pack = mx.zeros(4096 + 2 * 3072000, dtype=mx.uint8)
+
+        executor = MetalMoEExecutor(2, hidden_size, 2, backend="metal")
+        unfused = executor.execute(
+            x, routes, packs, scores=scores, slab_pack=slab_pack
+        )
+        expected = unfused + shared_gate * shared
+        fused = executor.execute(
+            x, routes, packs, scores=scores, slab_pack=slab_pack,
+            shared=shared, shared_gate=shared_gate,
+        )
+
+        mx.eval(expected, fused)
+        mismatches = int(
+            mx.sum(fused.view(mx.uint16) != expected.view(mx.uint16)).item()
+        )
+        self.assertEqual(
+            mismatches, 0,
+            f"slab pack shared parts diverged with {mismatches} mismatches",
+        )
+
+    def test_streamed_expert_records_match_projection_buffers(self):
+        mx = self.mx
+        from models.flashnext.slab_pack import (
+            DOWN_BIASES_OFFSET,
+            DOWN_SCALES_OFFSET,
+            DOWN_WEIGHT_OFFSET,
+            GATE_BIASES_OFFSET,
+            GATE_SCALES_OFFSET,
+            GATE_WEIGHT_OFFSET,
+            RECORD_STRIDE,
+            UP_BIASES_OFFSET,
+            UP_SCALES_OFFSET,
+            UP_WEIGHT_OFFSET,
+        )
+
+        hidden_size, intermediate_size = 2560, 640
+        packs = {
+            "gate_proj": self.pack(0, intermediate_size, hidden_size, 2),
+            "up_proj": self.pack(1, intermediate_size, hidden_size, 2),
+            "down_proj": self.pack(2, hidden_size, intermediate_size, 2),
+        }
+        layout = (
+            ("gate_proj", 0, GATE_WEIGHT_OFFSET),
+            ("gate_proj", 1, GATE_SCALES_OFFSET),
+            ("gate_proj", 2, GATE_BIASES_OFFSET),
+            ("up_proj", 0, UP_WEIGHT_OFFSET),
+            ("up_proj", 1, UP_SCALES_OFFSET),
+            ("up_proj", 2, UP_BIASES_OFFSET),
+            ("down_proj", 0, DOWN_WEIGHT_OFFSET),
+            ("down_proj", 1, DOWN_SCALES_OFFSET),
+            ("down_proj", 2, DOWN_BIASES_OFFSET),
+        )
+        records = np.zeros(2 * RECORD_STRIDE, dtype=np.uint8)
+        for expert in range(2):
+            for projection, part, offset in layout:
+                value = packs[projection][part][expert]
+                if part:
+                    value = value.view(mx.uint16)
+                payload = np.asarray(value).tobytes()
+                start = expert * RECORD_STRIDE + offset
+                records[start : start + len(payload)] = np.frombuffer(
+                    payload, dtype=np.uint8
+                )
+
+        x = (((mx.arange(hidden_size, dtype=mx.float32) % 31) - 15) / 64)
+        x = x.reshape(1, hidden_size).astype(mx.bfloat16)
+        routes = mx.array([[0, 1]], dtype=mx.uint32)
+        scores = mx.array([[0.375, 0.625]], dtype=mx.float32)
+        slab_pack = mx.zeros(4096 + RECORD_STRIDE, dtype=mx.uint8)
+        stream_pack = mx.array(records)
+        executor = MetalMoEExecutor(2, hidden_size, 2, backend="metal")
+
+        expected = executor.execute(x, routes, packs, scores=scores)
+        actual = executor.execute(
+            x,
+            routes,
+            packs,
+            scores=scores,
+            slab_pack=slab_pack,
+            stream_pack=stream_pack,
+        )
+
+        mx.eval(expected, actual)
+        mismatches = int(
+            mx.sum(actual.view(mx.uint16) != expected.view(mx.uint16)).item()
+        )
+        self.assertEqual(
+            mismatches, 0,
+            f"streamed expert records diverged with {mismatches} mismatches",
+        )
+
 
 class MetalRuntimeIntegrationSelectionTests(unittest.TestCase):
     def test_only_opt_in_nonzero_layers_select_custom_score_combine(self):
@@ -644,4 +784,3 @@ class MetalRuntimeIntegrationSelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

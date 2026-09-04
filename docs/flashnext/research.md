@@ -4312,5 +4312,114 @@ Measured 2026-09-04.
 - **Dispatch Elimination**: 48 elementwise additions and 48 intermediate tensor allocations saved per token.
 - **Zero Numerical Drift**: 100% bit-identical token digest (`29d04075ed7021b3` for 32 tokens, `b8f20bd0dbc71940` for 24 tokens).
 
+### 15. Skew Slab Capacity Sweep: 56 vs 60 vs 64
+Measured 2026-09-04.
 
+A controlled 12-arm sweep compared 56, 60, and 64 resident slots. The run used
+four interleaved rounds with reverse ordering. The user approved a same-boot run,
+so the result selects a working standard but does not establish a clean-boot absolute rate.
 
+| Condition | Gen median | Range | Tail median | Physical MB/token | I/O wait ms/token | Hit rate | Pack MiB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `slabpack56_skew` | 2.83 | 2.54..3.02 | 2.78 | 538.2 | 296.14 | 39.7% | 164.07 |
+| `slabpack60_skew` | **2.89** | 2.85..3.03 | 2.82 | 537.3 | 294.56 | 41.1% | 175.79 |
+| `slabpack64_skew` | 2.88 | 2.73..3.01 | **2.83** | **536.9** | **293.53** | **42.7%** | 187.50 |
+
+The 60-slot median is 3.0% above 56 slots. The 64-slot median is 1.3% below
+56 slots in paired comparison. Both differences remain inside the 17.0%
+resolution band. The physical-read differences are only 0.9 to 1.2 MB/token.
+
+The 3.15–3.20 tok/s projection for 64 slots is falsified and removed. Hit rate
+continues to rise, but useful resident capacity saturates near the current
+160 MiB class. Future slab work must select experts using physical misses,
+not logical route frequency alone. The 60-slot profile becomes the standard
+capacity for subsequent runtime experiments.
+
+### 16. Frontier 8B-safe: Shared Multiply in the Metal Epilogue
+Measured 2026-09-04.
+
+Frontier 8B passes `shared` and `shared_gate` into the existing Metal epilogue.
+The kernel preserves both bfloat16 rounding boundaries:
+
+1. It rounds the routed result to bfloat16.
+2. It multiplies `shared_gate * shared`, rounds that result to bfloat16, adds both
+   values in float, and rounds the final result to bfloat16.
+
+A 12-arm reversed-order comparison used the 60-slot skew pack.
+
+| Condition | Gen median | Range | Tail median | Physical MB/token | I/O wait ms/token | Digest |
+|---|---:|---:|---:|---:|---:|---:|
+| Frontier 8A | 2.88 | 2.14..2.96 | 2.85 | 554.5 | 300.54 | `29d04075ed7021b3` |
+| Frontier 8B | 2.91 | 2.58..2.97 | 2.90 | 545.9 | 298.01 | `29d04075ed7021b3` |
+
+Frontier 8B measured +1.7% median and +4.7% mean paired speedup. It won four
+of six pairs. The sign-test value was 0.344. The result stays inside the 28.6%
+resolution band. The gain is unresolved and does not trigger Frontier 10.
+
+Keep Frontier 8B disabled. `FLASHNEXT_FUSED_SHARED_PARTS` defaults to `0`.
+The standard `slabpack60_skew` arm uses Frontier 8A. The explicit
+`slabpack60_skew_8b` arm remains available for later experiments.
+
+### 17. Frontier 5 I/O Wait Instrumentation
+Measured 2026-09-04.
+
+The read workers now measure submission time, worker start, positioned-read
+intervals, worker completion, and main-thread completion. This separates summed
+concurrent service time from the completion-critical wait path.
+
+Three standard 60-slot Frontier 8A runs produced these median results:
+
+| Metric | Median |
+|---|---:|
+| Generation | 2.88 tok/s |
+| Generation range | 2.27..2.89 tok/s |
+| Tail generation | 2.86 tok/s |
+| Physical reads | 564.3 MB/token |
+| Total I/O wait | 304.76 ms/token |
+| Threadpool queue delay | 211.79 ms/token |
+| Time inside `pread` or `preadv` | 89.71 ms/token |
+| Worker task overhead outside positioned reads | 2.95 ms/token |
+| Main-thread completion overhead | 0.31 ms/token |
+
+The four critical-path components sum to 304.76 ms/token. Queue delay accounts
+for 69.5% of the wait. Time inside positioned reads accounts for 29.4%.
+Worker and completion overhead together account for 1.1%.
+
+The positioned-read value includes syscall entry, kernel work, and storage wait.
+The instrumentation cannot split those parts without kernel tracing. The current
+evidence directs Frontier 5 toward task batching and threadpool queue pressure.
+No Frontier 5 scheduling change is enabled by default.
+
+### 18. Frontier 5 Expert-Major Streamed Records
+Measured 2026-09-04.
+
+The implementation reads all nine cold expert components into one expert-major
+destination. The destination uses the same 3,072,000-byte record layout as the
+resident slab pack. Metal selects either resident or streamed record addresses
+with the existing route encoding. This removes eight Metal-visible streamed
+buffers per cold layer.
+
+The first 12-arm reversed comparison tested nine worker tasks per layer. It
+reduced median queue delay from 206.69 to 196.68 ms/token. Positioned-read time
+increased from 89.41 to 94.98 ms/token. Worker overhead increased from 3.09 to
+6.30 ms/token. Median generation changed from 2.85 to 2.90 tok/s, or +2.8%.
+The result stayed inside a 32.4% resolution band.
+
+A second 12-arm interleaved run tested chunk sizes 2 and 3. These sizes retain
+more storage concurrency while using the expert-major destination.
+
+| Condition | Gen median | Range | Tail median | Physical MB/token | I/O wait ms/token | Active MB |
+|---|---:|---:|---:|---:|---:|---:|
+| Standard | 2.80 | 2.69..2.93 | 2.84 | 568.8 | 309.13 | 3620.7 |
+| Stream record, chunk 2 | 2.82 | 2.77..2.95 | 2.79 | 553.2 | 304.83 | 3658.6 |
+| Stream record, chunk 3 | 2.85 | 2.62..2.95 | 2.80 | 562.8 | 308.24 | 3658.6 |
+
+Chunk 2 measured +0.5% median. Chunk 3 measured -1.5% median. Each candidate
+won two of four pairs with sign-test value 0.688. Both results stayed inside
+the 8.4% resolution band. Every arm kept digest `29d04075ed7021b3`.
+
+The source call count and requested bytes remain unchanged because safetensor
+components occupy separate file ranges. Task coalescing does not remove those
+positioned reads. It only changes destination layout and worker grouping.
+Keep `FLASHNEXT_STREAM_PACK=0`. Retain the implementation as an opt-in
+experiment. Do not add its 37.9 MB active-memory cost to the standard path.

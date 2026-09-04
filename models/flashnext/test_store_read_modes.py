@@ -14,7 +14,11 @@ import unittest.mock
 
 import numpy as np
 
-from models.flashnext.store import SafeTensorStore
+from models.flashnext.store import (
+    SafeTensorStore,
+    begin_read_profile,
+    finish_read_profile,
+)
 
 ROWS = 12
 COLUMNS = 64
@@ -104,6 +108,32 @@ class ReadModeTests(unittest.TestCase):
         out = self.store.empty_rows(self.name, len(wanted))
         self.store.rows_into(self.name, wanted, out, "resident")
         np.testing.assert_array_equal(out, self.expected[wanted])
+
+    def test_read_profile_counts_pread_service(self):
+        wanted = [3, 6, 1]
+        begin_read_profile()
+        actual = self.rows(wanted, "pread")
+        profile = finish_read_profile()
+
+        np.testing.assert_array_equal(actual, self.expected[wanted])
+        self.assertEqual(profile["pread_calls"], len(wanted))
+        self.assertEqual(profile["pread_bytes"], actual.nbytes)
+        self.assertEqual(len(profile["pread_intervals"]), len(wanted))
+        self.assertTrue(all(end >= start for start, end in profile["pread_intervals"]))
+
+    def test_expert_record_view_writes_strided_rows(self):
+        wanted = [3, 6, 1]
+        record_stride = self.expected[0].nbytes + 128
+        offset = 32
+        buffer = np.zeros(len(wanted) * record_stride, dtype=np.uint8)
+        view = self.store.expert_record_view(
+            self.name, buffer, len(wanted), offset, record_stride
+        )
+
+        self.store.rows_into(self.name, wanted, view, "pread")
+
+        np.testing.assert_array_equal(view, self.expected[wanted])
+        self.assertTrue(np.all(buffer[:offset] == 0))
 
 
 if __name__ == "__main__":

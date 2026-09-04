@@ -5,7 +5,7 @@ rules.
 
 ## Where things stand
 
-Last worked on 2026-09-02.
+Last worked on 2026-09-04.
 
 The runtime streams a 176B sparse MoE model from SSD on a 16 GB M4 Mac. oQ4 is
 installed and is the baseline. `exact-quality` is the default routing profile.
@@ -114,7 +114,25 @@ What changed in the code recently:
   boosting decode hit rate to **39.7%–40.7%** (+35% relative gain vs 29.4% on `slabpack48` and avoiding cold-layer dilution in `slabpack56_uniform`),
   reaching **3.08 tok/s generation rate** and **3.02 tok/s tail rate** (median 2.94 tok/s) with 100% bit-identical digest (`29d04075ed7021b3`)
   and only +24.5 MB MLX active memory overhead.
-- The Flash-Next test suite passes all 153 tests.
+- The controlled 56/60/64-slot capacity sweep selects **60 slots** as the standard
+  resident profile. Median generation was 2.83, 2.89, and 2.88 tok/s. Median physical
+  reads were 538.2, 537.3, and 536.9 MB/token. The differences remain inside the 17.0%
+  resolution band. Raw hit rate continues to rise, but useful residency saturates near
+  the 160 MiB class. The former 3.15–3.20 tok/s projection for 64 slots is rejected.
+- Frontier 8B-safe preserves the required rounding boundaries and exact token digest.
+  Its 12-arm comparison measured +1.7% median and +4.7% mean. This result remains
+  inside the 28.6% resolution band. Keep 8B disabled. The standard 60-slot profile
+  uses Frontier 8A. Enable 8B only with `FLASHNEXT_FUSED_SHARED_PARTS=1`.
+- Frontier 5 instrumentation splits main-thread I/O wait into queue delay, time inside
+  `pread` or `preadv`, worker overhead, and completion overhead. Three standard 60-slot
+  8A runs measured 304.76 ms/token median I/O wait. Queue delay used 211.79 ms/token
+  (69.5%). Positioned reads used 89.71 ms/token (29.4%).
+- Frontier 5 now has an opt-in expert-major streamed record path. It coalesces cold
+  reads into one slab-compatible destination and reduces nine Metal buffer groups to
+  one. The full-record A/B measured +2.8% median inside a 32.4% band. Chunk sizes 2
+  and 3 measured +0.5% and -1.5% inside an 8.4% band. All token digests match.
+  Keep `FLASHNEXT_STREAM_PACK=0`. The path adds 37.9 MB of active memory.
+- The Flash-Next test suite passes all 161 tests.
 
 The cache-aware quality comparison remains open under Next work. Its gate result
 was measured under greedy decoding, which causes repetition on its own, so it
@@ -146,10 +164,10 @@ The practical target is breaking through **3.0 tok/s** (<333 ms/token), requirin
 
 The next performance work focuses on the SSD $\rightarrow$ Memory $\rightarrow$ Metal frontier roadmap detailed in
 [Next work](#next-work), prioritizing:
-1. Heterogeneous / skew-aware global slab capacity (5–6 slots for super-concentrated layers 5, 20, 23, 35, 47).
-2. Production benchmark of budget 56 slots (+173 MB RAM, safely below the 196 MB page-cache threshold).
-3. File-backed mlocked mmap slabs directly in the custom Metal kernel.
-4. Production evaluation of direct zero-copy `preadv` I/O.
+1. Keep Frontier 5 disabled because its gain did not clear the resolution band.
+2. Keep Frontier 8B disabled because its gain did not clear the resolution band.
+3. Wait for the Frontier 10 reevaluation.
+4. Return to slabs later with physical-miss-aware selection.
 
 ## Download
 

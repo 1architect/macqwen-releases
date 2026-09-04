@@ -15,6 +15,7 @@ import mmap
 import os
 import struct
 import threading
+import time
 from typing import Dict, Sequence, Tuple
 
 import mlx.core as mx
@@ -36,6 +37,47 @@ _DTYPES: Dict[str, Tuple[np.dtype, object]] = {
     "U8": (np.dtype("u1"), mx.uint8),
     "I8": (np.dtype("i1"), mx.int8),
 }
+
+_READ_PROFILE = threading.local()
+
+
+def begin_read_profile() -> None:
+    """Collect positioned-read intervals for one worker task."""
+    _READ_PROFILE.stats = {"pread_intervals": [], "pread_calls": 0, "pread_bytes": 0}
+
+
+def finish_read_profile() -> dict:
+    stats = getattr(_READ_PROFILE, "stats", None) or {
+        "pread_intervals": [], "pread_calls": 0, "pread_bytes": 0,
+    }
+    _READ_PROFILE.stats = None
+    return stats
+
+
+def _profiled_pread(fd: int, size: int, offset: int) -> bytes:
+    stats = getattr(_READ_PROFILE, "stats", None)
+    if stats is None:
+        return os.pread(fd, size, offset)
+    began = time.perf_counter()
+    data = os.pread(fd, size, offset)
+    ended = time.perf_counter()
+    stats["pread_intervals"].append((began, ended))
+    stats["pread_calls"] += 1
+    stats["pread_bytes"] += len(data)
+    return data
+
+
+def _profiled_preadv(fd: int, buffers, offset: int) -> int:
+    stats = getattr(_READ_PROFILE, "stats", None)
+    if stats is None:
+        return os.preadv(fd, buffers, offset)
+    began = time.perf_counter()
+    count = os.preadv(fd, buffers, offset)
+    ended = time.perf_counter()
+    stats["pread_intervals"].append((began, ended))
+    stats["pread_calls"] += 1
+    stats["pread_bytes"] += count
+    return count
 
 
 class TensorRef:
@@ -381,7 +423,9 @@ class SafeTensorStore:
             fd = self._fd(ref.shard)
             for slot, row in misses:
                 offset = ref.start + row * ref.row_bytes
-                read = os.preadv(fd, [memoryview(out[slot]).cast("B")], offset)
+                read = _profiled_preadv(
+                    fd, [memoryview(out[slot]).cast("B")], offset
+                )
                 if read != ref.row_bytes:
                     raise OSError(f"short pread for {name} row {row}")
         if self._track_residency:
@@ -398,9 +442,11 @@ class SafeTensorStore:
         for slot, row in enumerate(rows):
             offset = ref.start + row * ref.row_bytes
             if read_mode == "preadv":
-                read = os.preadv(fd, [memoryview(out[slot]).cast("B")], offset)
+                read = _profiled_preadv(
+                    fd, [memoryview(out[slot]).cast("B")], offset
+                )
             else:
-                data = os.pread(fd, ref.row_bytes, offset)
+                data = _profiled_pread(fd, ref.row_bytes, offset)
                 read = len(data)
                 if read == ref.row_bytes:
                     out[slot] = np.frombuffer(data, dtype=dtype).reshape(ref.shape[1:])
@@ -415,6 +461,35 @@ class SafeTensorStore:
         ref = self.refs[name]
         dtype, _ = _DTYPES[ref.dtype]
         return np.empty((count, *ref.shape[1:]), dtype=dtype)
+
+    def expert_record_view(
+        self,
+        name: str,
+        buffer: np.ndarray,
+        count: int,
+        offset: int,
+        record_stride: int,
+    ) -> np.ndarray:
+        """View one tensor row inside each expert-major destination record."""
+        ref = self.refs[name]
+        dtype, _ = _DTYPES[ref.dtype]
+        if buffer.dtype != np.uint8 or not buffer.flags.c_contiguous:
+            raise ValueError("expert record buffer must be contiguous uint8")
+        if offset < 0 or record_stride < ref.row_bytes:
+            raise ValueError("expert record layout cannot contain the tensor row")
+        tail_strides = []
+        stride = dtype.itemsize
+        for dimension in reversed(ref.shape[1:]):
+            tail_strides.append(stride)
+            stride *= dimension
+        tail_strides.reverse()
+        return np.ndarray(
+            shape=(count, *ref.shape[1:]),
+            dtype=dtype,
+            buffer=buffer,
+            offset=offset,
+            strides=(record_stride, *tail_strides),
+        )
 
     def rows_into(
         self,
@@ -443,9 +518,11 @@ class SafeTensorStore:
             for slot, row in enumerate(rows):
                 offset = ref.start + row * ref.row_bytes
                 if mode == "preadv":
-                    read = os.preadv(fd, [memoryview(out[slot]).cast("B")], offset)
+                    read = _profiled_preadv(
+                        fd, [memoryview(out[slot]).cast("B")], offset
+                    )
                 else:
-                    data = os.pread(fd, ref.row_bytes, offset)
+                    data = _profiled_pread(fd, ref.row_bytes, offset)
                     read = len(data)
                     if read == ref.row_bytes:
                         out[slot] = np.frombuffer(data, dtype=dtype).reshape(

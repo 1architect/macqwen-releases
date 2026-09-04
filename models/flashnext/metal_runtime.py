@@ -188,6 +188,14 @@ uint3 tid = uint3(0, threadgroup_position_in_grid.y, pair);
 #if SLAB_PACK_ENABLED
 bool in_slab = ((raw_expert & 0x80000000u) != 0);
 uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
+#if STREAM_PACK_ENABLED
+const device char* record_base = in_slab
+    ? ((const device char*)slab_pack) + 4096u + expert * 3072000u
+    : ((const device char*)stream_pack) + expert * 3072000u;
+decltype(weight) w_ptr = (decltype(weight))(record_base + PROJ_W_OFFSET);
+decltype(scales) s_ptr = (decltype(scales))(record_base + PROJ_S_OFFSET);
+decltype(biases) b_ptr = (decltype(biases))(record_base + PROJ_B_OFFSET);
+#else
 uint expert_offset = 4096u + expert * 3072000u;
 decltype(weight) w_ptr = in_slab
     ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + PROJ_W_OFFSET)
@@ -198,6 +206,7 @@ decltype(scales) s_ptr = in_slab
 decltype(biases) b_ptr = in_slab
     ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + PROJ_B_OFFSET)
     : (biases + expert * OUT_WIDTH * (IN_WIDTH / 32));
+#endif
 #elif SLAB_ENABLED
 bool in_slab = ((raw_expert & 0x80000000u) != 0);
 uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
@@ -307,6 +316,14 @@ for (uint slot = 0; slot < SLOTS; ++slot) {
 #if SLAB_PACK_ENABLED
     bool in_slab = ((raw_expert & 0x80000000u) != 0);
     uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
+#if STREAM_PACK_ENABLED
+    const device char* record_base = in_slab
+        ? ((const device char*)slab_pack) + 4096u + expert * 3072000u
+        : ((const device char*)stream_pack) + expert * 3072000u;
+    decltype(weight) w_ptr = (decltype(weight))(record_base + 2048000u);
+    decltype(scales) s_ptr = (decltype(scales))(record_base + 2867200u);
+    decltype(biases) b_ptr = (decltype(biases))(record_base + 2969600u);
+#else
     uint expert_offset = 4096u + expert * 3072000u;
     decltype(weight) w_ptr = in_slab
         ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + 2048000u)
@@ -317,6 +334,7 @@ for (uint slot = 0; slot < SLOTS; ++slot) {
     decltype(biases) b_ptr = in_slab
         ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + 2969600u)
         : (biases + expert * OUT_WIDTH * (IN_WIDTH / 32));
+#endif
 #elif SLAB_ENABLED
     bool in_slab = ((raw_expert & 0x80000000u) != 0);
     uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
@@ -344,7 +362,12 @@ if (simd_lid == 0) {
         if (col < OUT_WIDTH) {
             uint idx = token * OUT_WIDTH + col;
             T routed = static_cast<T>(combined[row]);
-#if HAS_SHARED_Y
+#if HAS_SHARED_PARTS
+            T shared_component = static_cast<T>(
+                float(shared[idx]) * float(shared_gate[token]));
+            float final_value = float(routed) + float(shared_component);
+            out[idx] = static_cast<T>(final_value);
+#elif HAS_SHARED_Y
             float final_value = float(routed) + float(shared_y[idx]);
             out[idx] = static_cast<T>(final_value);
 #else
@@ -406,6 +429,7 @@ class MetalMoEExecutor:
         slot_input: bool,
         has_slab: bool = False,
         has_slab_pack: bool = False,
+        has_stream_pack: bool = False,
         proj_name: str = "",
     ) -> Any:
         import mlx.core as mx
@@ -414,7 +438,10 @@ class MetalMoEExecutor:
         if maker is None:
             maker = mx.fast.metal_kernel
         dtype = getattr(x, "dtype", None)
-        key = (str(dtype), tokens, slots, input_width, output_width, slot_input, has_slab, has_slab_pack, proj_name)
+        key = (
+            str(dtype), tokens, slots, input_width, output_width, slot_input,
+            has_slab, has_slab_pack, has_stream_pack, proj_name,
+        )
         kernel = self._kernels.get(key)
         if kernel is None:
             body = _KERNEL_BODY.replace("TOKENS", str(tokens))
@@ -425,6 +452,9 @@ class MetalMoEExecutor:
             body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
             body = body.replace("SLOT_INPUT", "1" if slot_input else "0")
             body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
+            body = body.replace(
+                "STREAM_PACK_ENABLED", "1" if has_stream_pack else "0"
+            )
             body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
             if has_slab_pack:
                 if proj_name == "gate_proj":
@@ -445,11 +475,14 @@ class MetalMoEExecutor:
             input_names = ["x", "weight", "scales", "biases", "routes"]
             if has_slab_pack:
                 input_names.append("slab_pack")
+                if has_stream_pack:
+                    input_names.append("stream_pack")
             elif has_slab:
                 input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
             kernel = maker(
                 name=(
                     f"flashnext_level1_q4g32_{proj_name}_pack"
+                    + ("_stream" if has_stream_pack else "")
                     if has_slab_pack
                     else ("flashnext_level1_q4g32_slab" if has_slab else "flashnext_level1_q4g32")
                 ),
@@ -466,7 +499,8 @@ class MetalMoEExecutor:
     def _get_fused_down_kernel(
         self, x, tokens, slots, input_width, output_width,
         has_slab: bool = False, has_slab_pack: bool = False,
-        has_shared_y: bool = False,
+        has_stream_pack: bool = False,
+        has_shared_y: bool = False, has_shared_parts: bool = False,
     ):
         import mlx.core as mx
 
@@ -474,7 +508,8 @@ class MetalMoEExecutor:
         if maker is None:
             maker = mx.fast.metal_kernel
         key = ("fused-down", str(getattr(x, "dtype", None)), tokens, slots,
-               input_width, output_width, has_slab, has_slab_pack, has_shared_y)
+               input_width, output_width, has_slab, has_slab_pack,
+               has_stream_pack, has_shared_y, has_shared_parts)
         kernel = self._kernels.get(key)
         if kernel is None:
             body = _FUSED_DOWN_COMBINE_BODY.replace("TOKENS", str(tokens))
@@ -484,8 +519,14 @@ class MetalMoEExecutor:
             body = body.replace("GROUPS", str(input_width // GROUP_SIZE))
             body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
             body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
+            body = body.replace(
+                "STREAM_PACK_ENABLED", "1" if has_stream_pack else "0"
+            )
             body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
             body = body.replace("HAS_SHARED_Y", "1" if has_shared_y else "0")
+            body = body.replace(
+                "HAS_SHARED_PARTS", "1" if has_shared_parts else "0"
+            )
             body = body.replace(
                 "QMV_ACCUMULATE_IMPL",
                 "qmv_fast_accumulate_impl" if input_width % 512 == 0 else "qmv_accumulate_impl",
@@ -493,17 +534,25 @@ class MetalMoEExecutor:
             input_names = ["x", "weight", "scales", "biases", "routes", "scores"]
             if has_slab_pack:
                 input_names.append("slab_pack")
+                if has_stream_pack:
+                    input_names.append("stream_pack")
             elif has_slab:
                 input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
             if has_shared_y:
                 input_names.append("shared_y")
+            elif has_shared_parts:
+                input_names.extend(["shared", "shared_gate"])
             suffix = ""
             if has_slab_pack:
                 suffix += "_pack"
+                if has_stream_pack:
+                    suffix += "_stream"
             elif has_slab:
                 suffix += "_slab"
             if has_shared_y:
                 suffix += "_shared"
+            elif has_shared_parts:
+                suffix += "_shared_parts"
             kernel = maker(
                 name=f"flashnext_level1_q4g32_down_combine{suffix}",
                 input_names=input_names,
@@ -518,7 +567,7 @@ class MetalMoEExecutor:
 
     def _metal_fused_down_combine(
         self, x, routes, scores, down, output_width, slab_down=None, slab_pack=None,
-        shared_y=None,
+        stream_pack=None, shared_y=None, shared=None, shared_gate=None,
     ):
         import mlx.core as mx
 
@@ -528,19 +577,36 @@ class MetalMoEExecutor:
         biases = down.biases
         has_slab = slab_down is not None
         has_slab_pack = slab_pack is not None
+        has_stream_pack = stream_pack is not None
+        if has_stream_pack and not has_slab_pack:
+            raise ValueError("stream pack requires a resident slab pack")
         has_shared_y = shared_y is not None
+        has_shared_parts = shared is not None and shared_gate is not None
+        if (shared is None) != (shared_gate is None):
+            raise ValueError("shared and shared_gate must be provided together")
+        if has_shared_y and has_shared_parts:
+            raise ValueError("provide shared_y or shared parts, not both")
         kernel = self._get_fused_down_kernel(
             x, tokens, slots, input_width, output_width,
             has_slab=has_slab, has_slab_pack=has_slab_pack,
+            has_stream_pack=has_stream_pack,
             has_shared_y=has_shared_y,
+            has_shared_parts=has_shared_parts,
         )
         inputs = [x, down.weight, scales, biases, routes, scores]
         if has_slab_pack:
             inputs.append(slab_pack)
+            if has_stream_pack:
+                inputs.append(stream_pack)
         elif has_slab:
             inputs.extend([slab_down.weight, slab_down.scales, slab_down.biases])
         if has_shared_y:
             inputs.append(shared_y.reshape(tokens, output_width))
+        elif has_shared_parts:
+            inputs.extend([
+                shared.reshape(tokens, output_width),
+                shared_gate.reshape(tokens),
+            ])
         result = kernel(
             inputs=inputs,
             template=[("T", x.dtype)],
@@ -560,6 +626,7 @@ class MetalMoEExecutor:
         slot_input: bool,
         slab_projection: Q4G32Projection | None = None,
         slab_pack: Any = None,
+        stream_pack: Any = None,
         proj_name: str = "",
     ) -> Any:
         shape = _shape(x)
@@ -567,9 +634,13 @@ class MetalMoEExecutor:
         slots = _shape(routes)[1]
         has_slab = slab_projection is not None
         has_slab_pack = slab_pack is not None
+        has_stream_pack = stream_pack is not None
+        if has_stream_pack and not has_slab_pack:
+            raise ValueError("stream pack requires a resident slab pack")
         kernel = self._get_metal_kernel(
             x, tokens, slots, input_width, output_width, slot_input,
-            has_slab=has_slab, has_slab_pack=has_slab_pack, proj_name=proj_name
+            has_slab=has_slab, has_slab_pack=has_slab_pack,
+            has_stream_pack=has_stream_pack, proj_name=proj_name,
         )
         import mlx.core as mx
 
@@ -578,6 +649,8 @@ class MetalMoEExecutor:
         inputs = [x, projection.weight, scales, biases, routes]
         if has_slab_pack:
             inputs.append(slab_pack)
+            if has_stream_pack:
+                inputs.append(stream_pack)
         elif has_slab:
             inputs.extend([slab_projection.weight, slab_projection.scales, slab_projection.biases])
         result = kernel(
@@ -629,7 +702,10 @@ class MetalMoEExecutor:
         scores: Any = None,
         slab_projections: Mapping[str, Any] | Sequence[Any] | None = None,
         slab_pack: Any = None,
+        stream_pack: Any = None,
         shared_y: Any = None,
+        shared: Any = None,
+        shared_gate: Any = None,
     ) -> Any:
         """Run gate, up, activation, and down for bounded flattened inputs.
 
@@ -664,6 +740,12 @@ class MetalMoEExecutor:
             raise ValueError("routes must have shape (tokens, top_k)")
         if scores is not None and _shape(scores) != route_shape:
             raise ValueError("scores must have the same shape as routes")
+        if (shared is None) != (shared_gate is None):
+            raise ValueError("shared and shared_gate must be provided together")
+        if shared_y is not None and shared is not None:
+            raise ValueError("provide shared_y or shared parts, not both")
+        if stream_pack is not None and slab_pack is None:
+            raise ValueError("stream pack requires a resident slab pack")
         tokens = x_shape[0]
         if route_shape[0] != tokens:
             raise ValueError("x and routes must have the same token count")
@@ -708,17 +790,21 @@ class MetalMoEExecutor:
             _validate_projection(slab_down, None, inter_width, self.hidden_size)
 
         use_metal = self.available
+        if stream_pack is not None and not use_metal:
+            raise RuntimeError("stream pack requires custom Metal")
         if use_metal:
             # Separate gate and up projections outperform the fused variant
             # on M4. Fusion raises register pressure enough to exceed the
             # saved launch. The down-plus-router fusion remains profitable.
             gate_out = self._metal_projection(
                 x, routes, gate, gate_width, False, slab_projection=slab_gate,
-                slab_pack=slab_pack, proj_name="gate_proj"
+                slab_pack=slab_pack, stream_pack=stream_pack,
+                proj_name="gate_proj"
             )
             up_out = self._metal_projection(
                 x, routes, up, inter_width, False, slab_projection=slab_up,
-                slab_pack=slab_pack, proj_name="up_proj"
+                slab_pack=slab_pack, stream_pack=stream_pack,
+                proj_name="up_proj"
             )
             from mlx_vlm.models.activations import swiglu
 
@@ -727,12 +813,15 @@ class MetalMoEExecutor:
                 down_out = self._metal_fused_down_combine(
                     activation, routes, scores, down, self.hidden_size,
                     slab_down=slab_down, slab_pack=slab_pack,
+                    stream_pack=stream_pack,
                     shared_y=shared_y,
+                    shared=shared, shared_gate=shared_gate,
                 )
             else:
                 down_out = self._metal_projection(
                     activation, routes, down, self.hidden_size, True,
-                    slab_projection=slab_down, slab_pack=slab_pack, proj_name="down_proj"
+                    slab_projection=slab_down, slab_pack=slab_pack,
+                    stream_pack=stream_pack, proj_name="down_proj"
                 )
             self.last_path = "custom-metal"
             self.fallback_reason = None
@@ -743,6 +832,8 @@ class MetalMoEExecutor:
                 down_out = weighted_combine(down_out, routes, scores)
                 if shared_y is not None:
                     down_out = down_out + shared_y
+                elif shared is not None:
+                    down_out = down_out + shared_gate * shared
         if use_metal and not return_all:
             return down_out
         return (gate_out, up_out, down_out) if return_all else down_out

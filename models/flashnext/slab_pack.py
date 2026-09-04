@@ -41,6 +41,9 @@ HEADER_MAGIC = 0x4D4F4553  # "MOES"
 HEADER_VERSION = 1
 HEADER_SIZE = 4096
 RECORD_STRIDE = 3072000
+DIRECTORY_OFFSET = 32
+DIRECTORY_ENTRY_SIZE = 8
+MAX_DIRECTORY_ENTRIES = (HEADER_SIZE - DIRECTORY_OFFSET) // DIRECTORY_ENTRY_SIZE
 
 # Projections and sub-component offsets
 GATE_WEIGHT_OFFSET = 0
@@ -126,6 +129,12 @@ def build_slab_pack(
             global_slot += 1
 
     expert_count = len(ordered_experts)
+    if expert_count > MAX_DIRECTORY_ENTRIES:
+        raise ValueError(
+            f"Slab pack directory requires {expert_count} entries, "
+            f"but the {HEADER_SIZE}-byte header supports only "
+            f"{MAX_DIRECTORY_ENTRIES}"
+        )
     total_size = HEADER_SIZE + expert_count * RECORD_STRIDE
 
     with open(temp_path, "wb") as f:
@@ -145,7 +154,7 @@ def build_slab_pack(
         )
 
         # Directory table starting at offset 32: (layer_id: u16, expert_id: u16, slot: u32)
-        dir_offset = 32
+        dir_offset = DIRECTORY_OFFSET
         for layer_id, expert_id, slot in ordered_experts:
             struct.pack_into("<HHI", hdr, dir_offset, layer_id, expert_id, slot)
             dir_offset += 8
@@ -207,17 +216,30 @@ class SlabPack:
         self.buffer_np: np.ndarray | None = None
         self.buffer_mx: Any = None
         self.is_locked = False
-        self._open()
+        try:
+            self._open()
+        except Exception:
+            self.close()
+            raise
 
     def _open(self) -> None:
         import mlx.core as mx
 
         self.fd = os.open(str(self.path), os.O_RDONLY)
         self.size = os.fstat(self.fd).st_size
-        self._mm = mmap.mmap(self.fd, 0, access=mmap.ACCESS_READ)
+
+        if self.size < HEADER_SIZE:
+            raise ValueError(
+                f"Slab pack {self.path} is truncated: "
+                f"got {self.size} bytes, expected at least {HEADER_SIZE}"
+            )
 
         # Parse header
-        hdr = self._mm[:HEADER_SIZE]
+        hdr = os.pread(self.fd, HEADER_SIZE, 0)
+        if len(hdr) != HEADER_SIZE:
+            raise ValueError(
+                f"Could not read the complete slab pack header in {self.path}"
+            )
         magic, version, expert_count, stride, hdr_size, _, _ = struct.unpack_from(
             "<IIIII8sI", hdr, 0
         )
@@ -225,13 +247,51 @@ class SlabPack:
             raise ValueError(f"Invalid slab pack header in {self.path}")
         if stride != RECORD_STRIDE:
             raise ValueError(f"Unsupported record stride {stride} in {self.path}")
+        if hdr_size != HEADER_SIZE:
+            raise ValueError(
+                f"Unsupported header size {hdr_size} in {self.path}, "
+                f"expected {HEADER_SIZE}"
+            )
+        if expert_count > MAX_DIRECTORY_ENTRIES:
+            raise ValueError(
+                f"Slab pack directory has {expert_count} entries in {self.path}, "
+                f"but the {HEADER_SIZE}-byte header supports only "
+                f"{MAX_DIRECTORY_ENTRIES}"
+            )
+
+        expected_size = HEADER_SIZE + expert_count * stride
+        if self.size != expected_size:
+            raise ValueError(
+                f"Invalid slab pack size in {self.path}: got {self.size} bytes, "
+                f"expected {expected_size} from header"
+            )
+
+        self._mm = mmap.mmap(self.fd, 0, access=mmap.ACCESS_READ)
 
         self.expert_count = expert_count
 
         # Parse directory
-        dir_offset = 32
+        dir_offset = DIRECTORY_OFFSET
+        seen_slots = set()
+        seen_experts = set()
         for _ in range(expert_count):
             layer_id, expert_id, slot = struct.unpack_from("<HHI", hdr, dir_offset)
+            if slot >= expert_count:
+                raise ValueError(
+                    f"Invalid slab pack directory slot {slot} in {self.path}: "
+                    f"expected a value below {expert_count}"
+                )
+            if slot in seen_slots:
+                raise ValueError(
+                    f"Duplicate slab pack directory slot {slot} in {self.path}"
+                )
+            expert_key = (layer_id, expert_id)
+            if expert_key in seen_experts:
+                raise ValueError(
+                    f"Duplicate slab pack directory expert {expert_key} in {self.path}"
+                )
+            seen_slots.add(slot)
+            seen_experts.add(expert_key)
             if layer_id not in self.layer_to_base_slot:
                 self.layer_to_base_slot[layer_id] = slot
             self.layer_expert_to_slot[(layer_id, expert_id)] = slot
@@ -246,6 +306,17 @@ class SlabPack:
             buf_ptr = self.buffer_np.__array_interface__["data"][0]
             if buf_ptr:
                 self.is_locked = libc_mlock(buf_ptr, self.size)
+
+    @property
+    def allocation_digest(self) -> str:
+        """Return a deterministic short digest of the validated directory."""
+        digest = hashlib.sha256()
+        digest.update(struct.pack("<II", self.expert_count, RECORD_STRIDE))
+        for (layer_id, expert_id), slot in sorted(
+            self.layer_expert_to_slot.items()
+        ):
+            digest.update(struct.pack("<HHI", layer_id, expert_id, slot))
+        return digest.hexdigest()[:16]
 
     def close(self) -> None:
         if self._mm is not None:
@@ -310,7 +381,21 @@ def get_or_create_slab_pack(
         raise ValueError("Cannot create slab pack with empty allocation")
 
     cache_path = get_slab_pack_cache_path(store.dir, allocation, cache_dir)
+    expected_path = os.environ.get("FLASHNEXT_SLAB_PACK_EXPECTED_PATH")
+    if expected_path:
+        expected = Path(expected_path).expanduser().resolve()
+        if cache_path.resolve() != expected:
+            raise RuntimeError(
+                f"Resolved slab pack {cache_path} does not match prepared pack "
+                f"{expected}"
+            )
     if not cache_path.exists():
+        if os.environ.get("FLASHNEXT_SLAB_PACK_REQUIRE_EXISTING") == "1":
+            raise FileNotFoundError(
+                f"Required prebuilt slab pack is missing: {cache_path}. "
+                "Run bench_slab_production.py --capacity-sweep --prepare-only, "
+                "then reboot before the trusted benchmark."
+            )
         build_slab_pack(store, allocation, cache_path)
 
     return SlabPack(cache_path, lock_memory=lock_memory)
