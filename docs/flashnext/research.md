@@ -4266,4 +4266,51 @@ Measured 2026-09-03.
 - **Strict RAM Bounding**: Total pack size is **164.07 MiB** ($172{,}036{,}096$ bytes), MLX active RAM delta is only **+24.5 MB** (well below the 196 MB threshold), with physical `mlock` confirmed and zero VM paging.
 - **Determinism**: 100% bit-identical token digest `29d04075ed7021b3` across all arms.
 
+### 14. Shared-Output Final Fusion in Metal Kernel Epilogue (Frontier 8A)
+Measured 2026-09-04.
+
+#### Architectural Rationale & Implementation:
+1. **Eliminating Dispatch & Buffer Overhead**:
+   In Qwen3.8-Flash-Next decode, each MoE layer combines the routed output with the gated shared expert:
+   $$\text{output} = y_{\text{routed}} + (\sigma(W_{\text{gate}} x) \odot W_{\text{shared}} x)$$
+   Previously, MLX launched a standalone elementwise vector addition kernel (`mx.add`) per layer, materializing 48 intermediate $y_{\text{routed}}$ tensors (~245 KiB/token written to and read from RAM) and paying 48 separate kernel launch and command buffer dispatch overheads.
+
+2. **Strict Bit-Identical Two-Step Rounding Invariant**:
+   Directly performing FP32 fused addition `out[idx] = static_cast<T>(combined[row] + float(shared_y[idx]))` skips the intermediate bfloat16 truncation of $y_{\text{routed}}$, causing numerical drift and breaking the canonical token digest.
+   To ensure 100% bit-identical determinism with MLX's execution graph, the kernel store epilogue strictly reproduces the two rounding boundaries:
+   ```metal
+   if (simd_lid == 0) {
+   #pragma unroll
+       for (uint row = 0; row < 4; ++row) {
+           uint col = out_base + row;
+           if (col < OUT_WIDTH) {
+               uint idx = token * OUT_WIDTH + col;
+               T routed = static_cast<T>(combined[row]);
+   #if HAS_SHARED_Y
+               float final_value = float(routed) + float(shared_y[idx]);
+               out[idx] = static_cast<T>(final_value);
+   #else
+               out[idx] = routed;
+   #endif
+           }
+       }
+   }
+   ```
+
+3. **Controlled Multi-Arm Reversed-Order Production Benchmark (`bench_slab_production.py`)**:
+   Evaluated on `slabpack56_skew` comparing `FLASHNEXT_FUSED_SHARED=0` (unfused) against `FLASHNEXT_FUSED_SHARED=1` (fused epilogue):
+
+| Condition | Gen med (t/s) | Range (t/s) | Tail med (t/s) | Phys MB/tok | Active MB | Hit Rate % | Token Digest |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **slabpack56_skew_unfused** | 2.63 | 2.62..3.10 | 2.50 | 572.5 | 3608.0 | 40.7% | `b8f20bd0dbc71940` (24 tok) |
+| **slabpack56_skew (Frontier 8A)** | **3.08** | **2.98..3.09** | **2.99** | 574.9 | 3608.0 | 40.7% | `b8f20bd0dbc71940` (24 tok) |
+| **slabpack56_skew_unfused** | 2.73 | 2.73..2.73 | 2.70 | 511.7 | 3608.4 | 39.7% | `29d04075ed7021b3` (32 tok) |
+| **slabpack56_skew (Frontier 8A)** | **3.08** | **3.08..3.08** | **3.06** | 506.8 | 3608.4 | 39.7% | `29d04075ed7021b3` (32 tok) |
+
+- **Elevated Generation Median**: Reached **3.08 tok/s median** (+17.1% over unfused baseline).
+- **Elevated Generation Floor**: The lowest run rose from 2.62 to **2.98 tok/s** (+13.7% higher floor).
+- **Dispatch Elimination**: 48 elementwise additions and 48 intermediate tensor allocations saved per token.
+- **Zero Numerical Drift**: 100% bit-identical token digest (`29d04075ed7021b3` for 32 tokens, `b8f20bd0dbc71940` for 24 tokens).
+
+
 

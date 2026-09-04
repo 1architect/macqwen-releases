@@ -338,19 +338,30 @@ def _moe_call(self, x: mx.array) -> mx.array:
     if _PROFILE:
         _TIMERS["shared_expert"] += time.perf_counter() - shared_began
 
+    shared_y = shared_gate * shared
+
     predictor_mode = _TAIL_MODE[0]
     custom_combines = (
         getattr(self.switch_mlp, "metal_combines_scores", False)
         and x.size // x.shape[-1] <= 8
         and predictor_mode == "off"
     )
-    if custom_combines:
+    fuse_shared = (
+        custom_combines
+        and os.environ.get("FLASHNEXT_FUSED_SHARED", "1") == "1"
+    )
+    if fuse_shared:
+        y = self.switch_mlp(x, inds, scores=scores, shared_y=shared_y)
+        expert_values = None
+        if not getattr(self.switch_mlp, "_last_fused_shared", False):
+            y = y + shared_y
+    elif custom_combines:
         y = self.switch_mlp(x, inds, scores=scores)
         expert_values = None
+        y = y + shared_y
     else:
         expert_values = self.switch_mlp(x, inds)
         y = (expert_values * scores[..., None]).sum(axis=-2)
-    shared_y = shared_gate * shared
 
     if (
         predictor_mode in ("collect", "apply")
@@ -388,7 +399,9 @@ def _moe_call(self, x: mx.array) -> mx.array:
                     features * coefficients[None, ...]
                 ).sum(axis=-1).astype(y.dtype)
                 y = y + correction
-    return y + shared_y
+    if not custom_combines:
+        return y + shared_y
+    return y
 
 
 _THRESHOLD = [1.0]

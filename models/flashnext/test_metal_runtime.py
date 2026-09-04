@@ -551,6 +551,54 @@ class MLXQ4G32SmokeTests(unittest.TestCase):
             rtol=1e-3, atol=1e-4,
         )
 
+    def test_fused_down_combine_with_shared_y_is_bit_identical(self):
+        mx = self.mx
+        hidden_size, intermediate_size = 2560, 640
+        packs = {
+            "gate_proj": self.pack(0, intermediate_size, hidden_size, 2),
+            "up_proj": self.pack(1, intermediate_size, hidden_size, 2),
+            "down_proj": self.pack(2, hidden_size, intermediate_size, 2),
+        }
+        x = (((mx.arange(hidden_size, dtype=mx.float32) % 31) - 15) / 64)
+        x = x.reshape(1, hidden_size).astype(mx.bfloat16)
+        routes = mx.array([[0, 1]], dtype=mx.uint32)
+        scores = mx.array([[0.375, 0.625]], dtype=mx.float32)
+        shared_y = (((mx.arange(hidden_size, dtype=mx.float32) % 29) - 14) / 32).reshape(1, hidden_size).astype(mx.bfloat16)
+
+        executor = MetalMoEExecutor(2, hidden_size, 2, backend="metal")
+        unfused = executor.execute(x, routes, packs, scores=scores)
+        expected = unfused + shared_y
+        fused = executor.execute(x, routes, packs, scores=scores, shared_y=shared_y)
+
+        mx.eval(expected, fused)
+        mismatches = int(mx.sum(fused.view(mx.uint16) != expected.view(mx.uint16)).item())
+        self.assertEqual(mismatches, 0, f"shared_y epilogue diverged with {mismatches} mismatches")
+
+    def test_fused_down_combine_with_shared_y_slab_pack_is_bit_identical(self):
+        mx = self.mx
+        hidden_size, intermediate_size = 2560, 640
+        packs = {
+            "gate_proj": self.pack(0, intermediate_size, hidden_size, 2),
+            "up_proj": self.pack(1, intermediate_size, hidden_size, 2),
+            "down_proj": self.pack(2, hidden_size, intermediate_size, 2),
+        }
+        x = (((mx.arange(hidden_size, dtype=mx.float32) % 31) - 15) / 64)
+        x = x.reshape(1, hidden_size).astype(mx.bfloat16)
+        # Route 0 is unslab (streamed index 0), route 1 is slab (0x80000000 | 0)
+        routes = mx.array([[0, 0x80000000]], dtype=mx.uint32)
+        scores = mx.array([[0.375, 0.625]], dtype=mx.float32)
+        shared_y = (((mx.arange(hidden_size, dtype=mx.float32) % 29) - 14) / 32).reshape(1, hidden_size).astype(mx.bfloat16)
+        slab_pack = mx.zeros(4096 + 2 * 3072000, dtype=mx.uint8)
+
+        executor = MetalMoEExecutor(2, hidden_size, 2, backend="metal")
+        unfused = executor.execute(x, routes, packs, scores=scores, slab_pack=slab_pack)
+        expected = unfused + shared_y
+        fused = executor.execute(x, routes, packs, scores=scores, slab_pack=slab_pack, shared_y=shared_y)
+
+        mx.eval(expected, fused)
+        mismatches = int(mx.sum(fused.view(mx.uint16) != expected.view(mx.uint16)).item())
+        self.assertEqual(mismatches, 0, f"slab pack shared_y epilogue diverged with {mismatches} mismatches")
+
 
 class MetalRuntimeIntegrationSelectionTests(unittest.TestCase):
     def test_only_opt_in_nonzero_layers_select_custom_score_combine(self):
@@ -596,3 +644,4 @@ class MetalRuntimeIntegrationSelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

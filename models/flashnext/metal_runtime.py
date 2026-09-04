@@ -339,9 +339,19 @@ for (uint slot = 0; slot < SLOTS; ++slot) {
 
 if (simd_lid == 0) {
 #pragma unroll
-    for (uint row = 0; row < 4; ++row)
-        if (out_base + row < OUT_WIDTH)
-            out[token * OUT_WIDTH + out_base + row] = static_cast<T>(combined[row]);
+    for (uint row = 0; row < 4; ++row) {
+        uint col = out_base + row;
+        if (col < OUT_WIDTH) {
+            uint idx = token * OUT_WIDTH + col;
+            T routed = static_cast<T>(combined[row]);
+#if HAS_SHARED_Y
+            float final_value = float(routed) + float(shared_y[idx]);
+            out[idx] = static_cast<T>(final_value);
+#else
+            out[idx] = routed;
+#endif
+        }
+    }
 }
 """
 
@@ -454,7 +464,9 @@ class MetalMoEExecutor:
         return kernel
 
     def _get_fused_down_kernel(
-        self, x, tokens, slots, input_width, output_width, has_slab: bool = False, has_slab_pack: bool = False
+        self, x, tokens, slots, input_width, output_width,
+        has_slab: bool = False, has_slab_pack: bool = False,
+        has_shared_y: bool = False,
     ):
         import mlx.core as mx
 
@@ -462,7 +474,7 @@ class MetalMoEExecutor:
         if maker is None:
             maker = mx.fast.metal_kernel
         key = ("fused-down", str(getattr(x, "dtype", None)), tokens, slots,
-               input_width, output_width, has_slab, has_slab_pack)
+               input_width, output_width, has_slab, has_slab_pack, has_shared_y)
         kernel = self._kernels.get(key)
         if kernel is None:
             body = _FUSED_DOWN_COMBINE_BODY.replace("TOKENS", str(tokens))
@@ -473,6 +485,7 @@ class MetalMoEExecutor:
             body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
             body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
             body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
+            body = body.replace("HAS_SHARED_Y", "1" if has_shared_y else "0")
             body = body.replace(
                 "QMV_ACCUMULATE_IMPL",
                 "qmv_fast_accumulate_impl" if input_width % 512 == 0 else "qmv_accumulate_impl",
@@ -482,10 +495,17 @@ class MetalMoEExecutor:
                 input_names.append("slab_pack")
             elif has_slab:
                 input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
+            if has_shared_y:
+                input_names.append("shared_y")
+            suffix = ""
+            if has_slab_pack:
+                suffix += "_pack"
+            elif has_slab:
+                suffix += "_slab"
+            if has_shared_y:
+                suffix += "_shared"
             kernel = maker(
-                name="flashnext_level1_q4g32_down_combine_pack" if has_slab_pack else (
-                    "flashnext_level1_q4g32_down_combine_slab" if has_slab else "flashnext_level1_q4g32_down_combine"
-                ),
+                name=f"flashnext_level1_q4g32_down_combine{suffix}",
                 input_names=input_names,
                 output_names=["out"],
                 source=body,
@@ -497,7 +517,8 @@ class MetalMoEExecutor:
         return kernel
 
     def _metal_fused_down_combine(
-        self, x, routes, scores, down, output_width, slab_down=None, slab_pack=None
+        self, x, routes, scores, down, output_width, slab_down=None, slab_pack=None,
+        shared_y=None,
     ):
         import mlx.core as mx
 
@@ -507,14 +528,19 @@ class MetalMoEExecutor:
         biases = down.biases
         has_slab = slab_down is not None
         has_slab_pack = slab_pack is not None
+        has_shared_y = shared_y is not None
         kernel = self._get_fused_down_kernel(
-            x, tokens, slots, input_width, output_width, has_slab=has_slab, has_slab_pack=has_slab_pack
+            x, tokens, slots, input_width, output_width,
+            has_slab=has_slab, has_slab_pack=has_slab_pack,
+            has_shared_y=has_shared_y,
         )
         inputs = [x, down.weight, scales, biases, routes, scores]
         if has_slab_pack:
             inputs.append(slab_pack)
         elif has_slab:
             inputs.extend([slab_down.weight, slab_down.scales, slab_down.biases])
+        if has_shared_y:
+            inputs.append(shared_y.reshape(tokens, output_width))
         result = kernel(
             inputs=inputs,
             template=[("T", x.dtype)],
@@ -603,6 +629,7 @@ class MetalMoEExecutor:
         scores: Any = None,
         slab_projections: Mapping[str, Any] | Sequence[Any] | None = None,
         slab_pack: Any = None,
+        shared_y: Any = None,
     ) -> Any:
         """Run gate, up, activation, and down for bounded flattened inputs.
 
@@ -699,7 +726,8 @@ class MetalMoEExecutor:
             if scores is not None and not return_all:
                 down_out = self._metal_fused_down_combine(
                     activation, routes, scores, down, self.hidden_size,
-                    slab_down=slab_down, slab_pack=slab_pack
+                    slab_down=slab_down, slab_pack=slab_pack,
+                    shared_y=shared_y,
                 )
             else:
                 down_out = self._metal_projection(
@@ -713,6 +741,8 @@ class MetalMoEExecutor:
             gate_out, up_out, down_out = self._reference_all(x, routes, gate, up, down)
             if scores is not None and not return_all:
                 down_out = weighted_combine(down_out, routes, scores)
+                if shared_y is not None:
+                    down_out = down_out + shared_y
         if use_metal and not return_all:
             return down_out
         return (gate_out, up_out, down_out) if return_all else down_out

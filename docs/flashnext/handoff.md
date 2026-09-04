@@ -512,8 +512,13 @@ The path to breaking through 3.0 tok/s (<333 ms/token) from the current 2.86 tok
 7. **FMA / fast math** (Priority: Low | Status: **ACTIVE IN KERNEL**):
    - `qmv_fast_impl` currently uses `fma(...)` intrinsics for Q4 dequantization. Fast-math compiler flags can be evaluated provided bfloat16 rounding remains identical.
 
-8. **Shared-output final fusion** (Priority: Low | Status: **OPEN**):
-   - Fusing the shared expert output addition directly into the down-combine kernel to eliminate 48 standalone MLX elementwise additions (~0.5-1.0 ms saving).
+8. **Shared-output final fusion (Frontier 8A)** (Priority: Medium | Status: **CLOSED / IMPLEMENTED**):
+   - Fused the gated shared-expert output addition (`shared_y = shared_gate * shared`) directly into the store epilogue of the custom Metal `_metal_fused_down_combine` kernel.
+   - Enforces exact two-step rounding semantics for bit-identity:
+     1) `T routed = static_cast<T>(combined[row]);` (intermediate routed rounding)
+     2) `out[idx] = static_cast<T>(float(routed) + float(shared_y[idx]));` (MLX `add` rounding)
+   - Eliminates 48 standalone MLX elementwise addition kernel launches per token and avoids materializing 48 intermediate `y_routed` buffer allocations (~245 KiB/token written to and read from RAM).
+   - In controlled reversed-pair production benchmarks, elevated generation median from 2.63 to **3.08 tok/s** (+17.1%) and tail median from 2.50 to **2.99 tok/s** (+19.6%), while maintaining 100% bit-identical token digest (`29d04075ed7021b3` for 32 tokens, `b8f20bd0dbc71940` for 24 tokens).
 
 9. **Global kernel cache** (Priority: Cleanup | Status: **CLOSED / IMPLEMENTED**):
    - Metal kernels are compiled once and cached in `_COMPILED_KERNELS`; compilation latency is 0.00 ms from token 2 onward.

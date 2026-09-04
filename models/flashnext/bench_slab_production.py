@@ -37,7 +37,7 @@ PROMPT = (
 
 def run_arm(
     slab: int, layers: int, tokens: int, global_budget: int = 0, slab_pack: bool = False,
-    policy: str = "skew"
+    policy: str = "skew", fuse_shared: bool = True,
 ) -> dict:
     os.environ["FLASHNEXT_METAL_RUNTIME"] = "1"
     os.environ["FLASHNEXT_SLAB"] = str(slab)
@@ -45,6 +45,7 @@ def run_arm(
     os.environ["FLASHNEXT_SLAB_GLOBAL"] = str(global_budget)
     os.environ["FLASHNEXT_SLAB_PACK"] = "1" if slab_pack else "0"
     os.environ["FLASHNEXT_SLAB_POLICY"] = policy
+    os.environ["FLASHNEXT_FUSED_SHARED"] = "1" if fuse_shared else "0"
 
     from macqwen.backends.flashnext import FlashNextBackend
     from models.flashnext.diskio import ReadMeter, free_memory_mb
@@ -114,32 +115,39 @@ def main():
         "--control",
         type=str,
         default="slabpack48",
-        choices=["baseline", "slab12", "global48", "global56", "slabpack48", "slabpack56_uniform", "slabpack56_skew"],
+        choices=[
+            "baseline", "slab12", "global48", "global56", "slabpack48",
+            "slabpack56_uniform", "slabpack56_skew", "slabpack56_skew_unfused",
+        ],
         help="Control configuration (default: slabpack48)",
     )
     parser.add_argument(
         "--target",
         type=str,
         default="slabpack56_skew",
-        choices=["baseline", "slab12", "global48", "global56", "slabpack48", "slabpack56_uniform", "slabpack56_skew"],
+        choices=[
+            "baseline", "slab12", "global48", "global56", "slabpack48",
+            "slabpack56_uniform", "slabpack56_skew", "slabpack56_skew_unfused",
+        ],
         help="Target slab configuration to compare against control",
     )
     parser.add_argument(
         "--arms",
         type=str,
         default=None,
-        help="Comma-separated list of configurations to compare (e.g. slabpack48,slabpack56_uniform,slabpack56_skew)",
+        help="Comma-separated list of configurations to compare (e.g. slabpack56_skew_unfused,slabpack56_skew)",
     )
     args = parser.parse_args()
 
     cond_defs = {
-        "baseline": (0, 0, 0, False, "uniform"),
-        "slab12": (4, 12, 0, False, "uniform"),
-        "global48": (0, 0, 48, False, "uniform"),
-        "global56": (0, 0, 56, False, "uniform"),
-        "slabpack48": (0, 0, 48, True, "uniform"),
-        "slabpack56_uniform": (0, 0, 56, True, "uniform"),
-        "slabpack56_skew": (0, 0, 56, True, "skew"),
+        "baseline": (0, 0, 0, False, "uniform", True),
+        "slab12": (4, 12, 0, False, "uniform", True),
+        "global48": (0, 0, 48, False, "uniform", True),
+        "global56": (0, 0, 56, False, "uniform", True),
+        "slabpack48": (0, 0, 48, True, "uniform", True),
+        "slabpack56_uniform": (0, 0, 56, True, "uniform", True),
+        "slabpack56_skew": (0, 0, 56, True, "skew", True),
+        "slabpack56_skew_unfused": (0, 0, 56, True, "skew", False),
     }
 
     if args.arms:
@@ -165,10 +173,11 @@ def main():
     collected = {name: [] for name in arm_names}
 
     for idx, name in enumerate(schedule, 1):
-        slab, layers, global_b, s_pack, policy = cond_defs[name]
+        slab, layers, global_b, s_pack, policy, f_shared = cond_defs[name]
         pack_str = f", PACK=1, POLICY={policy}" if s_pack else ""
-        print(f"Arm {idx:2d}/{len(schedule)}: Running {name:<20} (SLAB={slab}, LAYERS={layers}, GLOBAL={global_b}{pack_str})...", flush=True)
-        res = run_arm(slab, layers, args.tokens, global_b, slab_pack=s_pack, policy=policy)
+        fuse_str = "" if f_shared else ", FUSE_SHARED=0"
+        print(f"Arm {idx:2d}/{len(schedule)}: Running {name:<24} (SLAB={slab}, LAYERS={layers}, GLOBAL={global_b}{pack_str}{fuse_str})...", flush=True)
+        res = run_arm(slab, layers, args.tokens, global_b, slab_pack=s_pack, policy=policy, fuse_shared=f_shared)
         collected[name].append(res)
         print(
             f"  -> Gen: {res['gen_rate']:.2f} t/s | Tail: {res['tail_rate']:.2f} t/s | "

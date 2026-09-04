@@ -841,7 +841,8 @@ class StreamingSwitchGLU(nn.Module):
             self._cached_dummy_weights = dummy
         return dummy
 
-    def __call__(self, x, indices, allow_sort=True, scores=None) -> mx.array:
+    def __call__(self, x, indices, allow_sort=True, scores=None, shared_y=None) -> mx.array:
+        self._last_fused_shared = False
         flat_input = x.reshape(-1, x.shape[-1])
         x = mx.expand_dims(x, (-2, -3))
         # `_moe_call` leaves the routed list here when one-sync is on. It is
@@ -945,7 +946,10 @@ class StreamingSwitchGLU(nn.Module):
                     flat_input, local, streamed_packs,
                     scores=routed_scores,
                     slab_pack=pack.buffer_mx,
+                    shared_y=shared_y,
                 )
+                if shared_y is not None:
+                    self._last_fused_shared = True
                 return output.reshape(*indices.shape[:-1], output.shape[-1]).astype(mx.bfloat16)
 
             hit = [e for e in routed if e in slabs[0].slot]
@@ -1007,13 +1011,17 @@ class StreamingSwitchGLU(nn.Module):
                 flat_input, local, streamed_packs,
                 scores=routed_scores,
                 slab_projections=slab_packs,
+                shared_y=shared_y,
             )
+            if shared_y is not None:
+                self._last_fused_shared = True
             return output.reshape(*indices.shape[:-1], output.shape[-1]).astype(mx.bfloat16)
 
         if not use_slab:
             return self._one_pass(
                 x, indices, routed, None, allow_sort=allow_sort,
                 flat_input=flat_input, scores=scores,
+                shared_y=shared_y,
             )
 
         hit = [e for e in routed if e in slabs[0].slot]
@@ -1045,7 +1053,7 @@ class StreamingSwitchGLU(nn.Module):
 
     def _one_pass(
         self, x, indices, routed, slabs, mask=None, allow_sort=True,
-        flat_input=None, scores=None,
+        flat_input=None, scores=None, shared_y=None,
     ):
         projections = (self.gate_proj, self.up_proj, self.down_proj)
         if slabs is not None:
@@ -1136,7 +1144,10 @@ class StreamingSwitchGLU(nn.Module):
                 output = executor.execute(
                     flat_input, local, projection_packs,
                     scores=routed_scores,
+                    shared_y=shared_y,
                 )
+                if shared_y is not None:
+                    self._last_fused_shared = True
                 output = output.reshape(
                     *indices.shape[:-1], output.shape[-1]
                 )
