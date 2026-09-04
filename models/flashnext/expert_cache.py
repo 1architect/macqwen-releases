@@ -651,20 +651,47 @@ class StreamingSwitchGLU(nn.Module):
         self.layer_id = layer_id
         self.next_prefix = next_prefix
         global_budget = int(os.environ.get("FLASHNEXT_SLAB_GLOBAL", 0))
-        if global_budget > 0:
+        min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", 4))
+        use_slab_pack = os.environ.get("FLASHNEXT_SLAB_PACK") == "1"
+        self.slab_pack = None
+        self.slab_expert_to_slot = {}
+        if use_slab_pack and global_budget > 0:
+            from .slab_pack import get_or_create_slab_pack
+
+            alloc = getattr(store, "_slab_alloc", None)
+            if alloc is None:
+                alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
+                store._slab_alloc = alloc
+            pack = getattr(store, "_slab_pack", None)
+            if pack is None:
+                pack = get_or_create_slab_pack(store, alloc)
+                store._slab_pack = pack
+            self.slab_pack = pack
+            hot = alloc.get(layer_id, [])
+            self.slab_expert_to_slot = {
+                e: self.slab_pack.layer_expert_to_slot[(layer_id, e)]
+                for e in hot
+                if (layer_id, e) in self.slab_pack.layer_expert_to_slot
+            }
+            has_slab = len(self.slab_expert_to_slot) > 0
+            make_slab = None
+        elif global_budget > 0:
             min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", 4))
             alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
             hot = alloc.get(layer_id, [])
             slab_size = len(hot)
             has_slab = slab_size > 0
+            make_slab = lambda name: ResidentSlab(store, f"{prefix}.{name}", slab_size, initial_experts=hot) if has_slab else None
         else:
             slab_size = int(os.environ.get("FLASHNEXT_SLAB", 0))
             max_slab_layer = int(os.environ.get("FLASHNEXT_SLAB_LAYERS", -1))
             has_slab = slab_size > 0 and (max_slab_layer < 0 or (0 <= layer_id < max_slab_layer))
             hot = get_hot_slab_experts(layer_id, slab_size) if has_slab else []
+            make_slab = lambda name: ResidentSlab(store, f"{prefix}.{name}", slab_size, initial_experts=hot) if has_slab else None
+
         make = lambda name: StreamingSwitchLinear(
             store, f"{prefix}.{name}", group_size, bits, mode, capacity,
-            slab=ResidentSlab(store, f"{prefix}.{name}", slab_size, initial_experts=hot) if has_slab else None,
+            slab=make_slab(name) if make_slab is not None else None,
         )
         self.hits = 0
         self.misses = 0
@@ -696,7 +723,13 @@ class StreamingSwitchGLU(nn.Module):
         wanted = list(wanted)
         if self.gate_proj.cache.store._sort_reads:
             wanted.sort()
-        if projections[0].slab is not None:
+        pack = getattr(self, "slab_pack", None)
+        expert_to_slot = getattr(self, "slab_expert_to_slot", {})
+        if pack is not None and expert_to_slot:
+            wanted = [e for e in wanted if e not in expert_to_slot]
+            if not wanted:
+                return
+        elif projections[0].slab is not None:
             wanted = [e for e in wanted if e not in projections[0].slab.slot]
             if not wanted:
                 return
@@ -704,6 +737,26 @@ class StreamingSwitchGLU(nn.Module):
             wanted,
             [p.cache.submit(wanted, False) for p in projections],
         )
+
+    def _get_dummy_streamed_weights(self, hidden_size: int):
+        dummy = getattr(self, "_cached_dummy_weights", None)
+        if dummy is None:
+            gw = mx.zeros((1, 640, hidden_size // 8), dtype=mx.uint32)
+            gs = mx.zeros((1, 640, hidden_size // 32), dtype=mx.bfloat16)
+            gb = mx.zeros((1, 640, hidden_size // 32), dtype=mx.bfloat16)
+            uw = mx.zeros((1, 640, hidden_size // 8), dtype=mx.uint32)
+            us = mx.zeros((1, 640, hidden_size // 32), dtype=mx.bfloat16)
+            ub = mx.zeros((1, 640, hidden_size // 32), dtype=mx.bfloat16)
+            dw = mx.zeros((1, hidden_size, 640 // 8), dtype=mx.uint32)
+            ds = mx.zeros((1, hidden_size, 640 // 32), dtype=mx.bfloat16)
+            db = mx.zeros((1, hidden_size, 640 // 32), dtype=mx.bfloat16)
+            dummy = [
+                (gw, gs, gb),
+                (uw, us, ub),
+                (dw, ds, db),
+            ]
+            self._cached_dummy_weights = dummy
+        return dummy
 
     def __call__(self, x, indices, allow_sort=True, scores=None) -> mx.array:
         flat_input = x.reshape(-1, x.shape[-1])
@@ -729,9 +782,22 @@ class StreamingSwitchGLU(nn.Module):
         if observer is not None and self.layer_id >= 0:
             observer(self.layer_id)
 
+        pack = getattr(self, "slab_pack", None)
+        expert_to_slot = getattr(self, "slab_expert_to_slot", {})
         slabs = [p.slab for p in (self.gate_proj, self.up_proj, self.down_proj)]
-        use_slab = slabs[0] is not None and slabs[0].ready()
-        if slabs[0] is not None and not use_slab:
+        use_slab_pack = (
+            pack is not None
+            and bool(expert_to_slot)
+            and self.metal_combines_scores
+            and scores is not None
+            and flat_input is not None
+            and flat_input.shape[0] <= 8
+        )
+        use_slab = (
+            use_slab_pack
+            or (slabs[0] is not None and slabs[0].ready())
+        )
+        if slabs[0] is not None and not use_slab and pack is None:
             if flat_input is not None and flat_input.shape[0] <= 8:
                 for sl in slabs:
                     sl.admit(list(dict.fromkeys(routed)))
@@ -744,6 +810,61 @@ class StreamingSwitchGLU(nn.Module):
             and flat_input is not None
             and flat_input.shape[0] <= 8
         ):
+            if use_slab_pack:
+                hit = [e for e in routed if e in expert_to_slot]
+                miss = [e for e in routed if e not in expert_to_slot]
+                self.hits += len(hit)
+                self.misses += len(miss)
+
+                wanted = list(dict.fromkeys(miss))
+                if self.gate_proj.cache.store._sort_reads:
+                    wanted.sort()
+
+                projections = (self.gate_proj, self.up_proj, self.down_proj)
+                prefetched = getattr(self, "_prefetch", None)
+                self._prefetch = None
+                if wanted:
+                    if prefetched is not None and prefetched[0] == wanted:
+                        pending = prefetched[1]
+                    else:
+                        pending = [p.cache.submit(wanted, False) for p in projections]
+                    weights = [p.cache.to_mx(_await_read(fs)) for p, fs in zip(projections, pending)]
+                    miss_order = {e: i for i, e in enumerate(wanted)}
+                else:
+                    weights = self._get_dummy_streamed_weights(flat_input.shape[-1])
+                    miss_order = {}
+
+                encoded_routes = []
+                for e in routed:
+                    if e in expert_to_slot:
+                        encoded_routes.append(0x80000000 | expert_to_slot[e])
+                    else:
+                        encoded_routes.append(miss_order[e])
+
+                slots = indices.shape[-1]
+                local = mx.array(encoded_routes, dtype=mx.uint32).reshape(flat_input.shape[0], slots)
+                routed_scores = scores.reshape(flat_input.shape[0], slots)
+
+                from .metal_runtime import MetalMoEExecutor
+                key = ("slab_pack", flat_input.shape[-1], slots)
+                executor = self._metal_executors.get(key)
+                if executor is None:
+                    total_exp = max(len(expert_to_slot) + len(wanted), slots)
+                    executor = MetalMoEExecutor(total_exp, flat_input.shape[-1], slots)
+                    self._metal_executors[key] = executor
+
+                streamed_packs = {
+                    "gate_proj": weights[0],
+                    "up_proj": weights[1],
+                    "down_proj": weights[2],
+                }
+                output = executor.execute(
+                    flat_input, local, streamed_packs,
+                    scores=routed_scores,
+                    slab_pack=pack.buffer_mx,
+                )
+                return output.reshape(*indices.shape[:-1], output.shape[-1]).astype(mx.bfloat16)
+
             hit = [e for e in routed if e in slabs[0].slot]
             miss = [e for e in routed if e not in slabs[0].slot]
             self.hits += len(hit)

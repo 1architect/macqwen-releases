@@ -185,7 +185,20 @@ const device T* input = x +
 device T* output = out + pair * OUT_WIDTH;
 uint3 tid = uint3(0, threadgroup_position_in_grid.y, pair);
 
-#if SLAB_ENABLED
+#if SLAB_PACK_ENABLED
+bool in_slab = ((raw_expert & 0x80000000u) != 0);
+uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
+uint expert_offset = 4096u + expert * 3072000u;
+decltype(weight) w_ptr = in_slab
+    ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + PROJ_W_OFFSET)
+    : (weight + expert * OUT_WIDTH * (IN_WIDTH / 8));
+decltype(scales) s_ptr = in_slab
+    ? (decltype(scales))(((const device char*)slab_pack) + expert_offset + PROJ_S_OFFSET)
+    : (scales + expert * OUT_WIDTH * (IN_WIDTH / 32));
+decltype(biases) b_ptr = in_slab
+    ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + PROJ_B_OFFSET)
+    : (biases + expert * OUT_WIDTH * (IN_WIDTH / 32));
+#elif SLAB_ENABLED
 bool in_slab = ((raw_expert & 0x80000000u) != 0);
 uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
 decltype(weight) w_ptr = (in_slab ? slab_weight : weight) + expert * OUT_WIDTH * (IN_WIDTH / 8);
@@ -291,7 +304,20 @@ for (uint slot = 0; slot < SLOTS; ++slot) {
     const int out_size = OUT_WIDTH;
     uint3 tid = uint3(0, group.x, token);
 
-#if SLAB_ENABLED
+#if SLAB_PACK_ENABLED
+    bool in_slab = ((raw_expert & 0x80000000u) != 0);
+    uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
+    uint expert_offset = 4096u + expert * 3072000u;
+    decltype(weight) w_ptr = in_slab
+        ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + 2048000u)
+        : (weight + expert * OUT_WIDTH * (IN_WIDTH / 8));
+    decltype(scales) s_ptr = in_slab
+        ? (decltype(scales))(((const device char*)slab_pack) + expert_offset + 2867200u)
+        : (scales + expert * OUT_WIDTH * (IN_WIDTH / 32));
+    decltype(biases) b_ptr = in_slab
+        ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + 2969600u)
+        : (biases + expert * OUT_WIDTH * (IN_WIDTH / 32));
+#elif SLAB_ENABLED
     bool in_slab = ((raw_expert & 0x80000000u) != 0);
     uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
     decltype(weight) w_ptr = (in_slab ? slab_weight : weight) + expert * OUT_WIDTH * (IN_WIDTH / 8);
@@ -369,6 +395,8 @@ class MetalMoEExecutor:
         output_width: int,
         slot_input: bool,
         has_slab: bool = False,
+        has_slab_pack: bool = False,
+        proj_name: str = "",
     ) -> Any:
         import mlx.core as mx
 
@@ -376,7 +404,7 @@ class MetalMoEExecutor:
         if maker is None:
             maker = mx.fast.metal_kernel
         dtype = getattr(x, "dtype", None)
-        key = (str(dtype), tokens, slots, input_width, output_width, slot_input, has_slab)
+        key = (str(dtype), tokens, slots, input_width, output_width, slot_input, has_slab, has_slab_pack, proj_name)
         kernel = self._kernels.get(key)
         if kernel is None:
             body = _KERNEL_BODY.replace("TOKENS", str(tokens))
@@ -386,16 +414,35 @@ class MetalMoEExecutor:
             body = body.replace("GROUPS", str(input_width // GROUP_SIZE))
             body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
             body = body.replace("SLOT_INPUT", "1" if slot_input else "0")
+            body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
             body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
+            if has_slab_pack:
+                if proj_name == "gate_proj":
+                    w_off, s_off, b_off = 0, 819200, 921600
+                elif proj_name == "up_proj":
+                    w_off, s_off, b_off = 1024000, 1843200, 1945600
+                elif proj_name == "down_proj":
+                    w_off, s_off, b_off = 2048000, 2867200, 2969600
+                else:
+                    w_off, s_off, b_off = 0, 819200, 921600
+                body = body.replace("PROJ_W_OFFSET", f"{w_off}u")
+                body = body.replace("PROJ_S_OFFSET", f"{s_off}u")
+                body = body.replace("PROJ_B_OFFSET", f"{b_off}u")
             body = body.replace(
                 "QMV_MIXED_IMPL",
                 "qmv_fast_mixed_impl" if input_width % 512 == 0 else "qmv_mixed_impl",
             )
             input_names = ["x", "weight", "scales", "biases", "routes"]
-            if has_slab:
+            if has_slab_pack:
+                input_names.append("slab_pack")
+            elif has_slab:
                 input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
             kernel = maker(
-                name="flashnext_level1_q4g32_slab" if has_slab else "flashnext_level1_q4g32",
+                name=(
+                    f"flashnext_level1_q4g32_{proj_name}_pack"
+                    if has_slab_pack
+                    else ("flashnext_level1_q4g32_slab" if has_slab else "flashnext_level1_q4g32")
+                ),
                 input_names=input_names,
                 output_names=["out"],
                 source=body,
@@ -407,7 +454,7 @@ class MetalMoEExecutor:
         return kernel
 
     def _get_fused_down_kernel(
-        self, x, tokens, slots, input_width, output_width, has_slab: bool = False
+        self, x, tokens, slots, input_width, output_width, has_slab: bool = False, has_slab_pack: bool = False
     ):
         import mlx.core as mx
 
@@ -415,7 +462,7 @@ class MetalMoEExecutor:
         if maker is None:
             maker = mx.fast.metal_kernel
         key = ("fused-down", str(getattr(x, "dtype", None)), tokens, slots,
-               input_width, output_width, has_slab)
+               input_width, output_width, has_slab, has_slab_pack)
         kernel = self._kernels.get(key)
         if kernel is None:
             body = _FUSED_DOWN_COMBINE_BODY.replace("TOKENS", str(tokens))
@@ -424,16 +471,21 @@ class MetalMoEExecutor:
             body = body.replace("OUT_WIDTH", str(output_width))
             body = body.replace("GROUPS", str(input_width // GROUP_SIZE))
             body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
+            body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
             body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
             body = body.replace(
                 "QMV_ACCUMULATE_IMPL",
                 "qmv_fast_accumulate_impl" if input_width % 512 == 0 else "qmv_accumulate_impl",
             )
             input_names = ["x", "weight", "scales", "biases", "routes", "scores"]
-            if has_slab:
+            if has_slab_pack:
+                input_names.append("slab_pack")
+            elif has_slab:
                 input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
             kernel = maker(
-                name="flashnext_level1_q4g32_down_combine_slab" if has_slab else "flashnext_level1_q4g32_down_combine",
+                name="flashnext_level1_q4g32_down_combine_pack" if has_slab_pack else (
+                    "flashnext_level1_q4g32_down_combine_slab" if has_slab else "flashnext_level1_q4g32_down_combine"
+                ),
                 input_names=input_names,
                 output_names=["out"],
                 source=body,
@@ -445,7 +497,7 @@ class MetalMoEExecutor:
         return kernel
 
     def _metal_fused_down_combine(
-        self, x, routes, scores, down, output_width, slab_down=None
+        self, x, routes, scores, down, output_width, slab_down=None, slab_pack=None
     ):
         import mlx.core as mx
 
@@ -454,11 +506,14 @@ class MetalMoEExecutor:
         scales = down.scales
         biases = down.biases
         has_slab = slab_down is not None
+        has_slab_pack = slab_pack is not None
         kernel = self._get_fused_down_kernel(
-            x, tokens, slots, input_width, output_width, has_slab=has_slab
+            x, tokens, slots, input_width, output_width, has_slab=has_slab, has_slab_pack=has_slab_pack
         )
         inputs = [x, down.weight, scales, biases, routes, scores]
-        if has_slab:
+        if has_slab_pack:
+            inputs.append(slab_pack)
+        elif has_slab:
             inputs.extend([slab_down.weight, slab_down.scales, slab_down.biases])
         result = kernel(
             inputs=inputs,
@@ -478,20 +533,26 @@ class MetalMoEExecutor:
         output_width: int,
         slot_input: bool,
         slab_projection: Q4G32Projection | None = None,
+        slab_pack: Any = None,
+        proj_name: str = "",
     ) -> Any:
         shape = _shape(x)
         tokens, input_width = shape[0], shape[-1]
         slots = _shape(routes)[1]
         has_slab = slab_projection is not None
+        has_slab_pack = slab_pack is not None
         kernel = self._get_metal_kernel(
-            x, tokens, slots, input_width, output_width, slot_input, has_slab=has_slab
+            x, tokens, slots, input_width, output_width, slot_input,
+            has_slab=has_slab, has_slab_pack=has_slab_pack, proj_name=proj_name
         )
         import mlx.core as mx
 
         scales = projection.scales
         biases = projection.biases
         inputs = [x, projection.weight, scales, biases, routes]
-        if has_slab:
+        if has_slab_pack:
+            inputs.append(slab_pack)
+        elif has_slab:
             inputs.extend([slab_projection.weight, slab_projection.scales, slab_projection.biases])
         result = kernel(
             inputs=inputs,
@@ -541,6 +602,7 @@ class MetalMoEExecutor:
         return_all: bool = False,
         scores: Any = None,
         slab_projections: Mapping[str, Any] | Sequence[Any] | None = None,
+        slab_pack: Any = None,
     ) -> Any:
         """Run gate, up, activation, and down for bounded flattened inputs.
 
@@ -624,21 +686,25 @@ class MetalMoEExecutor:
             # on M4. Fusion raises register pressure enough to exceed the
             # saved launch. The down-plus-router fusion remains profitable.
             gate_out = self._metal_projection(
-                x, routes, gate, gate_width, False, slab_projection=slab_gate
+                x, routes, gate, gate_width, False, slab_projection=slab_gate,
+                slab_pack=slab_pack, proj_name="gate_proj"
             )
             up_out = self._metal_projection(
-                x, routes, up, inter_width, False, slab_projection=slab_up
+                x, routes, up, inter_width, False, slab_projection=slab_up,
+                slab_pack=slab_pack, proj_name="up_proj"
             )
             from mlx_vlm.models.activations import swiglu
 
             activation = swiglu(gate_out, up_out)
             if scores is not None and not return_all:
                 down_out = self._metal_fused_down_combine(
-                    activation, routes, scores, down, self.hidden_size, slab_down=slab_down
+                    activation, routes, scores, down, self.hidden_size,
+                    slab_down=slab_down, slab_pack=slab_pack
                 )
             else:
                 down_out = self._metal_projection(
-                    activation, routes, down, self.hidden_size, True, slab_projection=slab_down
+                    activation, routes, down, self.hidden_size, True,
+                    slab_projection=slab_down, slab_pack=slab_pack, proj_name="down_proj"
                 )
             self.last_path = "custom-metal"
             self.fallback_reason = None

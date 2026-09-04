@@ -498,6 +498,12 @@ class SafeTensorStore:
     def close(self) -> None:
         self.unpin_all()
         self._shared_views.clear()
+        if hasattr(self, "_slab_pack") and self._slab_pack is not None:
+            try:
+                self._slab_pack.close()
+            except Exception:
+                pass
+            self._slab_pack = None
         for handle in self._maps.values():
             handle.close()
         for file in self._files.values():

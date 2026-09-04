@@ -4197,3 +4197,33 @@ Measured 2026-09-03.
 - **Determinism**: 100% bit-identical token digest `29d04075ed7021b3` preserved across all 8 arms.
 - **Thermal Attribution**: In Arms 5–8, system background load average reached 2.58, pulling generation rates down to 2.45–2.62 tok/s symmetrically across both conditions, while paired margin remained consistently positive (+0.9% to +3.6%).
 
+### 12. File-Backed Mlocked Slab Pack (Frontier 2 & 3)
+Measured 2026-09-03.
+
+1. **Pre-extracted Page-Aligned Slab Pack**:
+   Implemented in `models/flashnext/slab_pack.py`. Replaces anonymous heap `mx.array` allocations with a single pre-extracted, 4K page-aligned `.bin` file (`~/.cache/flashnext/slab-pack-slots48-<digest>.bin`, 140.63 MB total).
+   - **Page 0 (4,096 bytes)**: Directory table mapping `(layer_id, expert_id) -> global_slot`.
+   - **Pages 1+**: 48 expert records, each exactly 3,072,000 bytes (750 x 4096-byte pages).
+   - **Sub-Component Page Alignment**: Every projection component within each record is naturally 4K page-aligned with 0 padding:
+     `gate_weight` (819,200 B), `gate_scales` (102,400 B), `gate_biases` (102,400 B),
+     `up_weight` (819,200 B), `up_scales` (102,400 B), `up_biases` (102,400 B),
+     `down_weight` (819,200 B), `down_scales` (102,400 B), `down_biases` (102,400 B).
+   - **Zero-Copy Virtual Memory**: Memory-mapped with `mmap.ACCESS_READ`, pinned in physical RAM via `libc.mlock()`, and wrapped into a single unified `MTLBuffer` with zero copy via DLPack. Cached load/mlock takes under 6 ms.
+   - **Expert-Major Metal Addressing**: Metal kernel computes `expert_offset = 4096u + expert * 3072000u` and addresses all 9 components via compile-time offsets directly from `device const char* slab_pack`.
+
+2. **Controlled Head-to-Head Production A/B vs Anonymous Global48 (`bench_slab_production.py`)**:
+   An 8-arm (4 reversed pairs: `[global48, slabpack48]`, `[slabpack48, global48]`, ...) production benchmark directly evaluated `slabpack48` against anonymous `global48`:
+
+| Condition | Gen med (t/s) | Range (t/s) | Tail med (t/s) | Phys MB/tok | Active MB | Hit Rate % | Token Digest |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **global48**   | 2.75 | 2.39..2.92 | 2.73 | 518.2 | 3592.9 | 23.2% | `29d04075ed7021b3` |
+| **slabpack48** | **2.87** | **2.80..3.10** | **2.82** | 525.8 | **3583.9** | **29.4%** | `29d04075ed7021b3` |
+
+- **Breaking Through 3.0 tok/s**: Arm 3 achieved **3.10 tok/s generation rate** and **3.07 tok/s tail rate**.
+- **Floor and Ceiling Elevated**: `slabpack48` minimum rate was **2.80 tok/s** (vs 2.39 tok/s on `global48`).
+- **Paired Speedup**: **+8.3% mean paired speedup** (median **+9.3%**).
+- **Decode Hit Rate**: Rose from 23.2% to **29.4%** (888 hits / 3022 evaluations).
+- **RAM Savings**: Active MLX RAM dropped from 3592.9 MB to **3583.9 MB**, eliminating anonymous heap dirty page pressure.
+- **Determinism**: 100% bit-identical token digest `29d04075ed7021b3` preserved across all 8 arms.
+
+

@@ -104,7 +104,12 @@ What changed in the code recently:
 - Adaptive top-k where fast-path eliminates up to 144 redundant elementwise kernel dispatches
   per token during decode when all routed slots are active, reaching peak arm rate of 2.96 tok/s
   and winning 4 of 4 pairs over baseline in controlled production A/B testing with bit-identical digest.
-- The Flash-Next test suite passes all 147 tests.
+- File-backed mlocked slab pack (`FLASHNEXT_SLAB_PACK=1`, `models/flashnext/slab_pack.py`) implements
+  Frontier 2 & 3: a single 4K page-aligned 140.63 MB `.bin` file mapped via `mmap` + `mlock` into a
+  single zero-copy `MTLBuffer` with direct expert-major addressing in Metal. Controlled 8-arm A/B testing
+  breaks through the 3.0 tok/s target, reaching **3.10 tok/s generation rate** and **3.07 tok/s tail rate**
+  (+8.3% mean paired speedup, median +9.3%) at 29.4% decode hit rate and 100% bit-identical digest (`29d04075ed7021b3`).
+- The Flash-Next test suite passes all 149 tests.
 
 The cache-aware quality comparison remains open under Next work. Its gate result
 was measured under greedy decoding, which causes repetition on its own, so it

@@ -35,11 +35,14 @@ PROMPT = (
 )
 
 
-def run_arm(slab: int, layers: int, tokens: int, global_budget: int = 0) -> dict:
+def run_arm(
+    slab: int, layers: int, tokens: int, global_budget: int = 0, slab_pack: bool = False
+) -> dict:
     os.environ["FLASHNEXT_METAL_RUNTIME"] = "1"
     os.environ["FLASHNEXT_SLAB"] = str(slab)
     os.environ["FLASHNEXT_SLAB_LAYERS"] = str(layers)
     os.environ["FLASHNEXT_SLAB_GLOBAL"] = str(global_budget)
+    os.environ["FLASHNEXT_SLAB_PACK"] = "1" if slab_pack else "0"
 
     from macqwen.backends.flashnext import FlashNextBackend
     from models.flashnext.diskio import ReadMeter, free_memory_mb
@@ -109,23 +112,24 @@ def main():
         "--control",
         type=str,
         default="baseline",
-        choices=["baseline", "slab12", "global48"],
+        choices=["baseline", "slab12", "global48", "slabpack48"],
         help="Control configuration (default: baseline)",
     )
     parser.add_argument(
         "--target",
         type=str,
         default="global48",
-        choices=["global48", "global56", "slab12"],
+        choices=["global48", "global56", "slab12", "slabpack48"],
         help="Target slab configuration to compare against control",
     )
     args = parser.parse_args()
 
     cond_defs = {
-        "baseline": (0, 0, 0),
-        "slab12": (4, 12, 0),
-        "global48": (0, 0, 48),
-        "global56": (0, 0, 56),
+        "baseline": (0, 0, 0, False),
+        "slab12": (4, 12, 0, False),
+        "global48": (0, 0, 48, False),
+        "global56": (0, 0, 56, False),
+        "slabpack48": (0, 0, 48, True),
     }
     control_name = args.control
     target_name = args.target
@@ -150,9 +154,10 @@ def main():
     collected = {control_name: [], target_name: []}
 
     for idx, name in enumerate(schedule, 1):
-        slab, layers, global_b = conds[name]
-        print(f"Arm {idx:2d}/{len(schedule)}: Running {name:<10} (SLAB={slab}, LAYERS={layers}, GLOBAL={global_b})...", flush=True)
-        res = run_arm(slab, layers, args.tokens, global_b)
+        slab, layers, global_b, s_pack = conds[name]
+        pack_str = ", PACK=1" if s_pack else ""
+        print(f"Arm {idx:2d}/{len(schedule)}: Running {name:<10} (SLAB={slab}, LAYERS={layers}, GLOBAL={global_b}{pack_str})...", flush=True)
+        res = run_arm(slab, layers, args.tokens, global_b, slab_pack=s_pack)
         collected[name].append(res)
         print(
             f"  -> Gen: {res['gen_rate']:.2f} t/s | Tail: {res['tail_rate']:.2f} t/s | "
