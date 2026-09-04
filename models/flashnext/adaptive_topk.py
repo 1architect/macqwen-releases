@@ -270,19 +270,20 @@ def _moe_call(self, x: mx.array) -> mx.array:
         inds = inds[..., :width]
         scores = scores[..., :width]
         if masks is None:
-            keep_shape = (*scores.shape[:-1], 1)
-            keep_array = mx.array(keeps, dtype=mx.int32).reshape(keep_shape)
-            active = mx.arange(width) < keep_array
+            if not all(k >= width for k in keeps):
+                keep_shape = (*scores.shape[:-1], 1)
+                keep_array = mx.array(keeps, dtype=mx.int32).reshape(keep_shape)
+                active = mx.arange(width) < keep_array
+                if not _ONE_SYNC:
+                    inds = mx.where(active, inds, inds[..., :1])
+                scores = mx.where(active, scores, 0)
         else:
             active = mx.array(
                 [row[:width] for row in masks], dtype=mx.bool_
             ).reshape(scores.shape)
-        # Reuse the first routed expert in padded slots. This avoids extra I/O.
-        # With one-sync the routed list is already on the host and nothing
-        # downstream reads `inds`, so the kernel is skipped entirely.
-        if not _ONE_SYNC:
-            inds = mx.where(active, inds, inds[..., :1])
-        scores = mx.where(active, scores, 0)
+            if not _ONE_SYNC:
+                inds = mx.where(active, inds, inds[..., :1])
+            scores = mx.where(active, scores, 0)
         if _PROFILE:
             _TIMERS["topk_python"] += time.perf_counter() - python_began
     elif layer_id is not None:

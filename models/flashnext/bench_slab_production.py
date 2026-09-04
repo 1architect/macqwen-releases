@@ -109,7 +109,7 @@ def main():
         "--control",
         type=str,
         default="baseline",
-        choices=["baseline", "slab12"],
+        choices=["baseline", "slab12", "global48"],
         help="Control configuration (default: baseline)",
     )
     parser.add_argument(
