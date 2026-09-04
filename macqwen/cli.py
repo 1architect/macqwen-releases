@@ -170,6 +170,10 @@ def command(argv: list[str]) -> tuple[list[str], dict[str, str]]:
     chat_args.extend(remaining)
 
     environment = dict(os.environ)
+    if model == "flashnext":
+        from models.flashnext.settings.launch import apply_chat_environment
+
+        apply_chat_environment(environment)
     if model == "qwen27b":
         environment.setdefault("MLX_QMM_BM", "64")
         environment.setdefault("MLX_QMM_BK", "32")

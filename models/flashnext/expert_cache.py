@@ -38,6 +38,7 @@ from .slab_pack import (
     UP_WEIGHT_OFFSET,
 )
 from .store import SafeTensorStore, begin_read_profile, finish_read_profile
+from .physical_miss import allocate_physical_miss_slots, load_profile
 
 
 _POOL = ThreadPoolExecutor(
@@ -783,6 +784,33 @@ def get_hot_slab_experts(layer_id: int, count: int) -> List[int]:
 _GLOBAL_SLAB_CACHE: Dict[Any, Dict[int, List[int]]] = {}
 
 
+def get_physical_miss_slab_allocation(
+    total_slots: int,
+    min_slots: int = 4,
+    max_slots: int = 6,
+    num_layers: int = 12,
+) -> Dict[int, List[int]]:
+    """Read long-run physical-miss evidence for the opt-in slab probe."""
+    profile_path = os.environ.get(
+        "FLASHNEXT_PHYSICAL_MISS_PROFILE", "~/.cache/flashnext/physical-misses.json"
+    )
+    try:
+        profile = load_profile(profile_path)
+    except (OSError, ValueError) as error:
+        raise RuntimeError(
+            "physical-miss slab policy needs a valid measured profile at "
+            f"{os.path.expanduser(profile_path)}: {error}"
+        ) from error
+    return allocate_physical_miss_slots(
+        profile,
+        total_slots,
+        min_slots=min_slots,
+        max_slots=max_slots,
+        num_layers=num_layers,
+        min_samples=int(os.environ.get("FLASHNEXT_PHYSICAL_MISS_MIN_SAMPLES", "1")),
+    )
+
+
 def get_global_slab_allocation(total_slots: int, min_slots: int = 1) -> Dict[int, List[int]]:
     """Allocate a global slot budget across layers.
 
@@ -1036,6 +1064,10 @@ class StreamingSwitchGLU(nn.Module):
                 policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
                 if policy == "uniform":
                     alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
+                elif policy == "physical-miss":
+                    alloc = get_physical_miss_slab_allocation(
+                        global_budget, min_slots=min_slots
+                    )
                 else:
                     alloc = get_skew_slab_allocation(global_budget, min_slots=min_slots)
                 store._slab_alloc = alloc
@@ -1057,6 +1089,10 @@ class StreamingSwitchGLU(nn.Module):
             policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
             if policy == "uniform":
                 alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
+            elif policy == "physical-miss":
+                alloc = get_physical_miss_slab_allocation(
+                    global_budget, min_slots=min_slots
+                )
             else:
                 alloc = get_skew_slab_allocation(global_budget, min_slots=min_slots)
             hot = alloc.get(layer_id, [])

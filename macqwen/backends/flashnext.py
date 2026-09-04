@@ -19,6 +19,7 @@ from macqwen.conversation import Conversation
 from macqwen.model_settings import FLASHNEXT_DEFAULTS
 from macqwen.sampling import Sampler, Sampling
 from macqwen.text import stream_decode
+from models.flashnext.settings import get_registry
 
 DEFAULT_FUSION_MODEL = FLASHNEXT_DEFAULTS["fusion_model"]
 _TRANSFORMERS_ADVISORY_ENV = "TRANSFORMERS_NO_ADVISORY_WARNINGS"
@@ -87,6 +88,12 @@ class Stats:
 
 
 class FlashNextBackend(Conversation):
+    def settings_registry(self):
+        return get_registry()
+
+    def settings_state(self, include_research: bool = False) -> str:
+        return self.settings_registry().render(self, "flashnext", include_research)
+
     def __init__(self, model_path: str | None = None,
                  threshold: float = FLASHNEXT_DEFAULTS["threshold"],
                  resident_experts: int = FLASHNEXT_DEFAULTS["resident_experts"],
@@ -132,6 +139,7 @@ class FlashNextBackend(Conversation):
         self.fusion_margin_tokens = fusion_margin_tokens
         self.fusion_max_prompt = fusion_max_prompt
         self.fusion_model = os.path.expanduser(fusion_model)
+        self._setting_sources = {}
         self.session_dir = session_dir
         self.thinking_enabled = False
         # Greedy by default so no benchmark can sample by accident. Every
@@ -168,167 +176,7 @@ class FlashNextBackend(Conversation):
         } - {None}
 
     def _settings_text(self) -> str:
-        from macqwen.ui import C
-
-        routing = getattr(self, "routing", None)
-        profile = self.routing_profile
-
-        def runtime(name, fallback):
-            return (
-                getattr(routing, name, fallback)
-                if routing is not None else fallback
-            )
-
-        def setting(label, value, active=True):
-            width = max(20, len(label) + 1)
-            line = f"  {label:<{width}}{value}"
-            if active:
-                return line + "\n"
-            return f"{C['dim']}{line} (inactive){C['0']}\n"
-
-        pinned_count = sum(
-            len(experts) for experts in getattr(routing, "pinned", {}).values()
-        )
-        pinned_gb = getattr(routing, "pinned_bytes", 0) / 1e9
-        swap_active = (
-            profile == "cache-aware"
-            or os.environ.get("FLASHNEXT_SWAP_RESIDENT") == "1"
-            or bool(getattr(routing, "cache_aware", False))
-        )
-        if os.environ.get("FLASHNEXT_SWAP_RESIDENT") == "1":
-            from models.flashnext.routing import swap_epsilon
-
-            effective_swap_epsilon = swap_epsilon()
-        else:
-            effective_swap_epsilon = runtime(
-                "swap_epsilon", self.swap_epsilon
-            )
-        quality_profiles = {
-            "fast-quality", "exact-quality", "cache-aware", "fused-quality",
-        }
-        resident_active = profile in {
-            "exact-quality", "cache-aware", "fused-quality",
-        }
-        tail_active = profile == "fast-quality"
-        quality_active = profile in quality_profiles
-        fusion_active = profile == "fused-quality"
-
-        configured_threshold = self.threshold
-        effective_threshold = (
-            0.2 if profile == "fast"
-            else runtime("threshold", configured_threshold)
-        )
-        if profile == "fast":
-            threshold_text = f"{effective_threshold:g}"
-            if configured_threshold != effective_threshold:
-                threshold_text += (
-                    f" (configured {configured_threshold:g}; config ignored)"
-                )
-        elif profile == "fast-quality":
-            threshold_text = (
-                f"{effective_threshold:g} (warmup; tail threshold 0.2)"
-            )
-        else:
-            threshold_text = f"{effective_threshold:g}"
-
-        runtime_pin_budget = getattr(routing, "pin_budget_gb", None)
-        if runtime_pin_budget is None:
-            runtime_pin_budget = getattr(routing, "pin_budget", None)
-            if runtime_pin_budget is not None:
-                runtime_pin_budget /= 1e9
-        if runtime_pin_budget is None:
-            runtime_pin_budget = self.pin_budget_gb
-
-        warnings = []
-        if self.routing_profile == "fused-quality":
-            warnings.append("fused-quality is experimental; its reasoning gate failed")
-        if self.routing_profile == "cache-aware":
-            warnings.append(
-                "cache-aware changes expert choices; exact-quality gave better "
-                "answers in the current quality check"
-            )
-        warning = "".join(f"\n  warning             {item}" for item in warnings)
-        # Mirrored from preferences by the session. A backend built directly,
-        # as the benchmarks do, never gets them.
-        answer = getattr(self, "answer_budget", 0)
-        thinking = getattr(self, "think_budget", 0)
-        budgets = (
-            f"{answer} answer"
-            + (f" + {thinking} reasoning" if thinking
-               else " (reasoning shares it)")
-        ) if answer else "(set by the chat)"
-        return (
-            "Flash-Next settings\n"
-            f"  sampling            "
-            f"{getattr(self, 'sampling', Sampling.greedy_settings()).describe()}\n"
-            f"  effort              {getattr(self, 'reasoning_effort', '(set by the chat)')}\n"
-            f"  thinking            "
-            f"{'on' if getattr(self, 'thinking_enabled', False) else 'off'}\n"
-            f"  token-budget        {budgets}\n"
-            + setting("routing", profile)
-            + setting(
-                "swap-epsilon",
-                f"{effective_swap_epsilon:g}  (cache-aware)",
-                swap_active,
-            )
-            + setting("threshold", threshold_text, profile != "fast")
-            + setting(
-                "resident-experts",
-                f"{runtime('resident_experts', self.resident_experts)}  "
-                "(alias: pinned-experts; exact/cache/fused)",
-                resident_active,
-            )
-            + setting(
-                "pin-budget-gb", f"{runtime_pin_budget:g}", quality_active
-            )
-            + setting(
-                "pinned-now",
-                f"{pinned_count} layer experts, {pinned_gb:.2f} GB",
-                quality_active,
-            )
-            + setting(
-                "tail-experts",
-                f"{runtime('tail_experts', self.tail_experts)}  (fast-quality)",
-                tail_active,
-            )
-            + setting(
-                "tail-warmup",
-                f"{runtime('warmup', self.tail_warmup)}  (quality profiles)",
-                quality_active,
-            )
-            + setting("fusion-block", self.fusion_block, fusion_active)
-            + setting(
-                "fusion-min-margin", f"{self.fusion_min_margin:g}", fusion_active
-            )
-            + setting("fusion-min-block", self.fusion_min_block, fusion_active)
-            + setting(
-                "fusion-margin-tokens", self.fusion_margin_tokens, fusion_active
-            )
-            + setting(
-                "fusion-max-prompt", self.fusion_max_prompt, fusion_active
-            )
-            + setting("fusion-model", self.fusion_model, fusion_active)
-            + f"  model-path          {getattr(self, 'model_path', '(startup only)')}\n"
-            f"  session-dir         {getattr(self, 'session_dir', '(startup only)')}"
-            f"{warning}\n"
-            "legend: dim = inactive or ignored; values show effective "
-            "runtime settings\n"
-            "usage: /settings NAME VALUE | /settings defaults\n"
-            "decoding is set by /sampling, /effort, /thinking, /think-budget\n"
-            "routing: standard, fast, fast-quality, exact-quality, "
-            "cache-aware, fused-quality\n"
-            "research-only: speculative-fast and MTP require a model reload"
-        )
-
-    @staticmethod
-    def _integer(value: str, name: str, minimum: int = 1, maximum: int = 512):
-        try:
-            parsed = int(value)
-        except ValueError as exc:
-            raise ValueError(f"{name} must be an integer") from exc
-        if not minimum <= parsed <= maximum:
-            raise ValueError(f"{name} must be between {minimum} and {maximum}")
-        return parsed
+        return get_registry().render(self, "flashnext")
 
     def _rebuild_routing(self) -> None:
         from models.flashnext.routing import RoutingProfile, prewarm_enabled
@@ -355,116 +203,7 @@ class FlashNextBackend(Conversation):
         self._store = None
 
     def configure(self, argument: str) -> str:
-        text = argument.strip()
-        if not text:
-            return self._settings_text()
-        if text == "defaults":
-            defaults = FLASHNEXT_DEFAULTS
-            self.routing_profile = defaults["routing"]
-            self.swap_epsilon = defaults["swap_epsilon"]
-            self.threshold = defaults["threshold"]
-            self.resident_experts = defaults["resident_experts"]
-            self.pin_budget_gb = defaults["pin_budget_gb"]
-            self.tail_experts = defaults["tail_experts"]
-            self.tail_warmup = defaults["tail_warmup"]
-            self.fusion_block = defaults["fusion_block"]
-            self.fusion_min_margin = defaults["fusion_min_margin"]
-            self.fusion_min_block = defaults["fusion_min_block"]
-            self.fusion_margin_tokens = defaults["fusion_margin_tokens"]
-            self.fusion_max_prompt = defaults["fusion_max_prompt"]
-            self.fusion_model = os.path.expanduser(DEFAULT_FUSION_MODEL)
-            self._rebuild_routing()
-            return "Flash-Next settings restored to defaults\n" + self._settings_text()
-
-        parts = text.split(maxsplit=1)
-        if len(parts) != 2:
-            raise ValueError("use /settings NAME VALUE or /settings defaults")
-        name, value = parts
-        name = {
-            "mode": "routing",
-            "profile": "routing",
-            "pinned-experts": "resident-experts",
-        }.get(name, name)
-        if name == "routing":
-            from models.flashnext.routing import PROFILES
-
-            if value not in PROFILES:
-                raise ValueError(f"routing must be one of: {', '.join(PROFILES)}")
-            self.routing_profile = value
-        elif name == "threshold":
-            try:
-                threshold = float(value)
-            except ValueError as exc:
-                raise ValueError("threshold must be a number") from exc
-            if not 0.01 <= threshold <= 1.0:
-                raise ValueError("threshold must be between 0.01 and 1.0")
-            self.threshold = threshold
-        elif name == "swap-epsilon":
-            try:
-                epsilon = float(value)
-            except ValueError as exc:
-                raise ValueError("swap-epsilon must be a number") from exc
-            if not 0 <= epsilon <= 1.0:
-                raise ValueError("swap-epsilon must be between 0 and 1.0")
-            self.swap_epsilon = epsilon
-        elif name == "resident-experts":
-            self.resident_experts = self._integer(value, name)
-        elif name == "pin-budget-gb":
-            try:
-                budget = float(value)
-            except ValueError as exc:
-                raise ValueError("pin-budget-gb must be a number") from exc
-            if not 0 <= budget <= 64:
-                raise ValueError("pin-budget-gb must be between 0 and 64")
-            self.pin_budget_gb = budget
-        elif name == "tail-experts":
-            self.tail_experts = self._integer(value, name)
-        elif name == "tail-warmup":
-            self.tail_warmup = self._integer(value, name, maximum=4096)
-        elif name == "fusion-block":
-            block = self._integer(value, name, maximum=128)
-            if self.fusion_min_block > block:
-                raise ValueError("fusion-min-block cannot exceed fusion-block")
-            self.fusion_block = block
-        elif name == "fusion-min-margin":
-            try:
-                margin = float(value)
-            except ValueError as exc:
-                raise ValueError("fusion-min-margin must be a number") from exc
-            if margin < 0:
-                raise ValueError("fusion-min-margin must be zero or greater")
-            self.fusion_min_margin = margin
-        elif name == "fusion-min-block":
-            minimum = self._integer(value, name, maximum=128)
-            if minimum > self.fusion_block:
-                raise ValueError("fusion-min-block cannot exceed fusion-block")
-            self.fusion_min_block = minimum
-        elif name == "fusion-margin-tokens":
-            self.fusion_margin_tokens = self._integer(
-                value, name, minimum=0, maximum=128
-            )
-        elif name == "fusion-max-prompt":
-            self.fusion_max_prompt = self._integer(value, name, maximum=262144)
-        elif name == "fusion-model":
-            self.fusion_model = os.path.expanduser(value)
-        else:
-            raise ValueError(f"unknown Flash-Next setting: {name}")
-
-        self._rebuild_routing()
-        note = ""
-        if self.routing_profile == "fused-quality":
-            note = (
-                "\nwarning: fused-quality is experimental and failed the "
-                "reasoning quality gate"
-            )
-            if self.tape:
-                note += "; use /reset to enable its one-shot draft"
-        elif self.routing_profile == "cache-aware":
-            note = (
-                "\nwarning: cache-aware changes expert choices; exact-quality "
-                "gave better answers in the current quality check"
-            )
-        return f"{name}: {value}  applies on the next turn{note}"
+        return get_registry().configure(self, argument, "flashnext")
 
     # ---- session persistence -------------------------------------------
     # Exact snapshots: every DeltaNet state, QSA cache and indexer array is
@@ -641,7 +380,7 @@ class FlashNextBackend(Conversation):
         return len(self.tape)
 
     def generate(self, max_tokens: int, out=None, on_prefilled=None,
-                 on_prefill_progress=None) -> tuple[str, Stats]:
+                 on_prefill_progress=None, on_decode_token=None) -> tuple[str, Stats]:
         """Feed everything pending through the model, then decode a reply.
 
         `on_prefilled` fires once the prompt is in the cache and before the
@@ -735,6 +474,8 @@ class FlashNextBackend(Conversation):
                     # model call produces the first pinned-tail output.
                     tail_index = len(produced)
                 piece = stream_decode(self.tokenizer, partial, value)
+                if on_decode_token is not None:
+                    on_decode_token(value, piece)
                 if not piece:
                     continue
                 pieces.append(piece)

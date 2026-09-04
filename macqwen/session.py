@@ -31,7 +31,6 @@ from macqwen.api_keys import (
     sanitized_environment,
 )
 from macqwen.agent import Limits, run_agent
-from macqwen.model_settings import FLASHNEXT_DEFAULTS
 from macqwen.profiles import system_prompt, tools_for
 from macqwen.sampling import Sampling
 from macqwen.tools.repo import Repo
@@ -223,6 +222,27 @@ class Session:
         if configure is None:
             return "this model does not expose configurable settings"
         try:
+            text = argument.strip()
+            if not text or text == "all":
+                prefs = self.preferences
+                default_answer = (
+                    preferences.DEFAULT_PLAIN_ANSWER_TOKENS
+                    if self.profile == "plain" else preferences.DEFAULT_ANSWER_TOKENS
+                )
+                budget = (
+                    f"{preferences.answer_limit(prefs, default_answer)} answer + "
+                    f"{preferences.think_limit(prefs)} reasoning"
+                    if prefs["thinking_enabled"]
+                    else f"{preferences.answer_limit(prefs, default_answer)} answer (reasoning shares it)"
+                )
+                shared = (
+                    "Chat settings\n"
+                    f"  sampling            {Sampling.from_preferences(prefs).describe()}\n"
+                    f"  effort              {prefs['effort']}\n"
+                    f"  thinking            {'on' if prefs['thinking_enabled'] else 'off'}\n"
+                    f"  token-budget        {budget}"
+                )
+                return shared + "\n\n" + configure(text)
             return configure(argument)
         except ValueError as exc:
             return f"could not change settings: {exc}"
@@ -284,24 +304,19 @@ def mirror_preferences(backend, prefs: dict, profile: str) -> None:
 def build_backend(name: str, args, prefs: dict):
     if name == "flashnext":
         from macqwen.backends.flashnext import FlashNextBackend
+        from models.flashnext.settings import get_registry as get_flashnext_registry
 
-        backend = FlashNextBackend(
-            model_path=args.model_path,
-            threshold=args.threshold,
-            resident_experts=args.resident_experts,
-            pin_budget_gb=args.pin_budget_gb,
-            routing_profile=args.routing_profile,
-            swap_epsilon=args.swap_epsilon,
-            tail_experts=args.tail_experts,
-            tail_warmup=args.tail_warmup,
-            fusion_block=args.fusion_block,
-            fusion_min_margin=args.fusion_min_margin,
-            fusion_min_block=args.fusion_min_block,
-            fusion_margin_tokens=args.fusion_margin_tokens,
-            fusion_max_prompt=args.fusion_max_prompt,
-            fusion_model=args.fusion_model,
-            session_dir=(args.session_dir or "~/.cache/flashnext/sessions"),
-        )
+        values = get_flashnext_registry().cli_values(args, "flashnext")
+        values["model_path"] = args.model_path
+        values["session_dir"] = args.session_dir or "~/.cache/flashnext/sessions"
+        backend = FlashNextBackend(**values)
+        cli_args = set(sys.argv[1:])
+        backend._setting_sources = {
+            setting.name: "CLI"
+            for setting in get_flashnext_registry().for_backend("flashnext")
+            if setting.cli_dest
+            and any(flag in cli_args for flag in setting.cli_flags)
+        }
         mirror_preferences(backend, prefs, prefs["profile"])
         return backend
     if name == "qwen27b":
@@ -332,6 +347,13 @@ def build_backend(name: str, args, prefs: dict):
             shortlist_k=args.shortlist_k,
             session_dir=(args.session_dir or "~/.frankenstein/sessions"),
         )
+        from models.qwen27b.settings import get_registry as get_qwen_registry
+        cli_args = set(sys.argv[1:])
+        backend._setting_sources = {
+            setting.name: "CLI"
+            for setting in get_qwen_registry().for_backend("qwen27b")
+            if any(flag in cli_args for flag in setting.cli_flags)
+        }
         mirror_preferences(backend, prefs, prefs["profile"])
         return backend
     raise SystemExit(
@@ -340,6 +362,7 @@ def build_backend(name: str, args, prefs: dict):
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    from macqwen.model_settings import FLASHNEXT_DEFAULTS
     parser.add_argument("--model", default=None, choices=("flashnext", "qwen27b"))
     parser.add_argument("--profile", default=None, choices=("plain", "agent"))
     parser.add_argument("--model-path", "--checkpoint", dest="model_path", default=None)
@@ -450,9 +473,13 @@ def main() -> int:
                         help="optional Bearer or x-api-key value")
     parser.add_argument("--benchmark-json", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--benchmark-prompt", help=argparse.SUPPRESS)
+    parser.add_argument("--benchmark-product-json", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--benchmark-window", type=int, default=32, help=argparse.SUPPRESS)
+    parser.add_argument("--benchmark-tokens", type=int, default=256, help=argparse.SUPPRESS)
+    parser.add_argument("--benchmark-label", default="chat.sh", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.benchmark_json and not args.benchmark_prompt:
-        parser.error("--benchmark-json requires --benchmark-prompt")
+    if (args.benchmark_json or args.benchmark_product_json) and not args.benchmark_prompt:
+        parser.error("benchmark mode requires --benchmark-prompt")
     if not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")
     if args.host not in ("127.0.0.1", "localhost", "::1") \
@@ -521,19 +548,20 @@ def main() -> int:
             parser.error(str(exc))
         if explicit_checkpoint or not (environment_checkpoint or saved_checkpoint):
             prefs["flashnext_checkpoint"] = args.model_path
-    if args.benchmark_json and prefs["profile"] != "plain":
-        parser.error("--benchmark-json requires --profile plain")
+    if (args.benchmark_json or args.benchmark_product_json) and prefs["profile"] != "plain":
+        parser.error("benchmark mode requires --profile plain")
     # A benchmark uses temporary command-line conditions. It must not change
     # the user's next interactive chat, as an earlier 20-token probe did.
-    if not args.benchmark_json:
+    if not (args.benchmark_json or args.benchmark_product_json):
         preferences.save(prefs, args.preferences_file)
 
     signal.signal(signal.SIGTSTP, signal.SIG_IGN)
 
     began = time.time()
-    display = sys.stderr if args.benchmark_json else sys.stdout
+    product_json = args.benchmark_product_json
+    display = sys.stderr if (args.benchmark_json or product_json) else sys.stdout
     print(f"{C['dim']}loading {prefs['model']}...{C['0']}", flush=True, file=display)
-    if args.benchmark_json:
+    if args.benchmark_json or product_json:
         with contextlib.redirect_stdout(sys.stderr):
             backend = build_backend(prefs["model"], args, prefs)
     else:
@@ -544,7 +572,7 @@ def main() -> int:
         prefs,
         args.preferences_file,
         args.api_keys_file,
-        migrate_system_prompt=not args.benchmark_json,
+            migrate_system_prompt=not (args.benchmark_json or product_json),
     )
     ready_seconds = time.time() - began
     print(f"{C['dim']}ready in {time.time() - began:.1f}s  "
@@ -552,6 +580,12 @@ def main() -> int:
           f"use /help for commands{C['0']}\n", file=display)
     if args.benchmark_json:
         print(json.dumps(run_benchmark(session, args.benchmark_prompt, ready_seconds)))
+        return 0
+    if product_json:
+        run_product_benchmark(
+            session, args.benchmark_prompt, args.benchmark_window, args.benchmark_label,
+            args.benchmark_tokens,
+        )
         return 0
     if args.server:
         from macqwen.server import serve
@@ -757,6 +791,119 @@ def run_benchmark(session, prompt: str, ready_seconds: float) -> dict:
     except Exception:
         pass
     return result
+
+
+def run_product_benchmark(session, prompt: str, window: int = 32,
+                          label: str = "chat.sh", tokens: int = 256) -> None:
+    """Stream long-generation product metrics as one JSON object per window.
+
+    This is a separate product probe. The established ``--benchmark-json``
+    path stays unchanged and still reports one 32-token result.
+    """
+    if window <= 0 or tokens <= 0 or tokens % window:
+        raise ValueError("benchmark tokens must be a positive multiple of its window")
+    backend = session.backend
+    if hasattr(backend, "sampling"):
+        from macqwen.sampling import Sampling
+
+        backend.sampling = Sampling.greedy_settings()
+    open_or_continue(session, prompt)
+    try:
+        from models.flashnext.diskio import disk_bytes_read
+    except Exception:
+        disk_bytes_read = None
+    try:
+        import mlx.core as mx
+    except Exception:
+        mx = None
+
+    before = [-1]
+    window_started = [0.0]
+    window_index = [0]
+    thinking_tokens = [0]
+    answer_tokens = [0]
+    phase = ["thinking" if getattr(backend, "thinking_enabled", False) else "answer"]
+    produced = []
+
+    def slab_counts() -> tuple[int, int]:
+        hits = misses = 0
+        for layer in getattr(getattr(backend, "language", None), "layers", ()):
+            switch = getattr(getattr(layer, "mlp", None), "switch_mlp", None)
+            if switch is not None:
+                hits += int(getattr(switch, "hits", 0))
+                misses += int(getattr(switch, "misses", 0))
+        return hits, misses
+
+    previous_hits = [0]
+    previous_misses = [0]
+
+    def on_prefilled() -> None:
+        before[0] = disk_bytes_read() if disk_bytes_read else -1
+        window_started[0] = time.perf_counter()
+        previous_hits[0], previous_misses[0] = slab_counts()
+
+    def on_token(value: int, piece: str) -> None:
+        produced.append(value)
+        if phase[0] == "thinking":
+            thinking_tokens[0] += 1
+        else:
+            answer_tokens[0] += 1
+        if "</think>" in piece:
+            phase[0] = "answer"
+        if len(produced) % window:
+            return
+        now = time.perf_counter()
+        after = disk_bytes_read() if disk_bytes_read else -1
+        count = min(window, len(produced))
+        physical = ((after - before[0]) / 1e6 / count
+                    if before[0] >= 0 and after >= before[0] else -1.0)
+        active = (mx.metal.get_active_memory() / 1e6
+                  if mx is not None else -1.0)
+        hits, misses = slab_counts()
+        window_hits = max(0, hits - previous_hits[0])
+        window_misses = max(0, misses - previous_misses[0])
+        hit_pct = (window_hits * 100.0 / (window_hits + window_misses)
+                   if window_hits + window_misses else 0.0)
+        record = {
+            "type": "window",
+            "path": label,
+            "window": window_index[0] + 1,
+            "tokens": count,
+            "generated_tokens": len(produced),
+            "generation_tps": count / (now - window_started[0])
+            if now > window_started[0] else 0.0,
+            "physical_mb_token": physical,
+            "slab_hit_pct": hit_pct,
+            "slab_hits": window_hits,
+            "slab_misses": window_misses,
+            "active_mb": active,
+            "context_tokens": len(backend.tape),
+            "phase": phase[0],
+            "thinking_tokens": thinking_tokens[0],
+            "answer_tokens": answer_tokens[0],
+        }
+        print(json.dumps(record), flush=True)
+        before[0] = after
+        window_started[0] = now
+        previous_hits[0] = hits
+        previous_misses[0] = misses
+        window_index[0] += 1
+
+    _text, stats = backend.generate(
+        max_tokens=tokens,
+        on_prefilled=on_prefilled,
+        on_decode_token=on_token,
+    )
+    digest = hashlib.sha256(
+        b"".join(int(value).to_bytes(4, "little", signed=False) for value in produced)
+    ).hexdigest()
+    print(json.dumps({
+        "type": "complete", "path": label, "generated_tokens": len(produced),
+        "digest": digest, "finish": stats.finish,
+        "context_tokens": len(backend.tape),
+        "thinking_tokens": thinking_tokens[0],
+        "answer_tokens": answer_tokens[0],
+    }), flush=True)
 
 
 def token_stats_text(stats_items, context: int, elapsed: float) -> str:

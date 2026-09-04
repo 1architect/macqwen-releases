@@ -12,6 +12,32 @@ from macqwen import cli
 
 
 class LauncherTests(unittest.TestCase):
+    def test_flashnext_child_environment_has_backend_chat_preset(self):
+        from models.flashnext.settings.launch import CHAT_ENV
+
+        with tempfile.TemporaryDirectory() as root:
+            python = Path(root, "python")
+            python.touch()
+            with patch.dict(os.environ, {"MACQWEN_FLASHNEXT_PYTHON": str(python)}, clear=False):
+                _command, child_env = cli.command(["--model", "flashnext"])
+        for key, value in CHAT_ENV.items():
+            self.assertEqual(child_env[key], value)
+
+    def test_explicit_flashnext_environment_override_wins(self):
+        with tempfile.TemporaryDirectory() as root:
+            python = Path(root, "python")
+            python.touch()
+            with patch.dict(
+                os.environ,
+                {
+                    "MACQWEN_FLASHNEXT_PYTHON": str(python),
+                    "FLASHNEXT_SLAB_GLOBAL": "56",
+                },
+                clear=False,
+            ):
+                _command, child_env = cli.command(["--model", "flashnext"])
+        self.assertEqual(child_env["FLASHNEXT_SLAB_GLOBAL"], "56")
+
     def test_warns_when_branch_does_not_include_known_main(self):
         stale = subprocess.CompletedProcess([], 1, stdout="", stderr="")
         branch = subprocess.CompletedProcess(

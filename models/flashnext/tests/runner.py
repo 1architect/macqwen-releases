@@ -15,6 +15,7 @@ import time
 from macqwen.ui import C
 
 from .api import ROOT, TestSpec
+from ..settings.launch import CHAT_ENV
 
 
 @dataclass
@@ -33,23 +34,18 @@ class SuiteConfig:
 
     @property
     def canonical_environment(self) -> dict[str, str]:
-        return {
-            "FLASHNEXT_IO_WORKERS": str(self.workers),
-            "FLASHNEXT_METAL_RUNTIME": "1",
-            "FLASHNEXT_SLAB": "0",
-            "FLASHNEXT_SLAB_GLOBAL": "60",
-            "FLASHNEXT_SLAB_PACK": "1",
-            "FLASHNEXT_SLAB_POLICY": "skew",
-            "FLASHNEXT_SLAB_MIN_SLOTS": "4",
-            "FLASHNEXT_SLAB_MAX_SLOTS": "6",
-            "FLASHNEXT_SLAB_NUM_LAYERS": "12",
-            "FLASHNEXT_FUSED_SHARED": "1",
-            "FLASHNEXT_FUSED_SHARED_PARTS": "0",
-            "FLASHNEXT_FUSED_UP_SWIGLU": "0",
-            "FLASHNEXT_STREAM_PACK": "0",
+        """Return the canonical production environment from the backend preset.
+
+        The suite may vary worker width for a diagnostic sweep. Every other
+        launch control must match normal ``chat.sh`` startup behavior.
+        """
+        environment = dict(CHAT_ENV)
+        environment["FLASHNEXT_IO_WORKERS"] = str(self.workers)
+        environment.update({
             "FLASHNEXT_PROFILE_BOUNDARIES": "0",
             "FLASHNEXT_PROFILE_SCORE_SYNC": "0",
-        }
+        })
+        return environment
 
 
 @dataclass

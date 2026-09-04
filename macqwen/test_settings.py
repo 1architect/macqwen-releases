@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 
 class DecodingInSettingsTests(unittest.TestCase):
-    """`/settings` is the "what will the next turn do" view, so the decoding
-    controls belong in it. The dedicated commands stay the writers."""
+    """Shared decoding controls belong to Session, backend settings to registry."""
 
     def backend(self):
         from macqwen.backends.flashnext import FlashNextBackend
@@ -25,27 +25,43 @@ class DecodingInSettingsTests(unittest.TestCase):
             setattr(backend, key, value)
         return backend
 
-    def test_the_decoding_controls_are_shown(self):
+    def test_backend_settings_do_not_duplicate_shared_controls(self):
         text = self.backend()._settings_text()
         for label in ("sampling", "effort", "thinking", "token-budget"):
-            self.assertIn(label, text)
-        self.assertIn("top-p 0.95", text)
-        self.assertIn("high", text)
-        self.assertIn("4096 answer + 4096 reasoning", text)
+            self.assertNotIn(label, text)
+        self.assertIn("routing", text)
+        self.assertIn("threshold", text)
 
-    def test_greedy_is_named_not_shown_as_a_temperature(self):
-        from macqwen.sampling import Sampling
+    def test_shared_status_owns_decoding_controls(self):
+        from macqwen.session import Session
+        session = Session.__new__(Session)
+        session.backend = self.backend()
+        session.backend.tape = []
+        session.profile = "plain"
+        session.preferences = {
+            "model": "flashnext", "thinking_enabled": True,
+            "show_thinking": False, "animate": True, "effort": "high",
+            "temperature": 1.0, "max_tokens": -1, "think_budget": 4096,
+        }
+        session.tools = None
+        with patch("macqwen.session.rss_gb", return_value=0.0):
+            text = session.status()
+        self.assertIn("effort=high", text)
+        self.assertIn("think-tokens=4096", text)
 
-        backend = self.backend()
-        backend.sampling = Sampling.greedy_settings()
-        self.assertIn("sampling            greedy", backend._settings_text())
+    def test_model_settings_renders_shared_then_backend(self):
+        class FakeBackend:
+            def configure(self, argument):
+                return "backend settings\n  public-value  1"
 
-    def test_a_shared_budget_says_so(self):
-        backend = self.backend()
-        backend.think_budget = 0
-        self.assertIn("reasoning shares it", backend._settings_text())
-
-    def test_the_writers_are_named(self):
-        text = self.backend()._settings_text()
-        self.assertIn("/sampling", text)
-        self.assertIn("/effort", text)
+        session = object.__new__(__import__("macqwen.session", fromlist=["Session"]).Session)
+        session.backend = FakeBackend()
+        session.profile = "plain"
+        session.preferences = {
+            "thinking_enabled": False, "effort": "xhigh", "temperature": 1.0,
+            "top_p": 0.95, "top_k": 20, "min_p": 0.0,
+            "presence_penalty": 0.0, "max_tokens": -1, "think_budget": -1,
+        }
+        text = session.model_settings("")
+        self.assertLess(text.index("Chat settings"), text.index("backend settings"))
+        self.assertIn("reasoning shares it", text)

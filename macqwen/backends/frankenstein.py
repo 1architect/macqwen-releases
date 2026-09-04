@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 import re
 
+from models.qwen27b.settings import get_registry
+
 
 _SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
@@ -92,7 +94,14 @@ class FrankensteinBackend:
             "repetition-context-size": repetition_context_size,
             "backtrack-bias": backtrack_bias,
             "shortlist-k": shortlist_k,
+            "spill-dir": spill_dir,
+            "wired-limit-gb": wired_limit_gb,
+            "bf16-ends": bf16_ends,
+            "lm-head-opt": lm_head_last,
+            "layer-indices": layer_indices,
+            "session-dir": str(self._session_dir),
         }
+        self._setting_sources = {}
         self.engine = FrankensteinEngine(
             os.path.expanduser(model_path),
             prefill_step_size=prefill_step_size,
@@ -117,18 +126,13 @@ class FrankensteinBackend:
         )
 
     def configure(self, argument: str) -> str:
-        if argument.strip():
-            raise ValueError(
-                "Qwen27B settings define its cache or sampler at startup; "
-                "restart the model with the matching CLI option"
-            )
-        rows = ["Qwen27B startup settings"]
-        rows.extend(
-            f"  {name:<25} {value}"
-            for name, value in self._startup_settings.items()
-        )
-        rows.append("change these with CLI options, then restart the model")
-        return "\n".join(rows)
+        return get_registry().configure(self, argument, "qwen27b")
+
+    def settings_registry(self):
+        return get_registry()
+
+    def settings_state(self, include_research: bool = False) -> str:
+        return self.settings_registry().render(self, "qwen27b", include_research)
 
     @property
     def tape(self):

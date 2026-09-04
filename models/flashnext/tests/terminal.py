@@ -85,7 +85,7 @@ class SuiteTerminal:
             ("Python", self.config.python),
             ("Frontier 8B", "off"),
             ("streamed records", "off"),
-            ("Up-QMV/SwiGLU", "off"),
+            ("Up-QMV/SwiGLU", "on"),
             ("boundary profiler", "off unless selected test enables it"),
             ("reboot", "never required"),
         ]

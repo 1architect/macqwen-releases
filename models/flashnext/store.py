@@ -39,6 +39,21 @@ _DTYPES: Dict[str, Tuple[np.dtype, object]] = {
 }
 
 _READ_PROFILE = threading.local()
+_PHYSICAL_MISS_TRACE = os.environ.get("FLASHNEXT_PHYSICAL_MISS_TRACE") == "1"
+
+
+def _trace_read(name: str, row: int, requested_bytes: int, reader, *args):
+    """Run one read and attribute its process-wide physical delta."""
+    from .diskio import disk_bytes_read
+
+    before = disk_bytes_read()
+    value = reader(*args)
+    after = disk_bytes_read()
+    from .physical_miss import record_trace_read
+
+    delta = after - before if before >= 0 and after >= before else 0
+    record_trace_read(name, row, delta, requested_bytes)
+    return value
 
 
 def begin_read_profile() -> None:
@@ -97,6 +112,18 @@ class SafeTensorStore:
 
     def __init__(self, model_dir: str):
         self.dir = os.path.expanduser(model_dir)
+        self._flashnext_env = {
+            key: os.environ[key]
+            for key in (
+                "FLASHNEXT_METAL_RUNTIME", "FLASHNEXT_SLAB_GLOBAL",
+                "FLASHNEXT_SLAB_PACK", "FLASHNEXT_SLAB_POLICY",
+                "FLASHNEXT_FUSED_SHARED", "FLASHNEXT_FUSED_SHARED_PARTS",
+                "FLASHNEXT_FUSED_UP_SWIGLU", "FLASHNEXT_STREAM_PACK",
+                "FLASHNEXT_PREAD_CHUNK", "FLASHNEXT_IO_WORKERS",
+                "FLASHNEXT_READ",
+            )
+            if key in os.environ
+        }
         self.refs: Dict[str, TensorRef] = {}
         self._maps: Dict[str, mmap.mmap] = {}
         self._files: Dict[str, object] = {}
@@ -423,8 +450,11 @@ class SafeTensorStore:
             fd = self._fd(ref.shard)
             for slot, row in misses:
                 offset = ref.start + row * ref.row_bytes
-                read = _profiled_preadv(
-                    fd, [memoryview(out[slot]).cast("B")], offset
+                args = (fd, [memoryview(out[slot]).cast("B")], offset)
+                read = (
+                    _trace_read(name, row, ref.row_bytes, _profiled_preadv, *args)
+                    if _PHYSICAL_MISS_TRACE
+                    else _profiled_preadv(*args)
                 )
                 if read != ref.row_bytes:
                     raise OSError(f"short pread for {name} row {row}")
@@ -442,11 +472,19 @@ class SafeTensorStore:
         for slot, row in enumerate(rows):
             offset = ref.start + row * ref.row_bytes
             if read_mode == "preadv":
-                read = _profiled_preadv(
-                    fd, [memoryview(out[slot]).cast("B")], offset
+                args = (fd, [memoryview(out[slot]).cast("B")], offset)
+                read = (
+                    _trace_read(name, row, ref.row_bytes, _profiled_preadv, *args)
+                    if _PHYSICAL_MISS_TRACE
+                    else _profiled_preadv(*args)
                 )
             else:
-                data = _profiled_pread(fd, ref.row_bytes, offset)
+                args = (fd, ref.row_bytes, offset)
+                data = (
+                    _trace_read(name, row, ref.row_bytes, _profiled_pread, *args)
+                    if _PHYSICAL_MISS_TRACE
+                    else _profiled_pread(*args)
+                )
                 read = len(data)
                 if read == ref.row_bytes:
                     out[slot] = np.frombuffer(data, dtype=dtype).reshape(ref.shape[1:])
@@ -518,11 +556,19 @@ class SafeTensorStore:
             for slot, row in enumerate(rows):
                 offset = ref.start + row * ref.row_bytes
                 if mode == "preadv":
-                    read = _profiled_preadv(
-                        fd, [memoryview(out[slot]).cast("B")], offset
+                    args = (fd, [memoryview(out[slot]).cast("B")], offset)
+                    read = (
+                        _trace_read(name, row, ref.row_bytes, _profiled_preadv, *args)
+                        if _PHYSICAL_MISS_TRACE
+                        else _profiled_preadv(*args)
                     )
                 else:
-                    data = _profiled_pread(fd, ref.row_bytes, offset)
+                    args = (fd, ref.row_bytes, offset)
+                    data = (
+                        _trace_read(name, row, ref.row_bytes, _profiled_pread, *args)
+                        if _PHYSICAL_MISS_TRACE
+                        else _profiled_pread(*args)
+                    )
                     read = len(data)
                     if read == ref.row_bytes:
                         out[slot] = np.frombuffer(data, dtype=dtype).reshape(

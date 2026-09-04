@@ -488,7 +488,7 @@ def render_config_help(profile: str) -> str:
         "  /config sampling [greedy|default|NAME VALUE]",
         "  /config effort LEVEL",
         "  /config display [stream|animate] on|off",
-        "  /config model [NAME VALUE|defaults]",
+        "  /config model [NAME VALUE|defaults|all]",
         "  /config prompt [text|edit|default]",
         "  /config profile plain|agent",
         "  /config keys [list|set SERVICE|delete SERVICE]",
