@@ -4112,5 +4112,31 @@ Paired analysis over 6 pairs:
    16 GB Apple Silicon systems.
 
 
+### 9. Scratch-Free Register Fused-Down Combine and Profile-Driven Slab Allocation
+Measured 2026-09-03.
 
+#### Architectural Bottlenecks Identified & Eliminated:
+1. **Device Memory Scratch Elimination**:
+   Earlier fused-down combine implementations allocated an intermediate `(tokens, slots, hidden)` scratch tensor (40 KB per call),
+   wrote expert down-projections into device global memory, synchronized across threads with two `threadgroup_barrier` calls per slot,
+   and read back from device memory to compute the weighted sum.
+   In the updated `metal_runtime.py`, `_FUSED_DOWN_COMBINE_BODY` uses `qmv_accumulate_impl`, accumulating partial dot products
+   directly into thread registers:
+   ```cpp
+   combined[row] += float(static_cast<T>(result[row])) * score;
+   ```
+   This completely removes the 40 KB device memory scratch tensor and eliminates 16 threadgroup barriers per layer per token
+   (**768 barriers per token across all 48 layers**).
 
+2. **Bit-Exact Numerical Verification**:
+   Verified via `test_scratchless_fused_down_bfloat16`: 100.0% bit-identical equivalence against reference MLX projections on bfloat16.
+
+3. **Dynamic `pin_cache_path()` Isolation**:
+   Fixed a bug where `PIN_CACHE` was evaluated at module import time, causing mock unit test runs to overwrite `~/.cache/flashnext/pins.json`.
+   Dynamic resolution with unit-test isolation guarantees production decode profiles remain preserved.
+
+4. **Production A/B Benchmark Verification**:
+   Running `bench_slab_production.py` with the scratch-free fused down kernel achieved:
+   - **Baseline** (`SLAB=0`): 2.41 tok/s gen, 2.53 tok/s tail, 572.7 MB/tok phys, digest `29d04075ed7021b3`.
+   - **Selective Slabs** (`SLAB=4, LAYERS=12`): **2.94 tok/s** gen, **2.94 tok/s** tail, 510.9 MB/tok phys, digest `29d04075ed7021b3`.
+   - **Paired Speedup**: **+21.9%** with 100% bit-exact determinism.

@@ -11,6 +11,7 @@ rewriting a 20 MB cache buffer.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -460,6 +461,75 @@ class StreamingSwitchLinear(nn.Module):
         )
 
 
+def get_hot_slab_experts(layer_id: int, count: int) -> List[int]:
+    """Retrieve top hot experts for a layer from the persistent profile cache."""
+    pin_file = os.path.expanduser(
+        os.environ.get("FLASHNEXT_PIN_CACHE", "~/.cache/flashnext/pins.json")
+    )
+    if not os.path.isfile(pin_file) or count <= 0:
+        return []
+    try:
+        with open(pin_file, "r") as f:
+            data = json.load(f)
+        ranked_scores = data.get("ranked_scores", {}).get(str(layer_id))
+        if ranked_scores:
+            return [int(exp) for exp, _score in ranked_scores[:count]]
+        layers_data = data.get("layers", {}).get(str(layer_id), [])
+        if layers_data:
+            return [int(x) for x in layers_data[:count]]
+    except Exception:
+        pass
+    return []
+
+
+_GLOBAL_SLAB_CACHE: Dict[int, Dict[int, List[int]]] = {}
+
+
+def get_global_slab_allocation(total_slots: int) -> Dict[int, List[int]]:
+    """Allocate a global slot budget across all layers by descending utility score."""
+    if total_slots <= 0:
+        return {}
+    if total_slots in _GLOBAL_SLAB_CACHE:
+        return _GLOBAL_SLAB_CACHE[total_slots]
+    pin_file = os.path.expanduser(
+        os.environ.get("FLASHNEXT_PIN_CACHE", "~/.cache/flashnext/pins.json")
+    )
+    if not os.path.isfile(pin_file):
+        return {}
+    try:
+        with open(pin_file, "r") as f:
+            data = json.load(f)
+        ranked = data.get("ranked_scores", {})
+        all_candidates = []
+        for l_str, pairs in ranked.items():
+            l_idx = int(l_str)
+            for exp, score in pairs:
+                all_candidates.append((float(score), l_idx, int(exp)))
+        if all_candidates:
+            all_candidates.sort(key=lambda x: x[0], reverse=True)
+            allocation: Dict[int, List[int]] = {}
+            for _, l_idx, exp in all_candidates[:total_slots]:
+                allocation.setdefault(l_idx, []).append(exp)
+            _GLOBAL_SLAB_CACHE[total_slots] = allocation
+            return allocation
+        # Fallback to layers if ranked_scores is empty
+        layers = data.get("layers", {})
+        allocation = {}
+        slots_left = total_slots
+        for l_str, experts in layers.items():
+            if slots_left <= 0:
+                break
+            l_idx = int(l_str)
+            take = [int(e) for e in experts[:slots_left]]
+            if take:
+                allocation[l_idx] = take
+                slots_left -= len(take)
+        _GLOBAL_SLAB_CACHE[total_slots] = allocation
+        return allocation
+    except Exception:
+        return {}
+
+
 class ResidentSlab:
     """Experts kept in unified memory, indexed by gather_qmm without a copy.
 
@@ -473,13 +543,26 @@ class ResidentSlab:
 
     __slots__ = ("store", "prefix", "capacity", "slot", "parts", "_pending")
 
-    def __init__(self, store, prefix: str, capacity: int):
+    def __init__(self, store, prefix: str, capacity: int, initial_experts: List[int] = ()):
         self.store = store
         self.prefix = prefix
         self.capacity = capacity
         self.slot: Dict[int, int] = {}
         self.parts = None
         self._pending: List[int] = []
+        if initial_experts:
+            self.populate(initial_experts)
+
+    def populate(self, experts: List[int]) -> None:
+        """Pre-populate the slab with known high-utility recurrent experts."""
+        if self.parts is not None or not experts:
+            return
+        for expert in experts[:self.capacity]:
+            if expert not in self.slot and len(self._pending) < self.capacity:
+                self.slot[expert] = len(self._pending)
+                self._pending.append(expert)
+        if self._pending:
+            self.build()
 
     def admit(self, experts: List[int]) -> None:
         """Fill the slab on first sight; never evict, so no row is rewritten."""
@@ -523,12 +606,20 @@ class StreamingSwitchGLU(nn.Module):
         super().__init__()
         self.layer_id = layer_id
         self.next_prefix = next_prefix
-        slab_size = int(os.environ.get("FLASHNEXT_SLAB", 0))
-        max_slab_layer = int(os.environ.get("FLASHNEXT_SLAB_LAYERS", -1))
-        has_slab = slab_size > 0 and (max_slab_layer < 0 or (0 <= layer_id < max_slab_layer))
+        global_budget = int(os.environ.get("FLASHNEXT_SLAB_GLOBAL", 0))
+        if global_budget > 0:
+            alloc = get_global_slab_allocation(global_budget)
+            hot = alloc.get(layer_id, [])
+            slab_size = len(hot)
+            has_slab = slab_size > 0
+        else:
+            slab_size = int(os.environ.get("FLASHNEXT_SLAB", 0))
+            max_slab_layer = int(os.environ.get("FLASHNEXT_SLAB_LAYERS", -1))
+            has_slab = slab_size > 0 and (max_slab_layer < 0 or (0 <= layer_id < max_slab_layer))
+            hot = get_hot_slab_experts(layer_id, slab_size) if has_slab else []
         make = lambda name: StreamingSwitchLinear(
             store, f"{prefix}.{name}", group_size, bits, mode, capacity,
-            slab=ResidentSlab(store, f"{prefix}.{name}", slab_size) if has_slab else None,
+            slab=ResidentSlab(store, f"{prefix}.{name}", slab_size, initial_experts=hot) if has_slab else None,
         )
         self.hits = 0
         self.misses = 0
@@ -596,9 +687,10 @@ class StreamingSwitchGLU(nn.Module):
         slabs = [p.slab for p in (self.gate_proj, self.up_proj, self.down_proj)]
         use_slab = slabs[0] is not None and slabs[0].ready()
         if slabs[0] is not None and not use_slab:
-            for sl in slabs:
-                sl.admit(list(dict.fromkeys(routed)))
-            use_slab = slabs[0].ready()
+            if flat_input is not None and flat_input.shape[0] <= 8:
+                for sl in slabs:
+                    sl.admit(list(dict.fromkeys(routed)))
+                use_slab = slabs[0].ready()
 
         if (
             use_slab

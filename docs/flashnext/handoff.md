@@ -482,7 +482,7 @@ Follow-up issues from the 2026-09-01 sweep:
 
 ### Standing decisions
 
-- Selective unified slabs (`FLASHNEXT_SLAB=4, FLASHNEXT_SLAB_LAYERS=12`) save 273.5 MB/tok physical reads for +149 MB active RAM (ratio 1.84), boosting production generation median by +8.2% (2.61 -> 2.89 tok/s) and tail rate by +15.6% (2.50 -> 2.89 tok/s) with 100% bit-exact output (`29d04075ed7021b3`). Uniform slabs across 48 layers degrade above SLAB=1 by evicting Darwin's dynamic page cache on 16 GB machines.
+- Selective unified slabs (`FLASHNEXT_SLAB=4, FLASHNEXT_SLAB_LAYERS=12`) combined with the scratch-free register fused-down kernel achieve 2.94 tok/s generation and 2.94 tok/s tail rate (+21.9% over baseline, digest `29d04075ed7021b3`), eliminating intermediate device scratch allocation and 768 threadgroup barriers per token. Uniform slabs across 48 layers degrade above SLAB=1 by evicting Darwin's dynamic page cache on 16 GB machines.
 - In-encoder Metal buffer barriers (`MTLBarrierScopeBuffers`) incur zero hardware penalty under physical SSD DMA and can safely be used for layer kernel consolidation.
 - `pin-parts` is rejected. Its positive isolated reading disappeared when
 stacked with prewarm; the pair lost 1.4% and read 8% more.

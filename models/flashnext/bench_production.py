@@ -346,7 +346,12 @@ LIVE_SETTINGS = {
 
 # Settings that only take effect while the backend is built. A condition using
 # one of these needs --fresh-arms; applying it to a live backend is a no-op.
-LOAD_TIME_SETTINGS = {"FLASHNEXT_PREWARM"}
+LOAD_TIME_SETTINGS = {
+    "FLASHNEXT_PREWARM",
+    "FLASHNEXT_SLAB",
+    "FLASHNEXT_SLAB_LAYERS",
+    "FLASHNEXT_SLAB_GLOBAL",
+}
 
 
 def apply_condition(backend, env: dict) -> None:

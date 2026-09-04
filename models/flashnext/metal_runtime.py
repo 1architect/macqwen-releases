@@ -254,9 +254,25 @@ def _mlx_qmv_header() -> str:
         fast = fast.replace(old, new)
         impl = impl.replace(old, new)
     header += fast + impl
+
+    def _make_accumulate(src: str, old_name: str, new_name: str) -> str:
+        acc = src.replace(old_name, new_name, 1)
+        acc = acc.replace("device T* y,", "thread float* combined, float score,", 1)
+        acc = acc.replace("y += tid.x * out_vec_size + out_row;", "// y unused", 1)
+        acc = acc.replace("y += tid.x * out_vec_size + used_out_row;", "// y unused", 1)
+        acc = acc.replace(
+            "y[row] = static_cast<T>(result[row]);",
+            "combined[row] += float(static_cast<T>(result[row])) * score;",
+        )
+        return acc
+
+    fast_acc = _make_accumulate(fast, "qmv_fast_mixed_impl", "qmv_fast_accumulate_impl")
+    impl_acc = _make_accumulate(impl, "qmv_mixed_impl", "qmv_accumulate_impl")
+    header += fast_acc + impl_acc
     # Custom-kernel helpers receive compile-time local dimensions, not buffer
     # address-space constants.
     return header.replace("const constant int&", "const int&")
+
 
 _FUSED_DOWN_COMBINE_BODY = r"""
 #pragma clang fp contract(off)
@@ -267,13 +283,13 @@ uint token = group.z;
 uint out_base = group.x * 8 + simd_gid * 4;
 if (token >= TOKENS || out_base >= OUT_WIDTH) return;
 float combined[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
 for (uint slot = 0; slot < SLOTS; ++slot) {
     uint raw_expert = routes[token * SLOTS + slot];
+    float slot_score = float(scores[token * SLOTS + slot]);
     const int in_size = IN_WIDTH;
     const int out_size = OUT_WIDTH;
     uint3 tid = uint3(0, group.x, token);
-    device T* slot_output = scratch +
-        (token * SLOTS + slot) * OUT_WIDTH;
 
 #if SLAB_ENABLED
     bool in_slab = ((raw_expert & 0x80000000u) != 0);
@@ -288,23 +304,13 @@ for (uint slot = 0; slot < SLOTS; ++slot) {
     decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / 32);
 #endif
 
-    qmv_mixed_impl<T, 32, 4>(
+    QMV_ACCUMULATE_IMPL<T, 32, 4>(
         w_ptr, s_ptr, b_ptr,
         x + (token * SLOTS + slot) * IN_WIDTH,
-        slot_output, in_size, out_size, tid,
+        combined, slot_score, in_size, out_size, tid,
         simd_gid, simd_lid);
-    threadgroup_barrier(mem_flags::mem_device);
-    if (simd_lid == 0) {
-#pragma unroll
-        for (uint row = 0; row < 4; ++row) {
-            if (out_base + row >= OUT_WIDTH) continue;
-            float product = float(slot_output[out_base + row]) *
-                            float(scores[token * SLOTS + slot]);
-            combined[row] += product;
-        }
-    }
-    threadgroup_barrier(mem_flags::mem_none);
 }
+
 if (simd_lid == 0) {
 #pragma unroll
     for (uint row = 0; row < 4; ++row)
@@ -419,14 +425,20 @@ class MetalMoEExecutor:
             body = body.replace("GROUPS", str(input_width // GROUP_SIZE))
             body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
             body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
+            body = body.replace(
+                "QMV_ACCUMULATE_IMPL",
+                "qmv_fast_accumulate_impl" if input_width % 512 == 0 else "qmv_accumulate_impl",
+            )
             input_names = ["x", "weight", "scales", "biases", "routes", "scores"]
             if has_slab:
                 input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
             kernel = maker(
                 name="flashnext_level1_q4g32_down_combine_slab" if has_slab else "flashnext_level1_q4g32_down_combine",
                 input_names=input_names,
-                output_names=["scratch", "out"], source=body,
-                header=_mlx_qmv_header(), ensure_row_contiguous=True,
+                output_names=["out"],
+                source=body,
+                header=_mlx_qmv_header(),
+                ensure_row_contiguous=True,
                 compile_options={"math_mode": "safe"},
             )
             self._kernels[key] = kernel
@@ -453,10 +465,10 @@ class MetalMoEExecutor:
             template=[("T", x.dtype)],
             grid=(((output_width + 7) // 8) * 64, 1, tokens),
             threadgroup=(64, 1, 1),
-            output_shapes=[(tokens, slots, output_width), (tokens, output_width)],
-            output_dtypes=[x.dtype, x.dtype],
+            output_shapes=[(tokens, output_width)],
+            output_dtypes=[x.dtype],
         )
-        return result[1]
+        return result[0] if isinstance(result, (tuple, list)) else result
 
     def _metal_projection(
         self,

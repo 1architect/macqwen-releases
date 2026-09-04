@@ -20,9 +20,10 @@ DEFAULT_READ_MODE = os.environ.get("FLASHNEXT_READ", "pread")
 # rows once at load puts them in the cache before the user types. The mlock
 # is not what matters here: the cached pages survive `unpin_all`, so this
 # stays independent of the per-turn pin cycle.
-PIN_CACHE = os.path.expanduser(
-    os.environ.get("FLASHNEXT_PIN_CACHE", "~/.cache/flashnext/pins.json")
-)
+def pin_cache_path() -> str:
+    return os.path.expanduser(
+        os.environ.get("FLASHNEXT_PIN_CACHE", "~/.cache/flashnext/pins.json")
+    )
 # A pinned expert costs 3000 KB per layer: 2400 of quantised weight and 600
 # of scales and biases. Pinning whole experts therefore exhausts a 6 GB budget
 # at about 32 of 512, which reaches roughly 70% of accesses. Pinning only the
@@ -301,17 +302,28 @@ class RoutingProfile:
         """
         if not self.pinned or self.pinned_signature == self._saved_signature:
             return
+        cache_file = pin_cache_path()
         try:
-            os.makedirs(os.path.dirname(PIN_CACHE), exist_ok=True)
+            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+            ranked_scores = {}
+            if self.candidates:
+                for layer, counts in self.candidates.items():
+                    ranked_scores[str(layer)] = [
+                        (int(e), round(float(s), 4))
+                        for e, s in counts.most_common(32)
+                    ]
             payload = {
                 "mode": self.mode,
                 "resident_experts": self.resident_experts,
                 "layers": {
-                    str(layer): sorted(experts)
+                    str(layer): [
+                        e for e, _ in ranked_scores.get(str(layer), []) if e in experts
+                    ] or sorted(experts)
                     for layer, experts in self.pinned.items()
                 },
+                "ranked_scores": ranked_scores,
             }
-            with open(PIN_CACHE, "w") as handle:
+            with open(cache_file, "w") as handle:
                 json.dump(payload, handle)
             self._saved_signature = self.pinned_signature
         except OSError:
@@ -320,34 +332,31 @@ class RoutingProfile:
     def prewarm(self) -> int:
         """Read last session's expert set so turn one is not cold.
 
-        Returns the number of rows touched. Results are discarded, so this
-        cannot change what the model computes.
+        Returns bytes paged into the cache, zero when no cache exists.
         """
         try:
-            with open(PIN_CACHE) as handle:
+            with open(pin_cache_path(), "r") as handle:
                 payload = json.load(handle)
         except (OSError, ValueError):
             return 0
-        if payload.get("mode") != self.mode:
-            return 0
-        touched = 0
-        for key, experts in payload.get("layers", {}).items():
-            try:
-                layer = int(key)
-                block = self.language.model.layers[layer].mlp.switch_mlp
-            except (ValueError, AttributeError, IndexError):
+        layers = payload.get("layers", {})
+        pinned = 0
+        for layer_str, experts in layers.items():
+            layer = int(layer_str)
+            if layer >= len(self.language.model.layers):
                 continue
+            block = self.language.model.layers[layer].mlp.switch_mlp
             prefix = block.gate_proj.cache.prefix.rsplit(".", 1)[0]
-            for projection in ("gate_proj", "up_proj", "down_proj"):
-                for part in ("weight", "scales", "biases"):
-                    try:
-                        self.store.rows_np(
-                            f"{prefix}.{projection}.{part}", list(experts)
-                        )
-                        touched += len(experts)
-                    except (KeyError, OSError):
-                        pass
-        return touched
+            names = [
+                f"{prefix}.{projection}.{part}"
+                for projection in ("gate_proj", "up_proj", "down_proj")
+                for part in pin_parts()
+            ]
+            for name in names:
+                pinned += self.store.pin_rows(name, experts)
+            self.pinned.setdefault(layer, set()).update(experts)
+        self.pinned_bytes = pinned
+        return pinned
 
     def _pin_candidates(self):
         count = (

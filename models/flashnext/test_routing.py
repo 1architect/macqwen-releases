@@ -37,6 +37,22 @@ def fake_language():
 
 
 class RoutingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._orig_pin_cache = os.environ.get("FLASHNEXT_PIN_CACHE")
+        os.environ["FLASHNEXT_PIN_CACHE"] = "/tmp/test_flashnext_pins.json"
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._orig_pin_cache is not None:
+            os.environ["FLASHNEXT_PIN_CACHE"] = cls._orig_pin_cache
+        else:
+            os.environ.pop("FLASHNEXT_PIN_CACHE", None)
+        try:
+            os.remove("/tmp/test_flashnext_pins.json")
+        except OSError:
+            pass
+
     def make(self, mode):
         return RoutingProfile(mode, FakeStore(), object())
 
