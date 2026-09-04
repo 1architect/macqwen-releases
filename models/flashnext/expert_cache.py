@@ -574,6 +574,81 @@ def get_global_slab_allocation(total_slots: int, min_slots: int = 1) -> Dict[int
         return {}
 
 
+def get_skew_slab_allocation(
+    total_slots: int,
+    min_slots: int = 4,
+    max_slots: int = 6,
+    num_layers: int = 12,
+) -> Dict[int, List[int]]:
+    """Allocate a global slot budget across layers with skew awareness.
+
+    Pins a base topology of `num_layers` (default: 12) with `min_slots` (default: 4) each,
+    then greedily distributes remaining slots to the layers with highest marginal hit
+    utility, capped at `max_slots` per layer.
+    """
+    if total_slots <= 0:
+        return {}
+    min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", str(min_slots)))
+    max_slots = int(os.environ.get("FLASHNEXT_SLAB_MAX_SLOTS", str(max_slots)))
+    num_layers = int(os.environ.get("FLASHNEXT_SLAB_NUM_LAYERS", str(num_layers)))
+    cache_key = ("skew", total_slots, min_slots, max_slots, num_layers)
+    if cache_key in _GLOBAL_SLAB_CACHE:
+        return _GLOBAL_SLAB_CACHE[cache_key]
+
+    pin_file = os.path.expanduser(
+        os.environ.get("FLASHNEXT_PIN_CACHE", "~/.cache/flashnext/pins.json")
+    )
+    if not os.path.isfile(pin_file):
+        return {}
+    try:
+        with open(pin_file, "r") as f:
+            data = json.load(f)
+        # Prefer ranked_counts if present, fallback to ranked_scores
+        ranked = data.get("ranked_counts") or data.get("ranked_scores", {})
+        if not ranked:
+            return get_global_slab_allocation(total_slots, min_slots=min_slots)
+
+        # Score each layer by the sum of its top min_slots candidates
+        layer_scores = []
+        for l_str, pairs in ranked.items():
+            l_idx = int(l_str)
+            s = sum(float(score) for _, score in pairs[:min_slots])
+            layer_scores.append((s, l_idx))
+        layer_scores.sort(reverse=True)
+
+        k = min(num_layers, max(1, total_slots // max(1, min_slots)))
+        selected = [l_idx for _, l_idx in layer_scores[:k]]
+
+        allocation: Dict[int, List[int]] = {}
+        for l_idx in selected:
+            pairs = ranked.get(str(l_idx), [])
+            allocation[l_idx] = [int(exp) for exp, _ in pairs[:min_slots]]
+
+        # Distribute remaining slots greedily to highest marginal candidate
+        rem = total_slots - sum(len(v) for v in allocation.values())
+        for _ in range(rem):
+            best_l, best_s, best_e = -1, -1.0, -1
+            for l_idx in selected:
+                curr_cnt = len(allocation[l_idx])
+                if curr_cnt >= max_slots:
+                    continue
+                pairs = ranked.get(str(l_idx), [])
+                if curr_cnt < len(pairs):
+                    cand_e, cand_s = pairs[curr_cnt]
+                    if float(cand_s) > best_s:
+                        best_s = float(cand_s)
+                        best_l = l_idx
+                        best_e = int(cand_e)
+            if best_l >= 0:
+                allocation[best_l].append(best_e)
+
+        _GLOBAL_SLAB_CACHE[cache_key] = allocation
+        return allocation
+    except Exception:
+        pass
+    return get_global_slab_allocation(total_slots, min_slots=min_slots)
+
+
 class ResidentSlab:
     """Experts kept in unified memory, indexed by gather_qmm without a copy.
 
@@ -660,7 +735,11 @@ class StreamingSwitchGLU(nn.Module):
 
             alloc = getattr(store, "_slab_alloc", None)
             if alloc is None:
-                alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
+                policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
+                if policy == "uniform":
+                    alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
+                else:
+                    alloc = get_skew_slab_allocation(global_budget, min_slots=min_slots)
                 store._slab_alloc = alloc
             pack = getattr(store, "_slab_pack", None)
             if pack is None:
@@ -677,7 +756,11 @@ class StreamingSwitchGLU(nn.Module):
             make_slab = None
         elif global_budget > 0:
             min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", 4))
-            alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
+            policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
+            if policy == "uniform":
+                alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
+            else:
+                alloc = get_skew_slab_allocation(global_budget, min_slots=min_slots)
             hot = alloc.get(layer_id, [])
             slab_size = len(hot)
             has_slab = slab_size > 0

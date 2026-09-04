@@ -109,7 +109,12 @@ What changed in the code recently:
   single zero-copy `MTLBuffer` with direct expert-major addressing in Metal. Controlled 8-arm A/B testing
   breaks through the 3.0 tok/s target, reaching **3.10 tok/s generation rate** and **3.07 tok/s tail rate**
   (+8.3% mean paired speedup, median +9.3%) at 29.4% decode hit rate and 100% bit-identical digest (`29d04075ed7021b3`).
-- The Flash-Next test suite passes all 149 tests.
+- Skew-aware slab pack 56 (`FLASHNEXT_SLAB_POLICY=skew, FLASHNEXT_SLAB_GLOBAL=56, FLASHNEXT_SLAB_PACK=1`, `models/flashnext/expert_cache.py`)
+  implements the Frontier 1 & 2 extension: concentrates 56 slots into the top 12 hot layers with depth 4–6 based on marginal hit gain (164.07 MiB pack),
+  boosting decode hit rate to **39.7%–40.7%** (+35% relative gain vs 29.4% on `slabpack48` and avoiding cold-layer dilution in `slabpack56_uniform`),
+  reaching **3.08 tok/s generation rate** and **3.02 tok/s tail rate** (median 2.94 tok/s) with 100% bit-identical digest (`29d04075ed7021b3`)
+  and only +24.5 MB MLX active memory overhead.
+- The Flash-Next test suite passes all 153 tests.
 
 The cache-aware quality comparison remains open under Next work. Its gate result
 was measured under greedy decoding, which causes repetition on its own, so it

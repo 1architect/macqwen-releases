@@ -146,6 +146,7 @@ class RoutingProfile:
             set_fast_profile()
             self.store._read_mode = "shared_mmap"
         self.candidates = {layer: Counter() for layer in range(48)}
+        self.route_counts = {layer: Counter() for layer in range(48)}
         self.observed = {layer: 0 for layer in range(48)}
         self.pinned.clear()
         self.pinned_bytes = 0
@@ -250,6 +251,8 @@ class RoutingProfile:
                 selected = zip(expert_row[keep:], score_row[keep:])
             for expert, score in selected:
                 self.candidates[layer][expert] += score / mass
+                if hasattr(self, "route_counts"):
+                    self.route_counts[layer][expert] += 1
 
     def after_token(self, count, generation_limit):
         # The first output token comes from prefill. Output N+1 therefore
@@ -306,11 +309,18 @@ class RoutingProfile:
         try:
             os.makedirs(os.path.dirname(cache_file), exist_ok=True)
             ranked_scores = {}
+            ranked_counts = {}
             if self.candidates:
                 for layer, counts in self.candidates.items():
                     ranked_scores[str(layer)] = [
                         (int(e), round(float(s), 4))
                         for e, s in counts.most_common(32)
+                    ]
+            if hasattr(self, "route_counts") and self.route_counts:
+                for layer, counts in self.route_counts.items():
+                    ranked_counts[str(layer)] = [
+                        (int(e), int(c))
+                        for e, c in counts.most_common(32)
                     ]
             payload = {
                 "mode": self.mode,
@@ -322,6 +332,7 @@ class RoutingProfile:
                     for layer, experts in self.pinned.items()
                 },
                 "ranked_scores": ranked_scores,
+                "ranked_counts": ranked_counts,
             }
             with open(cache_file, "w") as handle:
                 json.dump(payload, handle)

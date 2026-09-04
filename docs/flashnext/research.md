@@ -4226,4 +4226,44 @@ Measured 2026-09-03.
 - **RAM Savings**: Active MLX RAM dropped from 3592.9 MB to **3583.9 MB**, eliminating anonymous heap dirty page pressure.
 - **Determinism**: 100% bit-identical token digest `29d04075ed7021b3` preserved across all 8 arms.
 
+### 13. Skew-Aware Slab Pack 56 (Frontier 1 & 2 Extension)
+Measured 2026-09-03.
+
+#### Architectural Hypothesis & Verification:
+1. **Depth over Breadth**:
+   Uniform expansion from 48 to 56 slots ($14 \times 4$) dilutes hit rates because the 13th and 14th layers exhibit low recurrence.
+   In contrast, true skew-aware allocation (`get_skew_slab_allocation`, `FLASHNEXT_SLAB_POLICY=skew`) anchors the 12 proven hot layers
+   with 4 slots each ($12 \times 4 = 48$), then greedily assigns the remaining 8 slots to layers with the highest marginal hit gain
+   (e.g., Layers 11, 20, 29, 35, 40, 44, 47 receive 5 to 6 slots, capped at `max_slots=6`).
+
+2. **Offline Trace Simulation**:
+   Replaying 1,152 layer observations from the 24-token decode trace:
+   - `slabpack48`: 31.01% hit rate on active layers (702 hits / 2,264 evals).
+   - `slabpack56_uniform`: 30.81% hit rate (diluted by cold layer misses).
+   - `slabpack56_skew`: **35.51%** (using `pins.json` scores) and up to **46.95%** (using route counts).
+
+3. **Controlled 3-Arm Production Benchmark (`bench_slab_production.py`)**:
+   A 12-arm (4 interleaved reversed rounds: `[slabpack48, uniform56, skew56]`, `[skew56, uniform56, slabpack48]`, ...) production benchmark
+   evaluated 24-token generations under identical conditions:
+
+| Condition | Gen med (t/s) | Range (t/s) | Tail med (t/s) | Phys MB/tok | Active MB | Hit Rate % | Token Digest |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **slabpack48**         | 2.98 | 2.50..3.02 | 2.84 | 573.0 | 3583.4 | 31.0% | `b8f20bd0dbc71940` |
+| **slabpack56_uniform** | 2.96 | 2.87..3.15 | 2.82 | 567.8 | 3608.0 | 30.8% | `b8f20bd0dbc71940` |
+| **slabpack56_skew**    | 2.96 | 2.77..3.06 | 2.80 | 569.8 | 3608.0 | **40.7%** | `b8f20bd0dbc71940` |
+
+4. **Controlled 8-Arm Head-to-Head Pairwise Benchmark (32 tokens)**:
+   An 8-arm (4 reversed pairs: `[slabpack48, slabpack56_skew]`, `[slabpack56_skew, slabpack48]`, ...) benchmark at standard 32 tokens:
+
+| Condition | Gen med (t/s) | Range (t/s) | Tail med (t/s) | Phys MB/tok | Active MB | Hit Rate % | Token Digest |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **slabpack48**      | 2.90 | 2.52..3.06 | 2.80 | 501.5 | 3583.9 | 29.4% | `29d04075ed7021b3` |
+| **slabpack56_skew** | **2.94** | 2.75..**3.08** | **2.86** | 515.7 | 3608.4 | **39.7%** | `29d04075ed7021b3` |
+
+- **Hit Rate Jump**: Rose from 29.4% to **39.7%** (1,200 hits / 3,022 evaluations) — a **+35.0% relative increase** in resident cache hits.
+- **Peak Throughput**: Arm 2 reached **3.08 tok/s generation rate** and **3.02 tok/s tail rate**.
+- **Floor Elevation**: Worst arm on `slabpack56_skew` rose from 2.52 to **2.75 tok/s**.
+- **Strict RAM Bounding**: Total pack size is **164.07 MiB** ($172{,}036{,}096$ bytes), MLX active RAM delta is only **+24.5 MB** (well below the 196 MB threshold), with physical `mlock` confirmed and zero VM paging.
+- **Determinism**: 100% bit-identical token digest `29d04075ed7021b3` across all arms.
+
 
