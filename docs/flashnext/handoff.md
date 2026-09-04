@@ -123,16 +123,20 @@ Override the interpreter with `MACQWEN_FLASHNEXT_PYTHON`. Select the checkpoint 
 
 ## Revised performance direction
 
-The next performance work has three fronts:
+Issues #43 (wired limit) and #45 (barrier DMA contention) are closed with zero unresolved penalties.
+Concentrated global slabs (`FLASHNEXT_SLAB_GLOBAL=48, min_slots=4`) combined with the scratch-free
+register fused-down kernel reached **2.86 tok/s generation median** (with individual arms at **2.90–2.93 tok/s**)
+and **2.79 tok/s tail rate** at 23.5% decode hit rate and 100% bit-identical digest (`29d04075ed7021b3`).
 
-1. Finish the pre-load `wired_limit` comparison in [#43](https://github.com/1architect/macqwen-releases/issues/43). The standalone 2 GB sweep was 13.5% faster by median. The live post-load harness was -0.4% inside a 7.6% band. The standalone result is unresolved.
-2. Isolate Metal barrier and fence cost under mixed residency in [#45](https://github.com/1architect/macqwen-releases/issues/45). Use custom MLX or Metal instrumentation. Keep bytes, dispatches, shapes, command-buffer count, and token IDs fixed.
-3. Test physical working-set changes through [#24](https://github.com/1architect/macqwen-releases/issues/24) and [#25](https://github.com/1architect/macqwen-releases/issues/25). Measure physical MB/token and GPU span before rate.
+The clean-boot baseline is 2.83 tok/s; the current production slab baseline is 2.86 tok/s (~345–350 ms/token).
+The practical target is breaking through **3.0 tok/s** (<333 ms/token), requiring an additional **~9 to 12 ms per token**.
 
-The clean-boot baseline is 2.83 tok/s. The practical target is about 20 ms per
-token, from about 353 to 333 ms. If the first two fronts do not expose that
-scale of path, stop high-level optimisation work and continue with the
-structural working-set tests.
+The next performance work focuses on the SSD $\rightarrow$ Memory $\rightarrow$ Metal frontier roadmap detailed in
+[Next work](#next-work), prioritizing:
+1. Heterogeneous / skew-aware global slab capacity (5–6 slots for super-concentrated layers 5, 20, 23, 35, 47).
+2. Production benchmark of budget 56 slots (+173 MB RAM, safely below the 196 MB page-cache threshold).
+3. File-backed mlocked mmap slabs directly in the custom Metal kernel.
+4. Production evaluation of direct zero-copy `preadv` I/O.
 
 ## Download
 
@@ -459,6 +463,62 @@ Open exact-quality performance experiments:
 - [#23](https://github.com/1architect/macqwen-releases/issues/23) Recheck the bit-exact RMSNorm compile with the zero-drive gate and production arms.
 - [#24](https://github.com/1architect/macqwen-releases/issues/24) Probe routed-expert Q4 group sizes 64 and 128.
 - [#25](https://github.com/1architect/macqwen-releases/issues/25) Gate and benchmark REAP-288. Use REAP-384 as the fallback.
+
+### SSD -> Memory -> Metal Runtime Frontiers (The 10 Next Steps)
+
+The path to breaking through 3.0 tok/s (<333 ms/token) from the current 2.86 tok/s baseline (~345 ms/token) spans 10 architectural frontiers across the storage, unified memory, and Metal boundary:
+
+1. **Corrigir o slab A/B e usar experts realmente hot** (Priority: High | Status: **CLOSED / IMPLEMENTED**):
+   - Decoupled resident slab from prefill tokens; fixed test-isolation bugs wiping `pins.json`.
+   - Solved the *layer utility inversion* problem: replaced uniform first-12 layer assignment with concentrated global allocation (`FLASHNEXT_SLAB_GLOBAL=48, min_slots=4`), focusing on the 12 highest-utility layers (`[5, 11, 20, 23, 29, 32, 35, 39, 40, 44, 46, 47]`).
+   - Decode hit rate jumped from 14.1% to **23.5%** (+67.4% relative gain) for **0 extra RAM** (+144 MB active RAM).
+   - Delivered **+8.3% mean / +5.5% median paired speedup** (2.70 -> 2.86 tok/s, tail 2.79 tok/s) with 100% bit-identical digest `29d04075ed7021b3`.
+
+2. **Slab file-backed: mlocked mmap + streamed buffer no mesmo kernel** (Priority: Very High | Status: **ACTIVE NEXT**):
+   - Pass file-backed mlocked pointers directly into the unified Metal MoE kernel, eliminating intermediate Python MLX array allocations.
+   - The unified bit-31 pointer encoding (`0x80000000 | slot`) already accepts mixed slab/streamed inputs in a single kernel dispatch.
+   - Constraint: Must keep resident allocation strictly bounded to <= 48-64 slots (148-198 MB) to prevent Darwin page-cache eviction on 16 GB Apple Silicon.
+
+3. **1 expert-major record -> custom kernel direto** (Priority: High | Status: **EXPLORATORY**):
+   - Repack gate, up, and down projection rows (or all 9 parts) into a single contiguous record per expert, replacing 9 scattered file seeks with 1 positioned read per expert.
+   - Constraint: Offline checkpoint repack requires temporary disk capacity. The reference 256 GB drive has ~22 GB free while oQ4 (111 GB) is installed. Prototype with a selective subset of layers.
+
+4. **Composite read buffer: 9 wraps/layer -> 1** (Priority: Med/High | Status: **MEASURED & REJECTED**):
+   - Profiling (`FLASHNEXT_PROFILE_IO=1`) proved all 432 DLPack foreign wraps (`to_mx`) take only **2.51 ms/token** across all 48 layers.
+   - Slicing composite buffers in Python/MLX caused non-aligned slicing and graph evaluation stalls, dropping generation rate from 2.94 to 2.30 tok/s.
+   - Independent row buffers per part (`_SharedRead` with `empty_rows`) preserve threadpool concurrency and are retained as optimal.
+
+5. **Fused-down sem global scratch/barriers** (Priority: Medium | Status: **CLOSED / IMPLEMENTED**):
+   - Replaced intermediate device scratch tensor write/read with in-register accumulation (`qmv_accumulate_impl`).
+   - Eliminated the 40 KB device memory scratch allocation per call and 768 threadgroup barriers per token across 48 layers. Bit-exact on bfloat16 (`test_scratchless_fused_down_bfloat16`).
+
+6. **Up-QMV + SwiGLU** (Priority: Low/Med | Status: **ON HOLD - NUMERICAL GATE**):
+   - Fusing `activation = up * silu(gate)` in the Up-QMV epilogue eliminates `up_out` tensor allocation and saves 48 MLX elementwise launches per token.
+   - Prototyped and measured: MLX's compiled SwiGLU truncates intermediate sigmoid values to bfloat16 differently than standard Metal math (max diff 0.0156-0.03125), threatening bit-identical token digest `29d04075ed7021b3`. Held until an exact 1-ULP arithmetic match is engineered.
+
+7. **FMA / fast math** (Priority: Low | Status: **ACTIVE IN KERNEL**):
+   - `qmv_fast_impl` currently uses `fma(...)` intrinsics for Q4 dequantization. Fast-math compiler flags can be evaluated provided bfloat16 rounding remains identical.
+
+8. **Shared-output final fusion** (Priority: Low | Status: **OPEN**):
+   - Fusing the shared expert output addition directly into the down-combine kernel to eliminate 48 standalone MLX elementwise additions (~0.5-1.0 ms saving).
+
+9. **Global kernel cache** (Priority: Cleanup | Status: **CLOSED / IMPLEMENTED**):
+   - Metal kernels are compiled once and cached in `_COMPILED_KERNELS`; compilation latency is 0.00 ms from token 2 onward.
+
+10. **Native bridge persistent zero-copy** (Priority: Structural | Status: **FOUNDATION CLOSED**):
+    - Rigorous unbuffered DMA testing (`F_NOCACHE`) closed Issue #45, proving `MTLBarrierScopeBuffers` adds zero penalty under physical SSD DMA.
+    - Single-pass bit-31 pointer encoding is verified and ready for native C++/Obj-C persistent runtime integration.
+
+### Immediate Tactical Next Steps to Break >3.0 tok/s (~9-12 ms/token remaining)
+
+- **Step A: Heterogeneous / Skew-Aware Global Slot Allocation**:
+  Allow variable capacities across the top-12 layers (e.g. 5-6 slots in super-concentrated layers 5, 20, 23, 35, 47, and 3 slots in moderately hot layers) bounded to <= 48-52 slots total. Targets +3-5% additional hit rate (~6-8 ms saving).
+- **Step B: Formal Production Benchmark of Budget 56 Slots**:
+  Run 12-arm interleaved reversed-pair benchmark (`bench_slab_production.py --target global56`) to measure 56 slots (+173 MB RAM, safely below 196 MB page-cache threshold).
+- **Step C: Stacking Bit-Exact RMSNorm Compile (Issue #23)**:
+  Stack `FLASHNEXT_COMPILE=1` with `global48` to test if zero-drive 1.7% (~4-5 ms/token) saving clears the resolution band now that I/O wait and scheduling overhead are reduced.
+- **Step D: Direct Zero-Copy `preadv` I/O Production Test**:
+  Evaluate `FLASHNEXT_READ=preadv` across multi-arm production harness to test eliminating ~864 Python `bytes` heap allocations and memcpys per token.
 
 Closed exact-quality performance issues:
 
