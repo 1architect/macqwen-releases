@@ -101,6 +101,9 @@ What changed in the code recently:
   boosting decode hit rate from 14.1% to 23.5% (+67% relative gain) for the exact same 149 MB
   active RAM, achieving 2.86–2.91 tok/s generation and 2.79–2.92 tok/s tail rate with 100%
   bit-identical digest (`29d04075ed7021b3`).
+- Adaptive top-k where fast-path eliminates up to 144 redundant elementwise kernel dispatches
+  per token during decode when all routed slots are active, reaching peak arm rate of 2.96 tok/s
+  and winning 4 of 4 pairs over baseline in controlled production A/B testing with bit-identical digest.
 - The Flash-Next test suite passes all 147 tests.
 
 The cache-aware quality comparison remains open under Next work. Its gate result

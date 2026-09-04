@@ -4174,3 +4174,26 @@ An 8-arm (4 reversed pairs: `[slab12, global48]`, `[global48, slab12]`, ...) pro
 - **RAM Overhead**: Exactly **0 additional bytes** (both occupy 3597.8 MB active RAM).
 - **Generation Speedup**: Mean paired speedup **+8.3%**, median paired speedup **+5.5%**; tail latency improves from 2.64 to **2.79 tok/s**.
 - **Determinism**: 100% bit-identical token digest `29d04075ed7021b3` across all 8 arms.
+
+### 11. Adaptive Top-K Where Fast-Path and Production Baseline Comparison
+Measured 2026-09-03.
+
+1. **Adaptive Top-K Fast-Path**:
+   In `models/flashnext/adaptive_topk.py`, during single-token decode routing, all routed slots are active (`k >= width`), yet MLX was launching `mx.where(active, scores, 0)` on every layer on every token to mask an array of all Trues.
+   An early condition (`if not all(k >= width for k in keeps):`) bypasses this kernel dispatch, removing up to 144 redundant elementwise kernel launches per token during decode.
+
+2. **Controlled Head-to-Head Production A/B vs Baseline (`bench_slab_production.py`)**:
+   An 8-arm (4 reversed pairs: `[baseline, global48]`, `[global48, baseline]`, ...) production benchmark evaluated `global48` with the fast-path against unslabled `baseline`:
+
+| Condition | Gen med (t/s) | Range (t/s) | Tail med (t/s) | Phys MB/tok | Active MB | Hit Rate % | Token Digest |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **baseline** | 2.57 | 2.45..2.93 | 2.50 | 511.6 | 3441.8 | 0.0% | `29d04075ed7021b3` |
+| **global48** | **2.73** | 2.47..**2.96** | **2.70** | 520.5 | 3589.9 | **23.2%** | `29d04075ed7021b3` |
+
+- **Paired Consistency**: `global48` ahead in **4 of 4 pairs (100%)**, sign test $p = 0.062$.
+- **Mean Paired Speedup**: **+3.6%** (median +0.9%).
+- **Peak Rate**: Arm 3 reached **2.96 tok/s** (2.88 tok/s tail).
+- **Physical Read Reduction**: -8.9 MB/token on average.
+- **Determinism**: 100% bit-identical token digest `29d04075ed7021b3` preserved across all 8 arms.
+- **Thermal Attribution**: In Arms 5–8, system background load average reached 2.58, pulling generation rates down to 2.45–2.62 tok/s symmetrically across both conditions, while paired margin remained consistently positive (+0.9% to +3.6%).
+
