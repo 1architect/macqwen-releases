@@ -794,7 +794,10 @@ class MetalMoEExecutor:
         # Keeping gate_out as the final input makes the dependency explicit.
         inputs.append(gate_out)
 
-        if not self._boundary_profiler.enabled:
+        if (
+            not self._boundary_profiler.enabled
+            or not self._boundary_profiler.selected_for("swiglu")
+        ):
             result = kernel(
                 inputs=inputs,
                 template=[("T", x.dtype)],
@@ -862,7 +865,10 @@ class MetalMoEExecutor:
                 shared.reshape(tokens, output_width),
                 shared_gate.reshape(tokens),
             ])
-        if not self._boundary_profiler.enabled:
+        if (
+            not self._boundary_profiler.enabled
+            or not self._boundary_profiler.selected_for("fused_down")
+        ):
             result = kernel(
                 inputs=inputs,
                 template=[("T", x.dtype)],
@@ -924,7 +930,16 @@ class MetalMoEExecutor:
                 inputs.append(stream_pack)
         elif has_slab:
             inputs.extend([slab_projection.weight, slab_projection.scales, slab_projection.biases])
-        if not self._boundary_profiler.enabled:
+        label = {
+            "gate_proj": "gate_qmv",
+            "up_proj": "up_qmv",
+            "down_proj": "down_qmv",
+        }.get(proj_name)
+        if (
+            not self._boundary_profiler.enabled
+            or label is None
+            or not self._boundary_profiler.selected_for(label)
+        ):
             result = kernel(
                 inputs=inputs,
                 template=[("T", x.dtype)],
@@ -946,17 +961,9 @@ class MetalMoEExecutor:
             )
             return result[0] if isinstance(result, (tuple, list)) else result
 
-        label = {
-            "gate_proj": "gate_qmv",
-            "up_proj": "up_qmv",
-            "down_proj": "down_qmv",
-        }.get(proj_name)
-        if label is not None:
-            return self._boundary_profiler.measure(
-                label, issue, self._complete_boundary
-            )
-        result = issue()
-        return result[0] if isinstance(result, (tuple, list)) else result
+        return self._boundary_profiler.measure(
+            label, issue, self._complete_boundary
+        )
 
     def _reference_projection(
         self,
@@ -1112,7 +1119,10 @@ class MetalMoEExecutor:
                 )
                 from mlx_vlm.models.activations import swiglu
 
-                if self._boundary_profiler.enabled:
+                if (
+                    self._boundary_profiler.enabled
+                    and self._boundary_profiler.selected_for("swiglu")
+                ):
                     activation = self._boundary_profiler.measure(
                         "swiglu",
                         lambda: swiglu(gate_out, up_out),

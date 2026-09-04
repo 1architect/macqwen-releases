@@ -394,7 +394,7 @@ def get_or_create_slab_pack(
             raise FileNotFoundError(
                 f"Required prebuilt slab pack is missing: {cache_path}. "
                 "Run bench_slab_production.py --capacity-sweep --prepare-only, "
-                "then reboot before the trusted benchmark."
+                "then use the benchmark file-cache purge and quiescence gate."
             )
         build_slab_pack(store, allocation, cache_path)
 

@@ -48,18 +48,14 @@ _POOL = ThreadPoolExecutor(
 
 # This state is diagnostic only. It does not control submission or worker
 # selection. Set FLASHNEXT_PROFILE_SCORE_SYNC=1 to collect score-sync data.
-# Keep it disabled unless score-sync or full I/O profiling is on.
+# Pool-state tracking belongs only to the explicit score-sync diagnostic.
 _SCORE_SYNC_PROFILE = os.environ.get("FLASHNEXT_PROFILE_SCORE_SYNC") == "1"
 _POOL_STATE_LOCK = threading.Lock()
 _POOL_STATE = {"queued": 0, "running": 0, "completed": 0}
 
 
-def _pool_state_profile_enabled() -> bool:
-    return _PROFILE or _SCORE_SYNC_PROFILE
-
-
 def _pool_submit() -> None:
-    if not _pool_state_profile_enabled():
+    if not _SCORE_SYNC_PROFILE:
         return
     with _POOL_STATE_LOCK:
         _POOL_STATE["queued"] += 1
@@ -104,18 +100,23 @@ def _submit_read(*args):
     The counter is what lets a host window claim the drive was idle. Without
     it the claim is an argument about the code rather than a measurement.
     """
-    tracked = _pool_state_profile_enabled()
-    if tracked:
+    track_pool = _SCORE_SYNC_PROFILE
+    if track_pool:
         _pool_submit()
     try:
         if _PROFILE:
-            future = _POOL.submit(_profiled_read_call, time.perf_counter(), *args)
-        elif tracked:
+            future = _POOL.submit(
+                _profiled_read_call,
+                time.perf_counter(),
+                track_pool,
+                *args,
+            )
+        elif track_pool:
             future = _POOL.submit(_tracked_read_call, *args)
         else:
             future = _POOL.submit(*args)
     except BaseException:
-        if tracked:
+        if track_pool:
             with _POOL_STATE_LOCK:
                 _POOL_STATE["queued"] -= 1
         raise
@@ -228,7 +229,7 @@ def score_sync_begin(threshold_active: bool):
     return (
         time.perf_counter(),
         _physical_bytes_read(),
-        read_pool_state(),
+        read_pool_state() if _SCORE_SYNC_PROFILE else None,
     )
 
 
@@ -239,7 +240,7 @@ def score_sync_end(handle) -> None:
     began, bytes_before, pool_before = handle
     ended = time.perf_counter()
     bytes_after = _physical_bytes_read()
-    pool_after = read_pool_state()
+    pool_after = read_pool_state() if pool_before is not None else None
     elapsed = ended - began
     physical = (
         bytes_after - bytes_before
@@ -250,9 +251,10 @@ def score_sync_end(handle) -> None:
     _TIMERS["score_sync_bytes"] += physical
     _TIMERS["score_sync_physical_bytes"] += physical
     _TIMERS["score_sync_calls"] += 1
-    for state in ("queued", "running", "completed"):
-        _TIMERS[f"score_sync_pool_{state}_before"] += pool_before[state]
-        _TIMERS[f"score_sync_pool_{state}_after"] += pool_after[state]
+    if pool_before is not None and pool_after is not None:
+        for state in ("queued", "running", "completed"):
+            _TIMERS[f"score_sync_pool_{state}_before"] += pool_before[state]
+            _TIMERS[f"score_sync_pool_{state}_after"] += pool_after[state]
 
 
 def score_sync_totals() -> dict:
@@ -292,15 +294,17 @@ class _ProfiledRead:
         self.pread_bytes = stats["pread_bytes"]
 
 
-def _profiled_read_call(submitted, function, *args):
+def _profiled_read_call(submitted, track_pool, function, *args):
     started = time.perf_counter()
-    _pool_started()
+    if track_pool:
+        _pool_started()
     begin_read_profile()
     try:
         value = function(*args)
     finally:
         stats = finish_read_profile()
-        _pool_finished()
+        if track_pool:
+            _pool_finished()
     ended = time.perf_counter()
     return _ProfiledRead(value, submitted, started, ended, stats)
 

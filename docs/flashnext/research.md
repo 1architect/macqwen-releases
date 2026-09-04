@@ -4312,6 +4312,9 @@ Measured 2026-09-04.
 - **Dispatch Elimination**: 48 elementwise additions and 48 intermediate tensor allocations saved per token.
 - **Zero Numerical Drift**: 100% bit-identical token digest (`29d04075ed7021b3` for 32 tokens, `b8f20bd0dbc71940` for 24 tokens).
 
+This result supports the specific routed-output finalization fusion. It does not
+establish a general performance benefit from removing elementwise operations.
+
 ### 15. Skew Slab Capacity Sweep: 56 vs 60 vs 64
 Measured 2026-09-04.
 
@@ -4329,11 +4332,14 @@ The 60-slot median is 3.0% above 56 slots. The 64-slot median is 1.3% below
 56 slots in paired comparison. Both differences remain inside the 17.0%
 resolution band. The physical-read differences are only 0.9 to 1.2 MB/token.
 
-The 3.15–3.20 tok/s projection for 64 slots is falsified and removed. Hit rate
-continues to rise, but useful resident capacity saturates near the current
-160 MiB class. Future slab work must select experts using physical misses,
-not logical route frequency alone. The 60-slot profile becomes the standard
-capacity for subsequent runtime experiments.
+The 3.15–3.20 tok/s projection for 64 slots is falsified and removed. Logical
+hit rate continues to rise, but this run does not resolve a corresponding
+physical-I/O benefit. The defensible decision is to use 60 slots as the
+selected engineering default: it had the highest observed generation median
+while using less resident memory than 64 slots. The sweep does not establish a
+statistically meaningful performance difference among 56, 60, and 64 slots.
+Future slab work must select experts using physical-miss evidence, not logical
+route frequency alone.
 
 ### 16. Frontier 8B-safe: Shared Multiply in the Metal Epilogue
 Measured 2026-09-04.
@@ -4376,18 +4382,22 @@ Three standard 60-slot Frontier 8A runs produced these median results:
 | Tail generation | 2.86 tok/s |
 | Physical reads | 564.3 MB/token |
 | Total I/O wait | 304.76 ms/token |
-| Threadpool queue delay | 211.79 ms/token |
+| Submission-to-worker-start delay | 211.79 ms/token |
 | Time inside `pread` or `preadv` | 89.71 ms/token |
 | Worker task overhead outside positioned reads | 2.95 ms/token |
 | Main-thread completion overhead | 0.31 ms/token |
 
-The four critical-path components sum to 304.76 ms/token. Queue delay accounts
-for 69.5% of the wait. Time inside positioned reads accounts for 29.4%.
-Worker and completion overhead together account for 1.1%.
+The four critical-path components sum to 304.76 ms/token. The measured delay
+between task submission and worker start accounts for 69.5% of observed I/O
+critical-path time. Time inside positioned reads accounts for 29.4%. Worker
+and completion overhead together account for 1.1%.
 
 The positioned-read value includes syscall entry, kernel work, and storage wait.
-The instrumentation cannot split those parts without kernel tracing. The current
-evidence directs Frontier 5 toward task batching and threadpool queue pressure.
+The instrumentation cannot split those parts without kernel tracing. It also
+cannot determine whether submission-to-start delay comes primarily from worker
+saturation, storage concurrency limits, queue scheduling, GIL or lock
+contention, or their interaction. The 2.95 ms/token worker-side non-read
+overhead does not support attributing the delay to ordinary Python overhead.
 No Frontier 5 scheduling change is enabled by default.
 
 ### 18. Frontier 5 Expert-Major Streamed Records
@@ -4400,10 +4410,10 @@ with the existing route encoding. This removes eight Metal-visible streamed
 buffers per cold layer.
 
 The first 12-arm reversed comparison tested nine worker tasks per layer. It
-reduced median queue delay from 206.69 to 196.68 ms/token. Positioned-read time
-increased from 89.41 to 94.98 ms/token. Worker overhead increased from 3.09 to
-6.30 ms/token. Median generation changed from 2.85 to 2.90 tok/s, or +2.8%.
-The result stayed inside a 32.4% resolution band.
+reduced submission-to-worker-start delay from 206.69 to 196.68 ms/token.
+Positioned-read time increased from 89.41 to 94.98 ms/token. Worker overhead
+increased from 3.09 to 6.30 ms/token. Median generation changed from 2.85 to
+2.90 tok/s, or +2.8%. The result stayed inside a 32.4% resolution band.
 
 A second 12-arm interleaved run tested chunk sizes 2 and 3. These sizes retain
 more storage concurrency while using the expert-major destination.
@@ -4420,9 +4430,17 @@ the 8.4% resolution band. Every arm kept digest `29d04075ed7021b3`.
 
 The source call count and requested bytes remain unchanged because safetensor
 components occupy separate file ranges. Task coalescing does not remove those
-positioned reads. It only changes destination layout and worker grouping.
+positioned reads. It only changes destination layout and worker grouping. These
+results therefore do not establish that queue overhead caused the observed
+delay, and they do not justify predicting a large gain from fewer tasks.
+
 Keep `FLASHNEXT_STREAM_PACK=0`. Retain the implementation as an opt-in
 experiment. Do not add its 37.9 MB active-memory cost to the standard path.
+For a direct topology test, compare current scheduling with one task per
+expert, while keeping destinations, reads, requested bytes, worker count, slab
+capacity, and 8A settings identical. Report submission-to-start delay,
+positioned-read wall time, layer completion time, total I/O wait, physical
+MB/token, generation, and tail rate.
 
 ### 19. Incremental Frontier 10 Boundary Attribution and Up-to-SwiGLU Fusion
 Measured 2026-09-04.
@@ -4449,8 +4467,8 @@ Score-sync attribution confirms that the threshold path is active in all 48
 layers. After the first token, tokens 3 through 8 blocked for 102.71 to
 143.46 ms/token. The read pool had zero queued and zero running tasks at both
 edges. Physical reads were zero on five of those six tokens and 0.229 MB on
-the other. Score sync primarily pays outstanding GPU work from earlier graph
-operations.
+the other. Score sync pays deferred Metal graph work and completion latency.
+This probe does not separate GPU execution from submission or event latency.
 
 The SwiGLU arithmetic gate tested all 65,536 bfloat16 gate encodings at Up
 patterns `0x3f80` and `0x3f9e`. A float32 Metal sigmoid sequence produced
@@ -4476,3 +4494,96 @@ resolution band. Every arm kept digest `29d04075ed7021b3`.
 
 Keep the fusion disabled. The experiment supports incremental boundary work,
 but it does not support promotion from this same-boot run.
+
+## Post-commit measurement audit, 2026-09-04
+
+A static review of commit `59503a2` found that
+`bench_slab_production.py` reset physical-I/O, VM, and Frontier 5 counters
+before `backend.generate()`. That call includes prompt prefill. The harness
+then divided the combined prefill and decode totals by generated-token count.
+
+This defect affects the physical MB/token, I/O-wait, queue-residence, and VM
+values reported by this harness in Sections 15 through 19. The historical
+211.79 ms/token submission-to-worker-start value is not a decode-only result.
+It must not support a scheduling or worker-pool conclusion until a corrected
+run resets counters through the `on_prefilled` boundary.
+
+The audit also found that the slab harness called the control arm's full range
+divided by its median a resolution band. That value is descriptive spread. It
+is not a standard error or confidence interval. The corrected harness reports
+two standard errors of paired percentage differences and paired physical-byte
+deltas. Historical 17.0%, 28.6%, 32.4%, 8.4%, and 14.8% bands remain part of
+the record, but they are not valid statistical resolution estimates.
+
+Generation and tail rates came from decode-only `Stats` fields. The counter
+defect does not change those arithmetic values. Their short 24–32-token arms,
+same-boot conditions, and large environmental spread still prevent 1–5%
+promotion decisions. Keep 60 slots and Frontier 8A frozen as the engineering
+control. Rerun the corrected harness before changing that control or promoting
+Frontier 8B, streamed records, or Up-QMV-to-SwiGLU fusion.
+
+### Reboot requirement removed
+
+Trusted runs no longer require a reboot. macOS can launch background indexing,
+analysis, and maintenance work after boot, which makes boot age a poor state
+control. The replacement separates two resources:
+
+- `purge` optionally empties the file cache after pack preparation. It does not
+  affect anonymous memory or swap.
+- A quiescence gate requires a clean VM-counter and load window before the
+  first arm. Existing dormant swapfiles are allowed. Swapin, swapout, or
+  pageout activity rejects the window. Normal compressor churn is bounded at
+  128 pages per second instead of requiring an unrealistic zero. This bound
+  follows the observed idle host background while retaining zero tolerance for
+  swap and pageout activity.
+
+Do not stop `dynamic_pager`, delete swapfiles, or run `memory_pressure`. Those
+actions are unsafe or deliberately create memory pressure. Interleaved reversed
+arms, physical-byte reporting, and measured-window VM deltas remain the controls
+after the quiescence gate.
+
+## Corrected uninstrumented Frontier 10 retest, 2026-09-04
+
+The first terminal-suite attempts were invalid for three independent reasons:
+
+- the suite parent imported `bench_slab_production`, which initialized a second
+  MLX Metal device beside the benchmark child;
+- 96-token arms changed the route-locality and memory-pressure workload from
+  the established 32-token baseline;
+- `FLASHNEXT_PROFILE_IO=1` created per-read timing objects and materially raised
+  RSS, compressor activity, and token time.
+
+The corrected run used Apple Terminal, 32 tokens, six reversed pairs, and
+`FLASHNEXT_PROFILE_IO=0`. Both conditions kept digest
+`29d04075ed7021b3`.
+
+| Condition | Gen median | Range | Tail median | Physical MB/token |
+|---|---:|---:|---:|---:|
+| 60-slot Frontier 8A | 3.41 | 3.27–3.52 | 3.21 | 231.8 |
+| Up-QMV to SwiGLU | 3.45 | 3.22–3.48 | 3.21 | 229.3 |
+
+The paired mean effect is +0.2% and the paired median is +0.5%. The two-SE
+band is 1.5%. The fusion led four of six pairs with one-sided sign-test value
+0.344. Median paired physical reduction is 0.7 MB/token.
+
+The result is unresolved and provides no resolved promotion evidence. The user
+decides whether to enable or promote `FLASHNEXT_FUSED_UP_SWIGLU`. The high
+absolute rate reflects this run's warm file-cache state. The paired effect is
+the comparison metric.
+
+The later terminal-suite JSON at
+`models/flashnext/tests/results/20260904-145714-up-swiglu.json` recorded a
+different machine trajectory:
+
+| Condition | Gen median | Range | Tail median | Physical MB/token |
+|---|---:|---:|---:|---:|
+| 60-slot Frontier 8A | 3.31 | 2.82–3.46 | 3.11 | 240.9 |
+| Up-QMV to SwiGLU | 3.39 | 3.36–3.44 | 3.21 | 236.7 |
+
+That run measured +5.6% paired mean and +2.8% paired median, inside a 6.2%
+two-SE band. The fusion led four of six pairs, with sign-test value 0.344, and
+reduced paired physical reads by 4.9 MB/token. All arms kept digest
+`29d04075ed7021b3`.
+
+User decision: retain the Up-QMV to SwiGLU fusion in the runtime. The measured
+status remains visible; the suite does not decide enablement or defaults.

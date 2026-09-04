@@ -38,7 +38,9 @@ Move superseded material to `docs/archive/` only when the active record stays co
 - Use the complete runtime path for layout and throughput claims.
 - Publish rates only from a retained benchmark harness.
 - Record memory pressure, swap state, and cache conditions.
-- Reboot before measurements that require low variance.
+- Do not require a reboot for measurements. Close unrelated workloads, use a
+  file-cache purge only when the experiment needs a cold cache, and require a
+  clean VM-counter and load window before measurement.
 - Run only one model during a benchmark.
 
 Do not calculate drive bandwidth from complete token time.

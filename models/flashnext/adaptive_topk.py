@@ -133,7 +133,7 @@ def _moe_call(self, x: mx.array) -> mx.array:
             mx.eval(scores, inds)
         else:
             mx.eval(scores)
-        python_began = time.perf_counter()
+        python_began = time.perf_counter() if _PROFILE else 0.0
         keeps = []
         fit_keeps = []
         minimum = max(

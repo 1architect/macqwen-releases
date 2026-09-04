@@ -3,6 +3,7 @@
 *.log
 *.stdout
 logs/
+models/flashnext/tests/results/
 # saved sessions, spilled KV pages, context images
 sessions/
 *.safetensors

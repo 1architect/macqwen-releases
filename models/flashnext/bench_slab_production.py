@@ -11,7 +11,7 @@ Methodological controls:
 3. Live physical disk telemetry via proc_pid_rusage (ReadMeter).
 4. Full token digest tracking to guarantee exact numerical determinism.
 5. Slab-pack allocation, locking, and VM telemetry.
-6. Paired statistical sign test and resolution band reporting.
+6. Paired sign test and paired two-standard-error band reporting.
 """
 from __future__ import annotations
 
@@ -19,13 +19,11 @@ import argparse
 import gc
 import hashlib
 import json
-from math import comb
+from math import comb, sqrt
 import os
 from pathlib import Path
-import re
 import statistics as st
 import struct
-import subprocess
 import sys
 import time
 
@@ -36,6 +34,7 @@ sys.path.insert(
 import mlx.core as mx
 
 from models.flashnext.boundary_profiler import BOUNDARY_LABELS
+from models.flashnext.system_state import purge_file_cache, wait_for_quiescence
 
 PROMPT = (
     "<|im_start|>user\nExplique a fotossintese em duas frases."
@@ -120,24 +119,31 @@ def collect_boundary_profiles(backend) -> list[dict]:
     return snapshots
 
 
-def system_boot_time() -> int:
-    """Return the Darwin boot epoch used to enforce post-preparation reboot."""
-    result = subprocess.run(
-        ["sysctl", "-n", "kern.boottime"],
-        check=True, capture_output=True, text=True, timeout=5,
-    )
-    match = re.search(r"sec\s*=\s*(\d+)", result.stdout)
-    if match is None:
-        raise RuntimeError(f"Could not parse kern.boottime: {result.stdout!r}")
-    return int(match.group(1))
+def reset_boundary_profiles(backend) -> None:
+    """Discard boundary events from prefill before measuring generated tokens."""
+    language = getattr(backend, "language", None)
+    layers = getattr(language, "layers", ()) if language is not None else ()
+    seen = set()
+    for layer in layers:
+        mlp = getattr(layer, "mlp", None)
+        switch = getattr(mlp, "switch_mlp", None)
+        executors = getattr(switch, "_metal_executors", None)
+        if not hasattr(executors, "values"):
+            continue
+        for executor in executors.values():
+            if id(executor) in seen:
+                continue
+            seen.add(id(executor))
+            profiler_reset = getattr(executor, "reset_boundary_profile", None)
+            if profiler_reset is not None:
+                profiler_reset()
 
 
 def write_capacity_manifest(prepared: dict) -> None:
-    """Record all prepared packs and the boot that created them."""
+    """Record prepared packs and their immutable routing profile."""
     CAPACITY_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": 2,
-        "boot_time": system_boot_time(),
         "prepared_at": time.time(),
         "routing_profile": {
             "path": str(CAPACITY_PINS),
@@ -165,12 +171,12 @@ def allocation_directory_digest(allocation: dict) -> str:
     return digest.hexdigest()[:16]
 
 
-def require_prepared_capacity_packs(allow_same_boot: bool = False) -> None:
-    """Refuse generation unless all capacity packs predate this boot."""
+def require_prepared_capacity_packs() -> None:
+    """Refuse generation unless every prepared capacity pack is valid."""
     if not CAPACITY_MANIFEST.is_file():
         raise RuntimeError(
             "Capacity manifest is missing. Run --capacity-sweep --prepare-only, "
-            "then reboot."
+            "then run the benchmark quiescence gate."
         )
     payload = json.loads(CAPACITY_MANIFEST.read_text())
     if int(payload.get("version", 0)) != 2:
@@ -215,13 +221,6 @@ def require_prepared_capacity_packs(allow_same_boot: bool = False) -> None:
                 f"expected {info['allocation_digest']}"
             )
     os.environ["FLASHNEXT_PIN_CACHE"] = str(CAPACITY_OBSERVED_PINS)
-    prepared_boot = int(payload.get("boot_time", 0))
-    current_boot = system_boot_time()
-    if current_boot <= prepared_boot and not allow_same_boot:
-        raise RuntimeError(
-            "Capacity packs were prepared during this boot. Reboot before "
-            "the trusted capacity sweep."
-        )
 
 
 def configure_arm(
@@ -229,6 +228,7 @@ def configure_arm(
     policy: str, fuse_shared: bool, fuse_shared_parts: bool, stream_pack: int,
     require_existing_pack: bool, boundary_profile: str | None = None,
     fuse_up_swiglu: bool = False,
+    profile_io: bool = False,
 ) -> None:
     """Apply one complete slab configuration before importing the backend."""
     os.environ["FLASHNEXT_METAL_RUNTIME"] = "1"
@@ -259,7 +259,7 @@ def configure_arm(
     os.environ["FLASHNEXT_PREWARM"] = "0"
     os.environ["FLASHNEXT_WARM"] = "0"
     os.environ["FLASHNEXT_EARLY_SUBMIT"] = "0"
-    os.environ["FLASHNEXT_PROFILE_IO"] = "1"
+    os.environ["FLASHNEXT_PROFILE_IO"] = "1" if profile_io else "0"
     os.environ.pop("FLASHNEXT_PROFILE_BOUNDARIES", None)
     if boundary_profile is None:
         os.environ.pop("FLASHNEXT_PROFILE_BOUNDARY", None)
@@ -326,6 +326,7 @@ def run_arm(
     fuse_shared_parts: bool = False, stream_pack: int = 0,
     boundary_profile: str | None = None,
     fuse_up_swiglu: bool = False,
+    profile_io: bool = False,
 ) -> dict:
     configure_arm(
         slab, layers, global_budget, slab_pack, policy, fuse_shared,
@@ -333,6 +334,7 @@ def run_arm(
         require_existing_pack=True,
         boundary_profile=boundary_profile,
         fuse_up_swiglu=fuse_up_swiglu,
+        profile_io=profile_io,
     )
 
     from macqwen.backends.flashnext import FlashNextBackend
@@ -341,8 +343,8 @@ def run_arm(
         profile_enabled, profile_totals, reset_profile, set_profile,
     )
 
-    set_profile(True)
-    if not profile_enabled():
+    set_profile(profile_io)
+    if profile_io and not profile_enabled():
         raise RuntimeError("I/O profiling could not be enabled")
 
     free_before = free_memory_mb()
@@ -372,8 +374,19 @@ def run_arm(
     reset_profile()
     vm_before = vm_counters()
 
+    def begin_decode_measurement() -> None:
+        """Exclude prompt prefill from all per-generated-token counters."""
+        nonlocal vm_before
+        meter.reset()
+        reset_profile()
+        if boundary_profile is not None:
+            reset_boundary_profiles(backend)
+        vm_before = vm_counters()
+
     began = time.perf_counter()
-    _text, stats = backend.generate(max_tokens=tokens)
+    _text, stats = backend.generate(
+        max_tokens=tokens, on_prefilled=begin_decode_measurement
+    )
     wall = time.perf_counter() - began
     phys_bytes = meter.bytes_since()
     if phys_bytes < 0:
@@ -553,40 +566,61 @@ def print_paired_analysis(control_name: str, target_name: str, collected) -> Non
     target_arms = collected[target_name]
     base_rates = [arm["gen_rate"] for arm in base_arms]
     target_rates = [arm["gen_rate"] for arm in target_arms]
-    base_phys = [arm["phys_mb_tok"] for arm in base_arms if arm["phys_mb_tok"] > 0]
-    target_phys = [arm["phys_mb_tok"] for arm in target_arms if arm["phys_mb_tok"] > 0]
-
     pairs = list(zip(base_rates, target_rates))
+    total_pairs = len(pairs)
     diffs_pct = [(target - base) / base * 100 for base, target in pairs]
     wins = sum(1 for difference in diffs_pct if difference > 0)
-    pair_count = len(pairs)
+    losses = sum(1 for difference in diffs_pct if difference < 0)
+    ties = len(pairs) - wins - losses
+    pair_count = wins + losses
     p_value = sum(
         comb(pair_count, k) for k in range(wins, pair_count + 1)
-    ) / (2 ** pair_count)
+    ) / (2 ** pair_count) if pair_count else 1.0
     median_difference = st.median(diffs_pct)
     mean_difference = st.mean(diffs_pct)
-    span = max(base_rates) - min(base_rates)
-    band = span / st.median(base_rates) * 100 if st.median(base_rates) else 0.0
-    physical_saved = (
-        st.median(base_phys) - st.median(target_phys)
-        if base_phys and target_phys else 0.0
+    band = (
+        2.0 * st.stdev(diffs_pct) / sqrt(len(diffs_pct))
+        if len(diffs_pct) > 1 else float("inf")
     )
+    physical_diffs = [
+        base["phys_mb_tok"] - target["phys_mb_tok"]
+        for base, target in zip(base_arms, target_arms)
+        if base["phys_mb_tok"] > 0 and target["phys_mb_tok"] > 0
+    ]
+    physical_saved = st.median(physical_diffs) if physical_diffs else 0.0
 
-    print(f"\nPaired analysis over {pair_count} rounds ({target_name} vs {control_name}):")
+    print(f"\nPaired analysis over {total_pairs} rounds ({target_name} vs {control_name}):")
     print(f"  Mean paired speedup: {mean_difference:+.1f}%")
     print(f"  Median paired speedup: {median_difference:+.1f}%")
-    print(f"  Physical read reduction: {physical_saved:+.1f} MB/token")
+    print(f"  Median paired physical reduction: {physical_saved:+.1f} MB/token")
     print(
-        f"  {target_name} ahead in {wins} of {pair_count} rounds, "
+        f"  {target_name} ahead in {wins} of {pair_count} non-tied rounds "
+        f"({ties} ties), "
         f"sign test p = {p_value:.3f}"
     )
-    print(f"  Resolution band: {band:.1f}%")
-    if abs(median_difference) < band:
-        print("  -> Speedup is inside the resolution band.")
-    elif median_difference > 0:
+    print(f"  Paired two-SE band around the mean effect: {band:.1f}%")
+    if band > 10.0:
+        print("  -> Run is too noisy for a small-effect decision.")
+    if abs(mean_difference) < band:
+        print("  -> Mean speedup is inside the paired two-SE band.")
+    elif mean_difference > 0:
         print(f"  -> {target_name} demonstrates a resolved improvement.")
     else:
         print(f"  -> {target_name} demonstrates a regression.")
+
+
+def validate_trajectories(collected: dict[str, list[dict]]) -> None:
+    """Refuse a comparison when arms did not produce the same trajectory."""
+    records = [arm for arms in collected.values() for arm in arms]
+    if not records:
+        raise RuntimeError("No benchmark arms completed")
+    token_counts = {int(arm["tokens"]) for arm in records}
+    digests = {arm["digest"] for arm in records}
+    if len(token_counts) != 1 or len(digests) != 1:
+        raise RuntimeError(
+            "REFUSED: benchmark arms produced different token counts or digests "
+            f"(tokens={sorted(token_counts)}, digests={sorted(digests)})"
+        )
 
 
 def main():
@@ -604,6 +638,10 @@ def main():
         help="Force completion at one Metal graph boundary per arm",
     )
     parser.add_argument(
+        "--profile-io", action="store_true",
+        help="Enable perturbing per-read Frontier 5 attribution",
+    )
+    parser.add_argument(
         "--capacity-sweep", action="store_true",
         help="Run the trusted 56, 60, and 64-slot skew sweep",
     )
@@ -612,8 +650,24 @@ def main():
         help="Build and validate selected pack files without generating tokens",
     )
     parser.add_argument(
-        "--allow-same-boot", action="store_true",
-        help="Run the capacity sweep without the required post-preparation reboot",
+        "--purge-file-cache", action="store_true",
+        help="Run macOS purge once before the quiescence gate",
+    )
+    parser.add_argument(
+        "--settle-seconds", type=float, default=0.0,
+        help="Optional clean VM and load window before the run",
+    )
+    parser.add_argument(
+        "--settle-timeout", type=float, default=900.0,
+        help="Maximum wait for the clean window",
+    )
+    parser.add_argument(
+        "--max-load", type=float, default=2.5,
+        help="Maximum one-minute load average during the clean window",
+    )
+    parser.add_argument(
+        "--max-compressor-rate", type=float, default=128.0,
+        help="Maximum compression plus decompression pages per second",
     )
     parser.add_argument(
         "--control",
@@ -652,6 +706,16 @@ def main():
         help="Comma-separated configurations to compare",
     )
     args = parser.parse_args()
+    if args.settle_seconds < 0:
+        parser.error("--settle-seconds must be non-negative")
+    if args.settle_timeout <= 0:
+        parser.error("--settle-timeout must be positive")
+    if args.settle_seconds > args.settle_timeout:
+        parser.error("--settle-timeout must be at least --settle-seconds")
+    if args.max_load < 0:
+        parser.error("--max-load must be non-negative")
+    if args.max_compressor_rate < 0:
+        parser.error("--max-compressor-rate must be non-negative")
 
     cond_defs = {
         "baseline": (0, 0, 0, False, "uniform", True, False, False),
@@ -714,11 +778,23 @@ def main():
             )
         if args.capacity_sweep:
             write_capacity_manifest(prepared)
-        print("Pack preparation changes page-cache state. Reboot before a trusted run.")
+        print(
+            "Pack preparation changes file-cache state. Start the trusted run "
+            "with --purge-file-cache; the quiescence gate then checks VM activity."
+        )
         return
 
     if args.capacity_sweep:
-        require_prepared_capacity_packs(allow_same_boot=args.allow_same_boot)
+        require_prepared_capacity_packs()
+    if args.purge_file_cache:
+        print("Purging the macOS file cache once before measurement...", flush=True)
+        purge_file_cache()
+    wait_for_quiescence(
+        args.settle_seconds,
+        args.settle_timeout,
+        args.max_load,
+        args.max_compressor_rate,
+    )
 
     print(f"=== Controlled Production Benchmark: {' vs '.join(arm_names)} ===")
     print(f"Tokens per arm: {args.tokens}")
@@ -757,7 +833,20 @@ def main():
             stream_pack=stream_pack,
             boundary_profile=args.boundary_profile,
             fuse_up_swiglu=fuse_up_swiglu,
+            profile_io=args.profile_io,
         )
+        vm_page_limit = max(256, int(res["tokens"]) * 8)
+        invalid_vm = {
+            key: int(res["vm_counters"].get(key, 0))
+            for key in ("swapin", "swapout", "pageout")
+            if int(res["vm_counters"].get(key, 0)) > vm_page_limit
+        }
+        if invalid_vm:
+            print(
+                "  !! measured arm exceeded the advisory VM movement limit "
+                f"of {vm_page_limit} pages ({invalid_vm})",
+                flush=True,
+            )
         collected[name].append(res)
         print(
             f"  -> Gen: {res['gen_rate']:.2f} t/s | Tail: {res['tail_rate']:.2f} t/s | "
@@ -773,7 +862,7 @@ def main():
         print(
             "     Frontier 5: "
             f"pread={breakdown['critical_pread']:.2f}, "
-            f"queue={breakdown['critical_queue']:.2f}, "
+            f"submit-start={breakdown['critical_queue']:.2f}, "
             f"task-overhead={breakdown['critical_task_overhead']:.2f}, "
             f"completion={breakdown['completion_overhead']:.2f} ms/tok | "
             f"pread-sum={breakdown['pread_service_sum']:.2f} ms/tok | "
@@ -792,6 +881,8 @@ def main():
             )
         if idx < len(schedule):
             time.sleep(args.pause)
+
+    validate_trajectories(collected)
 
     # Summary Table
     print("\n=== Production Comparison Summary ===")
@@ -829,7 +920,10 @@ def main():
         print(
             " " * 23
             + "Frontier 5 median ms/tok: "
-            + ", ".join(f"{key}={value:.2f}" for key, value in medians.items())
+            + ", ".join(
+                f"{'submit_start' if key == 'critical_queue' else key}={value:.2f}"
+                for key, value in medians.items()
+            )
         )
 
     control_name = arm_names[0]

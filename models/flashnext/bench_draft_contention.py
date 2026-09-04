@@ -212,7 +212,10 @@ def main() -> None:
         print("\n  NO RESULT. This run cannot support a projection:")
         for reason in refusals:
             print(f"    - {reason}")
-        print("  Reboot, close applications, and re-run with --arms 3 or more.")
+        print(
+            "  Close unrelated applications, wait for the VM quiescence gate, "
+            "and re-run with --arms 3 or more."
+        )
         return
 
     # The decision this benchmark exists to inform.

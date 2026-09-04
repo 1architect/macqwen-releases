@@ -1,6 +1,8 @@
 # Flash-Next reference
 
-Read this file and [`research.md`](research.md) before a new experiment. [`CONTRIBUTING.md`](../../CONTRIBUTING.md) defines the project
+Read this file, [`research.md`](research.md), and
+[`AGENT_INVARIANTS.md`](AGENT_INVARIANTS.md) before code changes or a new
+experiment. [`CONTRIBUTING.md`](../../CONTRIBUTING.md) defines the project
 rules.
 
 ## Where things stand
@@ -114,23 +116,29 @@ What changed in the code recently:
   boosting decode hit rate to **39.7%–40.7%** (+35% relative gain vs 29.4% on `slabpack48` and avoiding cold-layer dilution in `slabpack56_uniform`),
   reaching **3.08 tok/s generation rate** and **3.02 tok/s tail rate** (median 2.94 tok/s) with 100% bit-identical digest (`29d04075ed7021b3`)
   and only +24.5 MB MLX active memory overhead.
-- The controlled 56/60/64-slot capacity sweep selects **60 slots** as the standard
-  resident profile. Median generation was 2.83, 2.89, and 2.88 tok/s. Median physical
-  reads were 538.2, 537.3, and 536.9 MB/token. The differences remain inside the 17.0%
-  resolution band. Raw hit rate continues to rise, but useful residency saturates near
-  the 160 MiB class. The former 3.15–3.20 tok/s projection for 64 slots is rejected.
+- The controlled 56/60/64-slot capacity sweep selects **60 slots** as the engineering
+  default. Median generation was 2.83, 2.89, and 2.88 tok/s. Median physical reads
+  were 538.2, 537.3, and 536.9 MB/token. The differences remain inside the 17.0%
+  resolution band, so the sweep does not resolve a meaningful rate difference. The
+  3.15–3.20 tok/s projection for 64 slots is rejected. Higher logical hit rate did
+  not produce a resolved physical-I/O benefit.
 - Frontier 8B-safe preserves the required rounding boundaries and exact token digest.
   Its 12-arm comparison measured +1.7% median and +4.7% mean. This result remains
   inside the 28.6% resolution band. Keep 8B disabled. The standard 60-slot profile
   uses Frontier 8A. Enable 8B only with `FLASHNEXT_FUSED_SHARED_PARTS=1`.
-- Frontier 5 instrumentation splits main-thread I/O wait into queue delay, time inside
-  `pread` or `preadv`, worker overhead, and completion overhead. Three standard 60-slot
-  8A runs measured 304.76 ms/token median I/O wait. Queue delay used 211.79 ms/token
-  (69.5%). Positioned reads used 89.71 ms/token (29.4%).
+- Frontier 5 instrumentation splits main-thread I/O wait into submission-to-worker-start
+  delay, time inside `pread` or `preadv`, worker overhead, and completion overhead.
+  Three standard 60-slot 8A runs measured 304.76 ms/token median I/O wait. The
+  submission-to-start delay was 211.79 ms/token (69.5%). Positioned reads used
+  89.71 ms/token (29.4%). A later audit found that these counters also included
+  prompt prefill. Treat every absolute value here as historical and unverified
+  for decode. The measurement also does not identify the delay's cause.
 - Frontier 5 now has an opt-in expert-major streamed record path. It coalesces cold
   reads into one slab-compatible destination and reduces nine Metal buffer groups to
   one. The full-record A/B measured +2.8% median inside a 32.4% band. Chunk sizes 2
   and 3 measured +0.5% and -1.5% inside an 8.4% band. All token digests match.
+  These runs changed destination layout and worker grouping, not source reads or
+  requested bytes. They do not establish a queue-contention cause or a large gain.
   Keep `FLASHNEXT_STREAM_PACK=0`. The path adds 37.9 MB of active memory.
 - Frontier 10 now has single-boundary diagnostics for Gate QMV, Up QMV, SwiGLU,
   and fused-down completion. Separate 16-token probes measured 68.70, 61.23,
@@ -138,12 +146,21 @@ What changed in the code recently:
   read states, so use them as dependency-debt evidence, not a ranked cost table.
 - Score-sync attribution confirms the threshold path runs in all 48 layers.
   Steady tokens blocked for 102.71 to 143.46 ms with no queued or running reads
-  and almost no physical I/O. Score sync pays deferred GPU work.
+  and almost no physical I/O. Score sync pays deferred Metal graph work and
+  completion latency. The probe does not isolate GPU execution.
 - The opt-in Up-QMV to SwiGLU fusion matches the MLX Metal-header arithmetic for
   all 65,536 bfloat16 gate patterns at two Up values. Its 12-arm comparison
   measured +2.0% median and +3.3% mean, inside the 14.8% resolution band.
   Keep `FLASHNEXT_FUSED_UP_SWIGLU=0`.
-- The Flash-Next test suite passes all 187 tests.
+- The corrected uninstrumented 32-token retest measured 3.45 against 3.41
+  tok/s. Paired mean was +0.2% inside a 1.5% two-SE band. Physical reduction
+  was 0.7 MB/token. The fusion result is unresolved. The user decides its
+  runtime status.
+- A later terminal JSON measured 3.39 against 3.31 tok/s, +5.6% paired mean
+  and +2.8% paired median inside a 6.2% band. Physical reads fell by 4.9
+  MB/token. The user decided to retain the fusion in the runtime.
+- Commit `59503a2` recorded 187 passing tests. The audit changes below remain
+  untested until the user approves a test run.
 
 The cache-aware quality comparison remains open under Next work. Its gate result
 was measured under greedy decoding, which causes repetition on its own, so it
@@ -175,11 +192,11 @@ The practical target is breaking through **3.0 tok/s** (<333 ms/token), requirin
 
 The next performance work focuses on the SSD $\rightarrow$ Memory $\rightarrow$ Metal frontier roadmap detailed in
 [Next work](#next-work), prioritizing:
-1. Keep Frontier 5 and Frontier 8B disabled.
-2. Keep Up-QMV to SwiGLU fusion disabled until a clean-boot result clears its band.
-3. Use the boundary profiler to identify the next producer-consumer boundary.
-4. Investigate the deferred GPU work paid inside score sync.
-5. Return to slabs later with physical-miss-aware selection.
+1. Keep Frontier 5 scheduling changes, Frontier 8B, and Up-QMV to SwiGLU fusion disabled.
+2. With user approval, rerun the corrected decode-only Section 17 control.
+3. Then sweep worker-pool width with the same instrumentation.
+4. Test one task per expert only if that sweep supports a scheduling hypothesis.
+5. Build physical-miss evidence before changing slab selection. Keep 60 slots and 8A frozen.
 
 ## Download
 
@@ -291,6 +308,17 @@ Use `/new` before enabling the one-shot fused draft for a new conversation.
 
 ## Validation
 
+The interactive research suite lives in `models/flashnext/tests/`:
+
+```bash
+./models/flashnext/tests/run.sh
+```
+
+The terminal automatically discovers each `case_*.py` file. Runnable case
+files provide their explanation, proposal reason, controls, metrics, and
+command script. The terminal owns commands, confirmation, live arm display,
+result storage, and interpretation.
+
 Run the model suite in its environment:
 
 ```bash
@@ -381,6 +409,24 @@ The profile decides whether the variable applies:
 
 ## Measurement rules
 
+- Do not require a reboot. macOS starts background maintenance after boot and
+  can take a long time to reach a stable state.
+- After pack preparation, use `--purge-file-cache` once when a cold file-cache
+  start is required. `purge` does not release anonymous memory or swap.
+- The pre-run quiescence gate is optional and disabled by default. Use it only
+  to investigate machine state. Trusted comparisons rely on long paired arms,
+  reversed ordering, live VM metrics, and measured-arm contamination checks.
+- A measured arm warns when swap or pageout movement exceeds eight pages per
+  token, with a minimum allowance of 256 pages. The user decides whether the
+  control and machine state are acceptable.
+- Production rate comparisons keep `FLASHNEXT_PROFILE_IO=0`. Frontier 5
+  attribution uses a separate `--profile-io` diagnostic run because per-read
+  timing changes memory pressure and throughput.
+- Do not stop `dynamic_pager`, delete `/private/var/vm/swapfile*`, or use
+  `memory_pressure` to force reclamation. These actions are unsafe or create
+  the pressure that the benchmark must avoid.
+- Ignore the number and allocated size of dormant swapfiles. Reject a run when
+  swap or compressor counters move during the quiescence or measured windows.
 - Run one model instance unless parallel operation is the experiment.
 - Hold prompt text and generated token limit constant.
 - Compare token IDs before accepting a performance change.
@@ -389,7 +435,8 @@ The profile decides whether the variable applies:
 the slowest, because the page cache warms across arms. Two-arm A/Bs on this machine have produced +12.8% and +10.7% results that were both
 noise.
 - Read the resolution band the harness prints. It is two standard errors of
-the difference between medians. A reading inside it is unresolved, which is not the same as absent.
+the reported effect. `bench_slab_production.py` uses paired percentage
+differences. A reading inside it is unresolved, which is not the same as absent.
 - Stack two changes that are each unresolved and measure the pair. It costs
 one comparison instead of two re-runs, and a real pair clears the band.
 - Interleave the lengths in any sweep over prompt size. Walking them in order
@@ -455,8 +502,9 @@ and routing profiles alike. Prose won't catch this kind of failure.
 The task: ask for a SketchUp extension that extrudes several selected faces to a height supplied in the prompt. The reply has to be a complete `.rb`
 file. Load it in SketchUp and run it. Record the checkpoint, the effort level, and whether it works.
 
-Run it at `medium` and at `high` with sampling on, and keep the sampler and the effort the same on both sides of the comparison. `medium` is
-the default effort and is where most output lives. Add `xhigh` if the change might affect long reasoning.
+Performance work does not run an automated quality gate. The user evaluates a
+final candidate through `chat.sh` with normal sampling and Qwen's documented
+`xhigh` effort.
 
 oQ4 passes. oQ3-MTP fails at both `low` and `xhigh`, and higher effort moved it further from the right method rather than closer.
 
@@ -480,8 +528,10 @@ oQ3-MTP means deleting oQ4 first, and back again means re-running `~/models/dl-o
 
 Cleaning won't change that. The biggest reclaimable items add up to about 13 GB. The Trash is empty and there are no APFS local snapshots.
 
-Long sessions build up swap. After a day of streaming work the machine held seven 1 GB swapfiles at 93% use, plus a 1 GB `kernelcore` panic
-dump in `/System/Volumes/VM`. Reboot before a trusted measurement. Swap adds variance that the harness cannot remove.
+Long sessions can leave dormant swapfiles allocated. Their presence alone does
+not invalidate a run. Close memory-heavy processes, optionally purge the file
+cache, and require stable swap and compressor counters through the quiescence
+gate. Reject any measured pair with swap or compressor activity.
 
 Two directories look like free space and aren't. `macqwen/cli.py` runs Flash-Next from `~/models/.venv-qwen4exp/bin/python` and Qwen3.8-27B
 from `~/mlx-qwen38-kernel-lab/bin/python3`, so deleting either stops the chat. `~/mlx-qwen38-apple` has no git history and no remote, so its
@@ -517,14 +567,14 @@ The path to breaking through 3.0 tok/s (<333 ms/token) from the current 2.86 tok
    - Decode hit rate jumped from 14.1% to **23.5%** (+67.4% relative gain) for **0 extra RAM** (+144 MB active RAM).
    - Delivered **+8.3% mean / +5.5% median paired speedup** (2.70 -> 2.86 tok/s, tail 2.79 tok/s) with 100% bit-identical digest `29d04075ed7021b3`.
 
-2. **Slab file-backed: mlocked mmap + streamed buffer no mesmo kernel** (Priority: Very High | Status: **ACTIVE NEXT**):
-   - Pass file-backed mlocked pointers directly into the unified Metal MoE kernel, eliminating intermediate Python MLX array allocations.
-   - The unified bit-31 pointer encoding (`0x80000000 | slot`) already accepts mixed slab/streamed inputs in a single kernel dispatch.
-   - Constraint: Must keep resident allocation strictly bounded to <= 48-64 slots (148-198 MB) to prevent Darwin page-cache eviction on 16 GB Apple Silicon.
+2. **Slab file-backed: mlocked mmap + streamed buffer no mesmo kernel** (Priority: Very High | Status: **CLOSED / IMPLEMENTED**):
+   - File-backed mlocked slab pointers now pass directly into the unified Metal MoE kernel, with the bit-31 pointer encoding accepting mixed slab and streamed inputs.
+   - The resident allocation remains bounded to the 48–64-slot class. The 60-slot profile is the selected engineering default.
 
-3. **1 expert-major record -> custom kernel direto** (Priority: High | Status: **EXPLORATORY**):
-   - Repack gate, up, and down projection rows (or all 9 parts) into a single contiguous record per expert, replacing 9 scattered file seeks with 1 positioned read per expert.
-   - Constraint: Offline checkpoint repack requires temporary disk capacity. The reference 256 GB drive has ~22 GB free while oQ4 (111 GB) is installed. Prototype with a selective subset of layers.
+3. **1 expert-major record -> custom kernel direto** (Priority: High | Status: **MEASURED / OPT-IN**):
+   - The expert-major streamed record path is implemented and measured in Sections 18 and 19.
+   - It changes destination layout and worker grouping. It does not remove source positioned reads or requested bytes.
+   - Its observed gains remain unresolved. Keep it disabled until a controlled topology test supports promotion.
 
 4. **Composite read buffer: 9 wraps/layer -> 1** (Priority: Med/High | Status: **MEASURED & REJECTED**):
    - Profiling (`FLASHNEXT_PROFILE_IO=1`) proved all 432 DLPack foreign wraps (`to_mx`) take only **2.51 ms/token** across all 48 layers.
@@ -557,16 +607,24 @@ The path to breaking through 3.0 tok/s (<333 ms/token) from the current 2.86 tok
     - Rigorous unbuffered DMA testing (`F_NOCACHE`) closed Issue #45, proving `MTLBarrierScopeBuffers` adds zero penalty under physical SSD DMA.
     - Single-pass bit-31 pointer encoding is verified and ready for native C++/Obj-C persistent runtime integration.
 
-### Immediate Tactical Next Steps to Break >3.0 tok/s (~9-12 ms/token remaining)
+### Immediate Tactical Next Steps
 
-- **Step A: Heterogeneous / Skew-Aware Global Slot Allocation**:
-  Allow variable capacities across the top-12 layers (e.g. 5-6 slots in super-concentrated layers 5, 20, 23, 35, 47, and 3 slots in moderately hot layers) bounded to <= 48-52 slots total. Targets +3-5% additional hit rate (~6-8 ms saving).
-- **Step B: Formal Production Benchmark of Budget 56 Slots**:
-  Run 12-arm interleaved reversed-pair benchmark (`bench_slab_production.py --target global56`) to measure 56 slots (+173 MB RAM, safely below 196 MB page-cache threshold).
-- **Step C: Stacking Bit-Exact RMSNorm Compile (Issue #23)**:
-  Stack `FLASHNEXT_COMPILE=1` with `global48` to test if zero-drive 1.7% (~4-5 ms/token) saving clears the resolution band now that I/O wait and scheduling overhead are reduced.
-- **Step D: Direct Zero-Copy `preadv` I/O Production Test**:
-  Evaluate `FLASHNEXT_READ=preadv` across multi-arm production harness to test eliminating ~864 Python `bytes` heap allocations and memcpys per token.
+- **Step A: Re-establish the decode-only control**:
+  Rerun Section 17 with counters reset after prefill. Keep the disabled profiler
+  path to one branch with no allocation or timing work.
+- **Step B: Diagnose worker-pool width**:
+  With explicit user approval, sweep current/2, current, current×1.5, and current×2
+  workers using the same reads. Report submission-to-start delay, positioned-read
+  wall time, layer completion, total I/O wait, physical MB/token, and generation/tail.
+- **Step C: Test task topology conditionally**:
+  Test one task per expert only if Step B supports a scheduling or queue hypothesis.
+  Keep destinations, reads, requested bytes, worker count, slab capacity, and 8A fixed.
+- **Step D: Build physical-miss attribution**:
+  Calibrate actual physical-read cost for `(layer, expert)` before changing slab
+  allocation. A route trace alone cannot establish a physical miss.
+- **Step E: Keep unresolved candidates opt-in**:
+  Keep 60 slots, Frontier 8A, Frontier 8B, streamed records, and Up-QMV fusion
+  at their documented default states until a result clears its resolution band.
 
 Closed exact-quality performance issues:
 
