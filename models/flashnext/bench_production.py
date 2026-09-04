@@ -115,6 +115,10 @@ COMPARISONS = {
         "stock": {"FLASHNEXT_METAL_RUNTIME": "0", "FLASHNEXT_SLAB": "0"},
         "custom": {"FLASHNEXT_METAL_RUNTIME": "1", "FLASHNEXT_SLAB": "0"},
     },
+    "slab-global": {
+        "baseline": {"FLASHNEXT_METAL_RUNTIME": "1", "FLASHNEXT_SLAB_GLOBAL": "0"},
+        "global48": {"FLASHNEXT_METAL_RUNTIME": "1", "FLASHNEXT_SLAB_GLOBAL": "48"},
+    },
     # Compile the elementwise chains around the matmuls. Bit-exact, checked
     # with mx.array_equal before install. The probe's own per-call figures
     # sum to about 1 ms per token, so expect this inside the band.
@@ -351,6 +355,7 @@ LOAD_TIME_SETTINGS = {
     "FLASHNEXT_SLAB",
     "FLASHNEXT_SLAB_LAYERS",
     "FLASHNEXT_SLAB_GLOBAL",
+    "FLASHNEXT_SLAB_MIN_SLOTS",
 }
 
 

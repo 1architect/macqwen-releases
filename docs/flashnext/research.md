@@ -4140,3 +4140,37 @@ Measured 2026-09-03.
    - **Baseline** (`SLAB=0`): 2.41 tok/s gen, 2.53 tok/s tail, 572.7 MB/tok phys, digest `29d04075ed7021b3`.
    - **Selective Slabs** (`SLAB=4, LAYERS=12`): **2.94 tok/s** gen, **2.94 tok/s** tail, 510.9 MB/tok phys, digest `29d04075ed7021b3`.
    - **Paired Speedup**: **+21.9%** with 100% bit-exact determinism.
+
+### 10. Concentrated Global Slab Allocation and Full Latency Breakdown
+Measured 2026-09-03.
+
+#### Exact Decode Latency Breakdown (`FLASHNEXT_PROFILE_IO=1`):
+Profiling 16-token decode passes with `FLASHNEXT_METAL_RUNTIME=1` under Baseline (`SLAB=0`) and Selective Slabs (`SLAB=4, LAYERS=12`):
+- `to_mx`: **2.51 ms/token** across all 48 layers (proves foreign DLPack wrapping is not the bottleneck; attempts to pack composite buffers caused slicing overhead in MLX and dropped throughput).
+- `moe_issue`: **2.43 ms/token** (kernel launch overhead is negligible).
+- `ngram_wait`: 13.41 ms/token.
+- `router_sync`: 23.97 ms/token.
+- `score_sync`: 189.25 ms/token (dense layer compute: attention, RMSNorm, gate routing).
+- `io_wait`: Drops from 554.80 ms/token (Baseline) down to **351.43 ms/token** (-203.37 ms saved by slabs), while I/O calls fall from 816 to 640.
+
+#### The Layer Utility Inversion Problem:
+Static allocation (`FLASHNEXT_SLAB_LAYERS=12`) assigned resident slots strictly to layers 0..11. Router profile analysis across all 48 layers revealed an inverse utility pattern:
+- Layers 0..3 exhibit high expert dispersion (cumulative top-4 score: 2.16 to 2.37).
+- Middle and deep layers (e.g. layers 5, 20, 23, 35, 39, 47) exhibit intense expert specialization (cumulative top-4 scores up to 3.73).
+- Ranking all 48 layers by top-4 cumulative score showed that top-12 layers capture **40.15 score mass vs 32.26** for layers 0..11 (+24.5% higher utility).
+
+#### Concentrated Global Allocation:
+`get_global_slab_allocation(total_slots, min_slots=4)` concentrates the 48-slot budget into the 12 highest-utility layers (`[5, 11, 20, 23, 29, 32, 35, 39, 40, 44, 46, 47]`), giving 4 slots per layer. This avoids the penalty of dispersed 1-slot allocations (where a 1-slot hit still leaves 7 cold experts, forcing an SSD read burst).
+
+#### Controlled Head-to-Head Production A/B (`bench_slab_production.py`):
+An 8-arm (4 reversed pairs: `[slab12, global48]`, `[global48, slab12]`, ...) production benchmark directly compared `global48` against the previous `slab12`:
+
+| Condition | Gen med (t/s) | Range (t/s) | Tail med (t/s) | Phys MB/tok | Active MB | Hit Rate % | Token Digest |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **slab12**   | 2.70 | 2.29..2.75 | 2.64 | 526.3 | 3597.8 | 14.1% | `29d04075ed7021b3` |
+| **global48** | **2.86** | 2.62..2.90 | **2.79** | 520.1 | 3597.8 | **23.5%** | `29d04075ed7021b3` |
+
+- **Hit Rate**: Increased from 14.1% to **23.5%** (+67.4% relative gain).
+- **RAM Overhead**: Exactly **0 additional bytes** (both occupy 3597.8 MB active RAM).
+- **Generation Speedup**: Mean paired speedup **+8.3%**, median paired speedup **+5.5%**; tail latency improves from 2.64 to **2.79 tok/s**.
+- **Determinism**: 100% bit-identical token digest `29d04075ed7021b3` across all 8 arms.

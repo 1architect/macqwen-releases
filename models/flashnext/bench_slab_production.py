@@ -35,10 +35,11 @@ PROMPT = (
 )
 
 
-def run_arm(slab: int, layers: int, tokens: int) -> dict:
+def run_arm(slab: int, layers: int, tokens: int, global_budget: int = 0) -> dict:
     os.environ["FLASHNEXT_METAL_RUNTIME"] = "1"
     os.environ["FLASHNEXT_SLAB"] = str(slab)
     os.environ["FLASHNEXT_SLAB_LAYERS"] = str(layers)
+    os.environ["FLASHNEXT_SLAB_GLOBAL"] = str(global_budget)
 
     from macqwen.backends.flashnext import FlashNextBackend
     from models.flashnext.diskio import ReadMeter, free_memory_mb
@@ -86,6 +87,7 @@ def run_arm(slab: int, layers: int, tokens: int) -> dict:
     return {
         "slab": slab,
         "layers": layers,
+        "global_budget": global_budget,
         "tokens": stats.tokens,
         "gen_rate": round(stats.rate, 3),
         "tail_rate": round(tail_rate, 3),
@@ -103,31 +105,54 @@ def main():
     parser.add_argument("--tokens", type=int, default=32, help="Tokens per arm")
     parser.add_argument("--pairs", type=int, default=6, help="Number of reversed pairs (total arms = pairs * 2)")
     parser.add_argument("--pause", type=float, default=2.5, help="Pause seconds between arms")
+    parser.add_argument(
+        "--control",
+        type=str,
+        default="baseline",
+        choices=["baseline", "slab12"],
+        help="Control configuration (default: baseline)",
+    )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="global48",
+        choices=["global48", "global56", "slab12"],
+        help="Target slab configuration to compare against control",
+    )
     args = parser.parse_args()
 
-    print("=== Controlled Production A/B: Selective Slab (12 layers, SLAB=4) vs Baseline ===")
+    cond_defs = {
+        "baseline": (0, 0, 0),
+        "slab12": (4, 12, 0),
+        "global48": (0, 0, 48),
+        "global56": (0, 0, 56),
+    }
+    control_name = args.control
+    target_name = args.target
+
+    print(f"=== Controlled Production A/B: {target_name} vs {control_name} ===")
     print(f"Tokens per arm: {args.tokens}")
     print(f"Pairs: {args.pairs} (Total arms: {args.pairs * 2})")
     print(f"System load average: {os.getloadavg()}\n")
 
     conds = {
-        "baseline": (0, 0),
-        "slab12": (4, 12),
+        control_name: cond_defs[control_name],
+        target_name: cond_defs[target_name],
     }
 
     schedule = []
     for i in range(args.pairs):
         if i % 2 == 0:
-            schedule.extend(["baseline", "slab12"])
+            schedule.extend([control_name, target_name])
         else:
-            schedule.extend(["slab12", "baseline"])
+            schedule.extend([target_name, control_name])
 
-    collected = {"baseline": [], "slab12": []}
+    collected = {control_name: [], target_name: []}
 
     for idx, name in enumerate(schedule, 1):
-        slab, layers = conds[name]
-        print(f"Arm {idx:2d}/{len(schedule)}: Running {name:<9} (SLAB={slab}, LAYERS={layers})...", flush=True)
-        res = run_arm(slab, layers, args.tokens)
+        slab, layers, global_b = conds[name]
+        print(f"Arm {idx:2d}/{len(schedule)}: Running {name:<10} (SLAB={slab}, LAYERS={layers}, GLOBAL={global_b})...", flush=True)
+        res = run_arm(slab, layers, args.tokens, global_b)
         collected[name].append(res)
         print(
             f"  -> Gen: {res['gen_rate']:.2f} t/s | Tail: {res['tail_rate']:.2f} t/s | "
@@ -139,8 +164,8 @@ def main():
             time.sleep(args.pause)
 
     # Summary
-    base_arms = collected["baseline"]
-    slab_arms = collected["slab12"]
+    base_arms = collected[control_name]
+    slab_arms = collected[target_name]
 
     b_rates = [a["gen_rate"] for a in base_arms]
     s_rates = [a["gen_rate"] for a in slab_arms]
@@ -156,12 +181,12 @@ def main():
     print(f"{'Condition':<12} | {'Gen med':<8} | {'Range':<14} | {'Tail med':<9} | {'Phys MB/tok':<12} | {'Active MB':<10} | {'Digest':<16}")
     print("-" * 90)
     print(
-        f"{'baseline':<12} | {st.median(b_rates):8.2f} | "
+        f"{control_name:<12} | {st.median(b_rates):8.2f} | "
         f"{min(b_rates):.2f}..{max(b_rates):.2f}     | {st.median(b_tails):9.2f} | "
         f"{st.median(b_phys):12.1f} | {st.median([a['active_mb'] for a in base_arms]):10.1f} | {b_digest:<16}"
     )
     print(
-        f"{'slab12':<12} | {st.median(s_rates):8.2f} | "
+        f"{target_name:<12} | {st.median(s_rates):8.2f} | "
         f"{min(s_rates):.2f}..{max(s_rates):.2f}     | {st.median(s_tails):9.2f} | "
         f"{st.median(s_phys):12.1f} | {st.median([a['active_mb'] for a in slab_arms]):10.1f} | {s_digest:<16}"
     )
@@ -184,14 +209,14 @@ def main():
     print(f"  Mean paired speedup: {mean_diff_pct:+.1f}%")
     print(f"  Median paired speedup: {med_diff_pct:+.1f}%")
     print(f"  Physical read reduction: {phys_saved:+.1f} MB/token")
-    print(f"  slab12 ahead in {slab_wins} of {total_pairs} pairs, sign test p = {p_val:.3f}")
+    print(f"  {target_name} ahead in {slab_wins} of {total_pairs} pairs, sign test p = {p_val:.3f}")
     print(f"  Resolution band: {band:.1f}%")
     if abs(med_diff_pct) < band:
         print("  -> Speedup is inside the resolution band (unresolved on pure generation rate).")
     elif med_diff_pct > 0:
-        print("  -> slab12 demonstrates a RESOLVED improvement over baseline!")
+        print(f"  -> {target_name} demonstrates a RESOLVED improvement over baseline!")
     else:
-        print("  -> slab12 demonstrates a regression.")
+        print(f"  -> {target_name} demonstrates a regression.")
 
 
 if __name__ == "__main__":

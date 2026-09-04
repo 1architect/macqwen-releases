@@ -93,14 +93,15 @@ What changed in the code recently:
   in a 16-arm interleaved reversed-pair test verified 100% bit-identical greedy token
   digests (`29d04075ed7021b3`), with rate difference at +0.7% to +2.0% (unresolved
   inside the 7.8% resolution band).
-- Issue #45 remains OPEN: The native scheduler probe's background I/O read without
-  `F_NOCACHE` from offset 0, so barrier behavior under true physical SSD DMA remains
-  unproven.
-- A single-pass unified resident slab architecture (`SLAB_ENABLED`) is implemented
-  using bit-31 pointer encoding, eliminating dual-pass MLX graph splits. Functional
-  parity is verified; performance sweeps must be kept small (`SLAB <= 4`) to prevent
-  crowding Darwin's page cache.
-- The Flash-Next test suite passes all 145 tests.
+- Issues #45 and #43 are closed: Issue #45 proved zero barrier amplification under
+  physical NVMe DMA (F_NOCACHE); Issue #43 proved pre-load wired memory reservation
+  provides no latency benefit over dynamic residency sets.
+- Concentrated global slab allocation (`FLASHNEXT_SLAB_GLOBAL=48, FLASHNEXT_SLAB_MIN_SLOTS=4`)
+  concentrates resident expert slots into the top-utility layers ([5, 11, 20, 23, 29, 32, 35, 39, 40, 44, 46, 47]),
+  boosting decode hit rate from 14.1% to 23.5% (+67% relative gain) for the exact same 149 MB
+  active RAM, achieving 2.86–2.91 tok/s generation and 2.79–2.92 tok/s tail rate with 100%
+  bit-identical digest (`29d04075ed7021b3`).
+- The Flash-Next test suite passes all 147 tests.
 
 The cache-aware quality comparison remains open under Next work. Its gate result
 was measured under greedy decoding, which causes repetition on its own, so it
@@ -482,7 +483,7 @@ Follow-up issues from the 2026-09-01 sweep:
 
 ### Standing decisions
 
-- Selective unified slabs (`FLASHNEXT_SLAB=4, FLASHNEXT_SLAB_LAYERS=12`) combined with the scratch-free register fused-down kernel achieve 2.94 tok/s generation and 2.94 tok/s tail rate (+21.9% over baseline, digest `29d04075ed7021b3`), eliminating intermediate device scratch allocation and 768 threadgroup barriers per token. Uniform slabs across 48 layers degrade above SLAB=1 by evicting Darwin's dynamic page cache on 16 GB machines.
+- Concentrated global slabs (`FLASHNEXT_SLAB_GLOBAL=48, FLASHNEXT_SLAB_MIN_SLOTS=4`) outperform uniform and static first-12 layer slabs by concentrating the 48-slot budget into the highest-utility layers ([5, 11, 20, 23, 29, 32, 35, 39, 40, 44, 46, 47]), achieving 23.5% decode hit rate (vs 14.1% on slab12) for the exact same +149 MB active RAM, reaching 2.86–2.91 tok/s generation and 2.79–2.92 tok/s tail rate with bit-identical digest `29d04075ed7021b3`. Combined with the scratch-free register fused-down kernel, intermediate device scratch allocation and 768 threadgroup barriers per token are completely eliminated.
 - In-encoder Metal buffer barriers (`MTLBarrierScopeBuffers`) incur zero hardware penalty under physical SSD DMA and can safely be used for layer kernel consolidation.
 - `pin-parts` is rejected. Its positive isolated reading disappeared when
 stacked with prewarm; the pair lost 1.4% and read 8% more.

@@ -15,7 +15,7 @@ import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List
+from typing import Any, Dict, List, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -482,15 +482,22 @@ def get_hot_slab_experts(layer_id: int, count: int) -> List[int]:
     return []
 
 
-_GLOBAL_SLAB_CACHE: Dict[int, Dict[int, List[int]]] = {}
+_GLOBAL_SLAB_CACHE: Dict[Any, Dict[int, List[int]]] = {}
 
 
-def get_global_slab_allocation(total_slots: int) -> Dict[int, List[int]]:
-    """Allocate a global slot budget across all layers by descending utility score."""
+def get_global_slab_allocation(total_slots: int, min_slots: int = 1) -> Dict[int, List[int]]:
+    """Allocate a global slot budget across layers.
+
+    If min_slots <= 1, distributes slots purely by descending individual candidate scores.
+    If min_slots > 1 (e.g. 4), concentrates the budget into the highest-utility layers with
+    at least min_slots each, avoiding layer I/O bursts.
+    """
     if total_slots <= 0:
         return {}
-    if total_slots in _GLOBAL_SLAB_CACHE:
-        return _GLOBAL_SLAB_CACHE[total_slots]
+    min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", str(min_slots)))
+    cache_key = (total_slots, min_slots)
+    if cache_key in _GLOBAL_SLAB_CACHE:
+        return _GLOBAL_SLAB_CACHE[cache_key]
     pin_file = os.path.expanduser(
         os.environ.get("FLASHNEXT_PIN_CACHE", "~/.cache/flashnext/pins.json")
     )
@@ -500,17 +507,54 @@ def get_global_slab_allocation(total_slots: int) -> Dict[int, List[int]]:
         with open(pin_file, "r") as f:
             data = json.load(f)
         ranked = data.get("ranked_scores", {})
-        all_candidates = []
-        for l_str, pairs in ranked.items():
-            l_idx = int(l_str)
-            for exp, score in pairs:
-                all_candidates.append((float(score), l_idx, int(exp)))
-        if all_candidates:
-            all_candidates.sort(key=lambda x: x[0], reverse=True)
+        if ranked:
+            if min_slots <= 1:
+                all_candidates = []
+                for l_str, pairs in ranked.items():
+                    l_idx = int(l_str)
+                    for exp, score in pairs:
+                        all_candidates.append((float(score), l_idx, int(exp)))
+                if all_candidates:
+                    all_candidates.sort(key=lambda x: x[0], reverse=True)
+                    allocation: Dict[int, List[int]] = {}
+                    for _, l_idx, exp in all_candidates[:total_slots]:
+                        allocation.setdefault(l_idx, []).append(exp)
+                    _GLOBAL_SLAB_CACHE[cache_key] = allocation
+                    return allocation
+
+            # Score each layer by the sum of its top min_slots experts
+            layer_scores = []
+            for l_str, pairs in ranked.items():
+                l_idx = int(l_str)
+                s = sum(float(score) for _, score in pairs[:min_slots])
+                layer_scores.append((s, l_idx))
+            layer_scores.sort(reverse=True)
+
+            k = max(1, total_slots // max(1, min_slots))
+            selected = [l_idx for _, l_idx in layer_scores[:k]]
+
             allocation: Dict[int, List[int]] = {}
-            for _, l_idx, exp in all_candidates[:total_slots]:
-                allocation.setdefault(l_idx, []).append(exp)
-            _GLOBAL_SLAB_CACHE[total_slots] = allocation
+            for l_idx in selected:
+                pairs = ranked.get(str(l_idx), [])
+                allocation[l_idx] = [int(exp) for exp, _ in pairs[:min_slots]]
+
+            # Remainder slots distributed greedily by next highest score
+            rem = total_slots - sum(len(v) for v in allocation.values())
+            for _ in range(rem):
+                best_l, best_s, best_e = -1, -1.0, -1
+                for l_idx in selected:
+                    curr_cnt = len(allocation[l_idx])
+                    pairs = ranked.get(str(l_idx), [])
+                    if curr_cnt < len(pairs):
+                        cand_e, cand_s = pairs[curr_cnt]
+                        if float(cand_s) > best_s:
+                            best_s = float(cand_s)
+                            best_l = l_idx
+                            best_e = int(cand_e)
+                if best_l >= 0:
+                    allocation[best_l].append(best_e)
+
+            _GLOBAL_SLAB_CACHE[cache_key] = allocation
             return allocation
         # Fallback to layers if ranked_scores is empty
         layers = data.get("layers", {})
@@ -524,7 +568,7 @@ def get_global_slab_allocation(total_slots: int) -> Dict[int, List[int]]:
             if take:
                 allocation[l_idx] = take
                 slots_left -= len(take)
-        _GLOBAL_SLAB_CACHE[total_slots] = allocation
+        _GLOBAL_SLAB_CACHE[cache_key] = allocation
         return allocation
     except Exception:
         return {}
@@ -608,7 +652,8 @@ class StreamingSwitchGLU(nn.Module):
         self.next_prefix = next_prefix
         global_budget = int(os.environ.get("FLASHNEXT_SLAB_GLOBAL", 0))
         if global_budget > 0:
-            alloc = get_global_slab_allocation(global_budget)
+            min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", 4))
+            alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
             hot = alloc.get(layer_id, [])
             slab_size = len(hot)
             has_slab = slab_size > 0
