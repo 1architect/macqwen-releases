@@ -120,16 +120,17 @@ def main() -> None:
 
     original_setter = topk.set_route_observer
 
-    def chained(observer):
+    def chained(observer, max_rows=None):
         if observer is None:
-            original_setter(observe)
+            # Preserve the runtime's row cap while chaining after its reset.
+            original_setter(observe, max_rows)
             return
 
         def both(layer, expert_rows, score_rows, keeps):
             observer(layer, expert_rows, score_rows, keeps)
             observe(layer, expert_rows, score_rows, keeps)
 
-        original_setter(both)
+        original_setter(both, max_rows)
 
     topk.set_route_observer = chained
     try:

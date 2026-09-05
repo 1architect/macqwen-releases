@@ -234,10 +234,12 @@ class Repo:
                 if p.suffix.lower() not in TEXT and n != "project.pbxproj":
                     continue
                 try:
-                    if p.stat().st_size > 2_000_000:
+                    target = p.resolve()
+                    target.relative_to(self.root)
+                    if target.stat().st_size > 2_000_000:
                         continue
-                    lines = p.read_text(errors="replace").splitlines()
-                except Exception:
+                    lines = target.read_text(errors="replace").splitlines()
+                except (OSError, RuntimeError, ValueError):
                     continue
                 for i, line in enumerate(lines, 1):
                     if q in line.lower():
@@ -795,6 +797,76 @@ class FrankensteinEngine:
         t0 = time.perf_counter()
         parts, tokens = [], []
         stats = {"prompt_tps": 0.0, "gen_tps": 0.0, "finish": "?", "peak": 0.0}
+        interactive_budgets = getattr(self, "_interactive_budgets", None)
+        budget_answer = budget_think = None
+        budget_control = None
+        budget_processor = None
+        processor_quota_stop = False
+        if interactive_budgets is not None:
+            budget_answer, budget_think = interactive_budgets
+            budget_answer = max(0, int(budget_answer))
+            budget_think = (
+                None if budget_think is None else max(0, int(budget_think))
+            )
+            thinking = bool(getattr(self, "_thinking_enabled", False))
+            budget_control = {
+                "phase": "thinking" if thinking else "answer",
+                "thinking": 0,
+                "answer": 0,
+            }
+            close_ids = self.encode("</think>") if thinking else []
+            stop_ids = {int(value) for value in (self.tokenizer.eos_token_ids or ())}
+            if not stop_ids:
+                raise ValueError("interactive quota requires an EOS token")
+            if budget_think is not None and thinking and len(close_ids) != 1:
+                raise ValueError(
+                    "interactive reasoning closure must encode as one token"
+                )
+            close_token = int(close_ids[0]) if len(close_ids) == 1 else None
+            processor_prefix = None
+            processor_closed = False
+
+            def _find_sequence(values, needle):
+                if not needle:
+                    return None
+                width = len(needle)
+                return next(
+                    (index for index in range(len(values) - width + 1)
+                     if values[index:index + width] == needle),
+                    None,
+                )
+
+            def _budget_processor(input_tokens, logits):
+                nonlocal processor_prefix, processor_closed, processor_quota_stop
+                ids = [int(value) for value in input_tokens.tolist()]
+                if processor_prefix is None:
+                    # generate_step leaves one prompt token before decode.
+                    processor_prefix = len(ids)
+                generated = ids[processor_prefix:]
+                if generated and generated[-1] in stop_ids:
+                    return logits
+                close_index = _find_sequence(generated, close_ids)
+                if close_index is not None:
+                    processor_closed = True
+                if not thinking:
+                    answer_count = len(generated)
+                    force = answer_count >= budget_answer
+                elif processor_closed:
+                    answer_count = len(generated) - close_index - len(close_ids)
+                    force = answer_count >= budget_answer
+                else:
+                    force = (budget_think is not None
+                             and len(generated) >= budget_think - 1)
+                if force:
+                    if processor_closed or not thinking:
+                        processor_quota_stop = True
+                    forced = mx.full(logits.shape, -mx.inf, dtype=logits.dtype)
+                    token = next(iter(stop_ids)) if processor_closed or not thinking else close_token
+                    forced[..., token] = 0
+                    return forced
+                return logits
+
+            budget_processor = _budget_processor
         interrupted = False
         # `stream_generate` is lazy, so whatever this loop body does happens
         # before the next token is asked for, and mlx_lm counts it as model
@@ -808,7 +880,11 @@ class FrankensteinEngine:
             self.model, self.tokenizer, prompt,
             max_tokens=max_tokens,
             sampler=self.sampler,
-            logits_processors=self.logits_processors,
+            logits_processors=(
+                ([*self.logits_processors, budget_processor]
+                 if self.logits_processors else [budget_processor])
+                if budget_processor is not None else self.logits_processors
+            ),
             prompt_cache=self.cache,
             prefill_step_size=self.prefill_step_size,
             kv_bits=self.kv_bits,
@@ -820,6 +896,7 @@ class FrankensteinEngine:
             try:
                 if gen_began is None:
                     gen_began = body_began
+                stop = int(r.token) in stop_ids if budget_control is not None else False
                 tokens.append(r.token)
                 parts.append(r.text)
                 if echo and r.text:
@@ -833,6 +910,18 @@ class FrankensteinEngine:
                     if on_token(len(tokens), r) is False:
                         stats["finish"] = "callback"
                         break
+                if stop:
+                    stats["finish"] = "length" if processor_quota_stop else "stop"
+                    break
+                if budget_control is not None:
+                    was_thinking = budget_control["phase"] == "thinking"
+                    if was_thinking:
+                        budget_control["thinking"] += 1
+                        if ("</think>" in r.text
+                                or _find_sequence(tokens, close_ids) is not None):
+                            budget_control["phase"] = "answer"
+                    else:
+                        budget_control["answer"] += 1
                 if self.loop_guard and len(tokens) % 32 == 0:
                     reason = detect_loop("".join(parts))
                     if reason:
@@ -861,7 +950,10 @@ class FrankensteinEngine:
         self.tape.extend(self.pending)
         self.pending = []
         self.tape.extend(tokens)
-        self.turn_closed = stats["finish"] == "stop"
+        self.turn_closed = (
+            stats["finish"] == "stop"
+            or (processor_quota_stop and stats["finish"] == "length")
+        )
         self.turn += 1
 
         total, attn = self.cache_bytes()

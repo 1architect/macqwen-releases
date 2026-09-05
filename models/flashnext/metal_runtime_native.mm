@@ -49,6 +49,12 @@ void set_error(const std::string &err) {
   g_last_error = err;
 }
 
+// Call only while g_moe_mutex is held. Keeping the assignment separate avoids
+// recursively taking the non-recursive mutex on native execution failures.
+void set_error_locked(const std::string &err) {
+  g_last_error = err;
+}
+
 void initialize_resources() {
   std::call_once(g_resource_once, [] {
     g_device = MTLCreateSystemDefaultDevice();
@@ -269,7 +275,10 @@ int flashnext_native_moe_execute(const FlashNextMoEArgs *args,
   @autoreleasepool {
     std::lock_guard<std::mutex> lock(g_moe_mutex);
     id<MTLCommandBuffer> command = [g_queue commandBuffer];
-    if (command == nil) return -5;
+    if (command == nil) {
+      set_error_locked("Failed to create Metal command buffer");
+      return -5;
+    }
 
     const NSUInteger x_bytes = static_cast<NSUInteger>(args->tokens) * args->hidden_size * sizeof(float);
     const NSUInteger gw_bytes = static_cast<NSUInteger>(args->expert_count) * args->inter_size * (args->hidden_size / 8) * sizeof(uint32_t);
@@ -301,10 +310,12 @@ int flashnext_native_moe_execute(const FlashNextMoEArgs *args,
     id<MTLBuffer> b_act = get_cached_buffer(g_device, g_scratch_act, inter_buf_bytes);
     id<MTLBuffer> b_scratch = get_cached_buffer(g_device, g_scratch_down, scratch_down_bytes);
 
-    if (b_x == nil || b_gw == nil || b_uw == nil || b_dw == nil ||
+    if (b_x == nil || b_gw == nil || b_gs == nil || b_gb == nil ||
+        b_uw == nil || b_us == nil || b_ub == nil ||
+        b_dw == nil || b_ds == nil || b_db == nil ||
         b_routes == nil || b_scores == nil || b_out == nil ||
         b_gate_out == nil || b_up_out == nil || b_act == nil || b_scratch == nil) {
-      set_error("Failed to allocate one or more Metal buffers for MoE execution");
+      set_error_locked("Failed to allocate one or more Metal buffers for MoE execution");
       return -6;
     }
 
@@ -363,7 +374,7 @@ int flashnext_native_moe_execute(const FlashNextMoEArgs *args,
     [command commit];
     [command waitUntilCompleted];
     if (command.status != MTLCommandBufferStatusCompleted) {
-      set_error(command.error ? [command.error.localizedDescription UTF8String] : "Command buffer execution failed");
+      set_error_locked(command.error ? [command.error.localizedDescription UTF8String] : "Command buffer execution failed");
       return -7;
     }
 
@@ -464,4 +475,3 @@ int flashnext_native_chain(const float *input,
 }
 
 }  // extern "C"
-

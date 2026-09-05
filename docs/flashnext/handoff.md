@@ -95,9 +95,11 @@ What changed in the code recently:
   in a 16-arm interleaved reversed-pair test verified 100% bit-identical greedy token
   digests (`29d04075ed7021b3`), with rate difference at +0.7% to +2.0% (unresolved
   inside the 7.8% resolution band).
-- Issues #45 and #43 are closed: Issue #45 proved zero barrier amplification under
-  physical NVMe DMA (F_NOCACHE); Issue #43 proved pre-load wired memory reservation
-  provides no latency benefit over dynamic residency sets.
+- Issue #45 has a native DMA probe with raw GPU and process read metrics, but its
+  latch only marks a completed read and its post-GPU flag only marks a later read
+  completion. It does not prove continuous physical DMA, zero barrier penalty,
+  or full overlap. Issue #43 proved pre-load wired memory reservation provides no
+  latency benefit over dynamic residency sets.
 - Concentrated global slab allocation (`FLASHNEXT_SLAB_GLOBAL=48, FLASHNEXT_SLAB_MIN_SLOTS=4`)
   concentrates resident expert slots into the top-utility layers ([5, 11, 20, 23, 29, 32, 35, 39, 40, 44, 46, 47]),
   boosting decode hit rate from 14.1% to 23.5% (+67% relative gain) for the exact same 149 MB
@@ -151,7 +153,8 @@ What changed in the code recently:
 - The opt-in Up-QMV to SwiGLU fusion matches the MLX Metal-header arithmetic for
   all 65,536 bfloat16 gate patterns at two Up values. Its 12-arm comparison
   measured +2.0% median and +3.3% mean, inside the 14.8% resolution band.
-  Keep `FLASHNEXT_FUSED_UP_SWIGLU=0`.
+  This result remains the historical off/on comparison. The user later enabled
+  the bit-exact fusion in the current chat preset.
 - The corrected uninstrumented 32-token retest measured 3.45 against 3.41
   tok/s. Paired mean was +0.2% inside a 1.5% two-SE band. Physical reduction
   was 0.7 MB/token. The fusion result is unresolved. The user decides its
@@ -159,8 +162,35 @@ What changed in the code recently:
 - A later terminal JSON measured 3.39 against 3.31 tok/s, +5.6% paired mean
   and +2.8% paired median inside a 6.2% band. Physical reads fell by 4.9
   MB/token. The user decided to retain the fusion in the runtime.
+- The current chat preset uses 60 skew slots, Frontier 8A, and Up-QMV/SwiGLU
+  enabled. The historical comparison keeps the same stack with Up fusion off.
+- A 256-token physical-miss full replacement lost 8.4% and lost all eight
+  windows. It is historical only. The guarded hybrid preserves the canonical
+  48-slot core and can change only 12 extensions after a 20 MB/token premise
+  gate.
 - Commit `59503a2` recorded 187 passing tests. The audit changes below remain
   untested until the user approves a test run.
+
+Session results from the approved test run on 2026-09-04:
+
+- The focused FlashNext suite passed 220 tests in 1.063 seconds.
+- The corrected decode-only Section 17 control measured 79.8 ms/token queue
+  residence and 160.9 ms/token total I/O wait at 16 workers.
+- The worker diagnostic favored 8 workers at 3.19 tok/s versus 3.14 at 16,
+  but profiling was enabled. Keep 16 until an unprofiled 8-versus-16 pair
+  resolves the result.
+- One-task-per-expert grouping reduced queue residence but lost 15.5% of
+  generation rate. Reject it.
+- Frontier 8B with Up-QMV/SwiGLU measured -3.5% paired median and stays off.
+- One long answer run favored 60 slots over 48: 2.86 versus 2.53 tok/s, with
+  328.8 versus 365.2 MB/token. Keep 60 slots.
+- The physical-miss calibration and offline topology gate predicted at most
+  13.59 MB/token savings, below the 20 MB/token premise. Do not run the hybrid
+  model comparison.
+- Chunk 4 measured -2.3% paired median against chunk 2 inside a 7.9% band.
+  Keep chunk 2.
+- The interrupted long fusion-baseline run produced no answer tokens and is
+  discarded. Cache-aware is outside the active workstream.
 
 The cache-aware quality comparison remains open under Next work. Its gate result
 was measured under greedy decoding, which causes repetition on its own, so it
@@ -182,7 +212,9 @@ Override the interpreter with `MACQWEN_FLASHNEXT_PYTHON`. Select the checkpoint 
 
 ## Revised performance direction
 
-Issues #43 (wired limit) and #45 (barrier DMA contention) are closed with zero unresolved penalties.
+Issue #43 is closed. The Issue #45 native probe remains observational because its
+completion latch does not prove continuous physical DMA or a complete GPU/read
+overlap interval.
 Concentrated global slabs (`FLASHNEXT_SLAB_GLOBAL=48, min_slots=4`) combined with the scratch-free
 register fused-down kernel reached **2.86 tok/s generation median** (with individual arms at **2.90–2.93 tok/s**)
 and **2.79 tok/s tail rate** at 23.5% decode hit rate and 100% bit-identical digest (`29d04075ed7021b3`).
@@ -192,7 +224,7 @@ The practical target is breaking through **3.0 tok/s** (<333 ms/token), requirin
 
 The next performance work focuses on the SSD $\rightarrow$ Memory $\rightarrow$ Metal frontier roadmap detailed in
 [Next work](#next-work), prioritizing:
-1. Keep Frontier 5 scheduling changes, Frontier 8B, and Up-QMV to SwiGLU fusion disabled.
+1. Keep Frontier 5 scheduling changes and Frontier 8B disabled.
 2. With user approval, rerun the corrected decode-only Section 17 control.
 3. Then sweep worker-pool width with the same instrumentation.
 4. Test one task per expert only if that sweep supports a scheduling hypothesis.
@@ -585,9 +617,9 @@ The path to breaking through 3.0 tok/s (<333 ms/token) from the current 2.86 tok
    - Replaced intermediate device scratch tensor write/read with in-register accumulation (`qmv_accumulate_impl`).
    - Eliminated the 40 KB device memory scratch allocation per call and 768 threadgroup barriers per token across 48 layers. Bit-exact on bfloat16 (`test_scratchless_fused_down_bfloat16`).
 
-6. **Up-QMV + SwiGLU** (Priority: Low/Med | Status: **ON HOLD - NUMERICAL GATE**):
+6. **Up-QMV + SwiGLU** (Priority: Low/Med | Status: **ENABLED BY USER**):
    - Fusing `activation = up * silu(gate)` in the Up-QMV epilogue eliminates `up_out` tensor allocation and saves 48 MLX elementwise launches per token.
-   - Prototyped and measured: MLX's compiled SwiGLU truncates intermediate sigmoid values to bfloat16 differently than standard Metal math (max diff 0.0156-0.03125), threatening bit-identical token digest `29d04075ed7021b3`. Held until an exact 1-ULP arithmetic match is engineered.
+   - The MLX-header bfloat16 sequence matches all tested encodings and preserves the exact token digest. The current chat preset enables it.
 
 7. **FMA / fast math** (Priority: Low | Status: **ACTIVE IN KERNEL**):
    - `qmv_fast_impl` currently uses `fma(...)` intrinsics for Q4 dequantization. Fast-math compiler flags can be evaluated provided bfloat16 rounding remains identical.
@@ -604,27 +636,38 @@ The path to breaking through 3.0 tok/s (<333 ms/token) from the current 2.86 tok
    - Metal kernels are compiled once and cached in `_COMPILED_KERNELS`; compilation latency is 0.00 ms from token 2 onward.
 
 10. **Native bridge persistent zero-copy** (Priority: Structural | Status: **FOUNDATION CLOSED**):
-    - Rigorous unbuffered DMA testing (`F_NOCACHE`) closed Issue #45, proving `MTLBarrierScopeBuffers` adds zero penalty under physical SSD DMA.
+    - The unbuffered DMA probe records raw GPU and process read metrics. Its
+      completion latch does not prove continuous physical SSD DMA, zero barrier
+      penalty, or 100% overlap, so Issue #45 is not closed by that probe.
     - Single-pass bit-31 pointer encoding is verified and ready for native C++/Obj-C persistent runtime integration.
 
 ### Immediate Tactical Next Steps
 
-- **Step A: Re-establish the decode-only control**:
-  Rerun Section 17 with counters reset after prefill. Keep the disabled profiler
-  path to one branch with no allocation or timing work.
-- **Step B: Diagnose worker-pool width**:
-  With explicit user approval, sweep current/2, current, current×1.5, and current×2
-  workers using the same reads. Report submission-to-start delay, positioned-read
-  wall time, layer completion, total I/O wait, physical MB/token, and generation/tail.
-- **Step C: Test task topology conditionally**:
-  Test one task per expert only if Step B supports a scheduling or queue hypothesis.
-  Keep destinations, reads, requested bytes, worker count, slab capacity, and 8A fixed.
-- **Step D: Build physical-miss attribution**:
-  Calibrate actual physical-read cost for `(layer, expert)` before changing slab
-  allocation. A route trace alone cannot establish a physical miss.
-- **Step E: Keep unresolved candidates opt-in**:
-  Keep 60 slots, Frontier 8A, Frontier 8B, streamed records, and Up-QMV fusion
-  at their documented default states until a result clears its resolution band.
+- **Step A: Keep 16 workers**:
+  The unprofiled six-pair comparison is complete. Generation medians were
+  3.055 tok/s at 16 workers and 3.061 at eight. The +4.45% paired mean stayed
+  inside a 9.15% two-SE band. Digests matched. System-wide decompression was
+  active despite zero swap. Do not repeat the sweep or claim a resolved gain.
+  The chat-versus-benchmark gap remains unisolated. Generation length is a
+  hypothesis. The `chat-parity` case measured 3.155 tok/s raw and 3.138 rendered
+  on photosynthesis. Rendering stayed unresolved at -1.19% inside a 4.78% band.
+  The `chat-workload` comparison measured 2.145 tok/s for photosynthesis and
+  2.127 for SketchUp. Its 25.39% band and swap activity in every arm prevent
+  prompt attribution. The `chat-pin-memory` diagnostic measured 4.65 GB of
+  separate expert pins on SketchUp. A cold pin took 1.68 seconds and coincided
+  with 17,448 swapout pages. The prepared `chat-pin-budget` case compares
+  32 versus 8 pinned experts with the 60-slot slab fixed and both profilers off.
+  It has not run. Keep runtime defaults unchanged.
+- **Step B: Keep chunk 2**:
+  Chunk 4 lost 2.3% at the paired median inside a 7.9% band. Do not repeat it.
+- **Step C: Stop slab selection work**:
+  The long 60-versus-48 answer run favored 60 slots. The physical-miss and
+  depth-topology candidates failed the 20 MB/token offline premise gate.
+- **Step D: Keep Frontier 8A**:
+  Frontier 8B with Up-QMV/SwiGLU lost 3.5% at the paired median. Keep it off.
+- **Step E: Use one long answer validation only**:
+  The 256-token answer run is directional. Do not run another long comparison
+  unless a short 32-token test first resolves a candidate.
 
 Closed exact-quality performance issues:
 
@@ -635,7 +678,7 @@ Closed exact-quality performance issues:
 - [#41](https://github.com/1architect/macqwen-releases/issues/41) Resolve reusable destination-ring performance. Closed with no resolved benefit; diagnostic remains disabled.
 - [#42](https://github.com/1architect/macqwen-releases/issues/42) Characterize the GPU-busy hump across drive miss levels. Closed after the reversed-order sweep.
 - [#43](https://github.com/1architect/macqwen-releases/issues/43) Resolve FlashNext Metal wired-limit behavior. Closed on 2026-09-03: pre-loading `FLASHNEXT_WIRED_GB=2` strictly before model loading showed no resolved gain or penalty across 8 interleaved reversed arms (-2.1% mean, +0.6% median, p=0.688, band 15.8%). Unified memory residency sets handle streaming decode without static OS page wiring.
-- [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under mixed residency. Closed on 2026-09-03: rigorous unbuffered DMA testing (`F_NOCACHE`, `proc_pid_rusage`, and 100% thread latch overlap) proved `MTLBarrierScopeBuffers` adds 0.000 ms penalty over serial execution across 0 to 64 MB physical SSD DMA (-0.071 ms at 16 MB, -0.024 ms at 32 MB, -0.124 ms at 64 MB). Hardware fabric sharing contention is bounded to ~5-12%.
+- [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under mixed residency. The 2026-09-03 native probe retains its raw GPU and process read results, but its latch marked completed reads and did not prove continuous physical DMA. Its post-GPU flag only marked a read completing after GPU wait. The probe therefore does not establish zero barrier penalty, 100% overlap, or a 5-12% contention bound.
 
 Follow-up issues from the 2026-09-01 sweep:
 
@@ -650,7 +693,9 @@ Follow-up issues from the 2026-09-01 sweep:
 ### Standing decisions
 
 - Concentrated global slabs (`FLASHNEXT_SLAB_GLOBAL=48, FLASHNEXT_SLAB_MIN_SLOTS=4`) outperform uniform and static first-12 layer slabs by concentrating the 48-slot budget into the highest-utility layers ([5, 11, 20, 23, 29, 32, 35, 39, 40, 44, 46, 47]), achieving 23.5% decode hit rate (vs 14.1% on slab12) for the exact same +149 MB active RAM, reaching 2.86–2.91 tok/s generation and 2.79–2.92 tok/s tail rate with bit-identical digest `29d04075ed7021b3`. Combined with the scratch-free register fused-down kernel, intermediate device scratch allocation and 768 threadgroup barriers per token are completely eliminated.
-- In-encoder Metal buffer barriers (`MTLBarrierScopeBuffers`) incur zero hardware penalty under physical SSD DMA and can safely be used for layer kernel consolidation.
+- The native DMA probe does not establish a zero hardware penalty for
+  in-encoder Metal buffer barriers under physical SSD DMA. Keep the result
+  observational until an interval-valid premise is measured.
 - `pin-parts` is rejected. Its positive isolated reading disappeared when
 stacked with prewarm; the pair lost 1.4% and read 8% more.
 - Weight-preserving expert substitution is not bit-perfect. Keep the current

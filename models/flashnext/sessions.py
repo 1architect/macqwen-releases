@@ -48,6 +48,9 @@ class LoadedSession:
     rope_deltas: Any
     created_at: str
     size_bytes: int
+    # Older v2 snapshots did not record this field. We infer their boundary
+    # from the saved token tail when possible, and close conservatively.
+    turn_closed: bool = True
 
 
 @dataclass(frozen=True)
@@ -491,9 +494,10 @@ class SessionStore:
         token_ids: list[int],
         first_turn: bool,
         thinking: bool = False,
+        turn_closed: bool = True,
     ) -> SessionSummary:
         try:
-            return self._save(name, cache, token_ids, first_turn, thinking)
+            return self._save(name, cache, token_ids, first_turn, thinking, turn_closed)
         except SessionError:
             raise
         except Exception as exc:
@@ -506,11 +510,14 @@ class SessionStore:
         token_ids: list[int],
         first_turn: bool,
         thinking: bool = False,
+        turn_closed: bool = True,
     ) -> SessionSummary:
         path = self._path(name)
         cached_tokens = len(token_ids)
         if first_turn != (cached_tokens == 0):
             raise SessionError("inconsistent session boundary")
+        if not isinstance(turn_closed, bool):
+            raise SessionError("invalid turn boundary")
         self._prepare_directory()
         compatibility = self._compatibility()
         if path.exists():
@@ -555,6 +562,7 @@ class SessionStore:
             "cached_tokens": cached_tokens,
             "first_turn": first_turn,
             "thinking": bool(thinking),
+            "turn_closed": turn_closed,
             "compatibility": compatibility,
             "layer_count": len(cache),
             "layers": layers,
@@ -757,10 +765,13 @@ class SessionStore:
         cached_tokens = int(manifest.get("cached_tokens", -1))
         first_turn = manifest.get("first_turn")
         thinking = manifest.get("thinking", False)
+        saved_turn_closed = manifest.get("turn_closed")
         if (
             cached_tokens < 0
             or not isinstance(first_turn, bool)
             or not isinstance(thinking, bool)
+            or (saved_turn_closed is not None
+                and not isinstance(saved_turn_closed, bool))
         ):
             raise SessionError("invalid context metadata")
         if first_turn != (cached_tokens == 0):
@@ -848,6 +859,19 @@ class SessionStore:
             token_ids = [int(value) for value in token_array.tolist()]
         except Exception as exc:
             raise SessionError(f"corrupted session data: {exc}") from exc
+        if saved_turn_closed is None:
+            if not token_ids:
+                turn_closed = True
+            else:
+                compatibility = manifest.get("compatibility", {})
+                profile = (
+                    compatibility.get("profile", {})
+                    if isinstance(compatibility, dict) else {}
+                )
+                stop_ids = profile.get("stop_ids", [])
+                turn_closed = token_ids[-1] in stop_ids
+        else:
+            turn_closed = saved_turn_closed
         return LoadedSession(
             cache=cache,
             token_ids=token_ids,
@@ -857,6 +881,7 @@ class SessionStore:
             rope_deltas=rope_deltas,
             created_at=str(manifest.get("created_at", "")),
             size_bytes=path.stat().st_size,
+            turn_closed=turn_closed,
         )
 
     def list(self) -> list[SessionSummary]:

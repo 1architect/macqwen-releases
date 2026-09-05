@@ -289,15 +289,6 @@ class FastDraftGreedy:
         if restored:
             mx.eval(*restored)
 
-    def _append_exact_token(self, value):
-        """Consume one correction token through the normal exact path."""
-        token = mx.array([[value]], dtype=mx.uint32)
-        out = self.language(token, cache=self.target_cache)
-        following = mx.argmax(out.logits[:, -1, :], axis=-1).astype(mx.uint32)
-        mx.eval(following)
-        self.stats.replayed += 1
-        return following
-
     def _external_replay(self, snapshot, next_snapshot, values):
         restore_cache(self.draft_cache, snapshot)
         if not values:

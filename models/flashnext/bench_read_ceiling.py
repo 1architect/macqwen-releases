@@ -58,7 +58,10 @@ def patch(language) -> None:
             raise RuntimeError("switch_mlp classes differ across layers")
     original = cls.__call__
 
-    def call(self, x, inds, _o=original):
+    def call(self, x, inds, *args, _o=original, **kwargs):
+        # The one-sync path caches the original route on this object. The
+        # synthetic route below must not consume that stale host list.
+        self._routed_host = None
         width = inds.shape[-1]
         if _PICK["mode"] == "ram":
             fixed = _PICK["fixed"]
@@ -86,8 +89,11 @@ def patch(language) -> None:
                         (_PICK["rng"].choice(512 - pool, size=cold,
                                              replace=False) + pool).tolist()
                     )
-                return _o(self, x, mx.broadcast_to(
-                    mx.array(vals, dtype=inds.dtype), inds.shape))
+                return _o(
+                    self, x,
+                    mx.broadcast_to(mx.array(vals, dtype=inds.dtype), inds.shape),
+                    *args, **kwargs,
+                )
             if len(fixed) > width and not _PICK["fixed_route"]:
                 # A pool wider than the route separates two causes that the
                 # plain ram arm confounds. Reusing eight experts every token
@@ -102,7 +108,11 @@ def patch(language) -> None:
                 vals = (fixed * (width // len(fixed) + 1))[:width]
         else:
             vals = _PICK["rng"].choice(512, size=width, replace=False).tolist()
-        return _o(self, x, mx.broadcast_to(mx.array(vals, dtype=inds.dtype), inds.shape))
+        return _o(
+            self, x,
+            mx.broadcast_to(mx.array(vals, dtype=inds.dtype), inds.shape),
+            *args, **kwargs,
+        )
 
     cls.__call__ = call
     return len(blocks)

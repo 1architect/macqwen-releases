@@ -88,11 +88,9 @@ SCHEMA = {
     # how the chat behaves
     "stream_answers": _boolean(True),
     "animate": _boolean(True),
-    "code_only": _boolean(False),
     "system_prompt": _string(""),
     # agent profile only, ignored by the plain profile
     "approval": _choice("ask", ("ask", "auto")),
-    "spec_enabled": _boolean(False),
     "workspace": _text(str(Path.cwd())),
     # what to start with
     "model": _text("flashnext"),
@@ -117,8 +115,20 @@ def think_limit(values: dict) -> int:
     return saved if saved > 0 else 0
 
 
+def separate_think_limit(values: dict) -> int | None:
+    """Return the interactive reasoning quota.
+
+    ``-1`` keeps the historical shared total budget. A positive value
+    reserves that many tokens for reasoning before the answer quota starts.
+    """
+    if not values.get("thinking_enabled", False):
+        return 0
+    saved = values.get("think_budget", DEFAULT_THINK_TOKENS)
+    return saved if saved > 0 else None
+
+
 def generation_limit(values: dict, default: int = DEFAULT_ANSWER_TOKENS) -> int:
-    """Keep reasoning tokens from consuming the answer allowance."""
+    """Return the total ceiling for callers with one generation limit."""
     return answer_limit(values, default) + think_limit(values)
 
 # the two chats disagreed on this name; the explicit one wins

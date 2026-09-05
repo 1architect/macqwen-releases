@@ -13,6 +13,7 @@ import argparse
 import contextlib
 import getpass
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -229,10 +230,11 @@ class Session:
                     preferences.DEFAULT_PLAIN_ANSWER_TOKENS
                     if self.profile == "plain" else preferences.DEFAULT_ANSWER_TOKENS
                 )
+                separate_think = preferences.separate_think_limit(prefs)
                 budget = (
                     f"{preferences.answer_limit(prefs, default_answer)} answer + "
-                    f"{preferences.think_limit(prefs)} reasoning"
-                    if prefs["thinking_enabled"]
+                    f"{separate_think} reasoning"
+                    if prefs["thinking_enabled"] and separate_think is not None
                     else f"{preferences.answer_limit(prefs, default_answer)} answer (reasoning shares it)"
                 )
                 shared = (
@@ -474,11 +476,24 @@ def main() -> int:
     parser.add_argument("--benchmark-json", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--benchmark-prompt", help=argparse.SUPPRESS)
     parser.add_argument("--benchmark-product-json", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--benchmark-chat-parity",
+        choices=("raw", "formatted", "rendered", "sampled", "thinking", "thinking-sampled"),
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--benchmark-window", type=int, default=32, help=argparse.SUPPRESS)
     parser.add_argument("--benchmark-tokens", type=int, default=256, help=argparse.SUPPRESS)
     parser.add_argument("--benchmark-label", default="chat.sh", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--benchmark-product-sampling",
+        choices=("greedy", "configured"), default="greedy",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
-    if (args.benchmark_json or args.benchmark_product_json) and not args.benchmark_prompt:
+    benchmarking = bool(
+        args.benchmark_json or args.benchmark_product_json or args.benchmark_chat_parity
+    )
+    if benchmarking and not args.benchmark_prompt:
         parser.error("benchmark mode requires --benchmark-prompt")
     if not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")
@@ -548,20 +563,22 @@ def main() -> int:
             parser.error(str(exc))
         if explicit_checkpoint or not (environment_checkpoint or saved_checkpoint):
             prefs["flashnext_checkpoint"] = args.model_path
-    if (args.benchmark_json or args.benchmark_product_json) and prefs["profile"] != "plain":
+    if benchmarking and prefs["profile"] != "plain":
         parser.error("benchmark mode requires --profile plain")
+    if args.benchmark_chat_parity and prefs["model"] != "flashnext":
+        parser.error("chat parity requires --model flashnext")
     # A benchmark uses temporary command-line conditions. It must not change
     # the user's next interactive chat, as an earlier 20-token probe did.
-    if not (args.benchmark_json or args.benchmark_product_json):
+    if not benchmarking:
         preferences.save(prefs, args.preferences_file)
 
     signal.signal(signal.SIGTSTP, signal.SIG_IGN)
 
     began = time.time()
     product_json = args.benchmark_product_json
-    display = sys.stderr if (args.benchmark_json or product_json) else sys.stdout
+    display = sys.stderr if benchmarking else sys.stdout
     print(f"{C['dim']}loading {prefs['model']}...{C['0']}", flush=True, file=display)
-    if args.benchmark_json or product_json:
+    if benchmarking:
         with contextlib.redirect_stdout(sys.stderr):
             backend = build_backend(prefs["model"], args, prefs)
     else:
@@ -572,19 +589,24 @@ def main() -> int:
         prefs,
         args.preferences_file,
         args.api_keys_file,
-            migrate_system_prompt=not (args.benchmark_json or product_json),
+        migrate_system_prompt=not benchmarking,
     )
     ready_seconds = time.time() - began
     print(f"{C['dim']}ready in {time.time() - began:.1f}s  "
           f"{prefs['model']} / {prefs['profile']}  "
           f"use /help for commands{C['0']}\n", file=display)
+    if args.benchmark_chat_parity:
+        from models.flashnext.bench_chat_parity import run_chat_child
+
+        run_chat_child(session, args.benchmark_chat_parity, args.benchmark_prompt)
+        return 0
     if args.benchmark_json:
         print(json.dumps(run_benchmark(session, args.benchmark_prompt, ready_seconds)))
         return 0
     if product_json:
         run_product_benchmark(
             session, args.benchmark_prompt, args.benchmark_window, args.benchmark_label,
-            args.benchmark_tokens,
+            args.benchmark_tokens, args.benchmark_product_sampling,
         )
         return 0
     if args.server:
@@ -635,16 +657,6 @@ def main() -> int:
     return 0
 
 
-def _swap_banner() -> str:
-    """Show cache-aware routing on the ready line. It changes the reply, so
-    it must be visible rather than inferred from an environment variable."""
-    try:
-        from models.flashnext.routing import swap_enabled, swap_epsilon
-    except ImportError:
-        return ""
-    return f"  swap=on/{swap_epsilon():g}" if swap_enabled() else ""
-
-
 def open_or_continue(session, prompt: str) -> None:
     """First turn carries the system prompt; later turns just add the user."""
     if not session.opened:
@@ -678,6 +690,14 @@ def run_turn_plain(session, prompt: str, glow: IngestGlow) -> None:
 
     glow.start(len(session.backend.pending))
     began = time.time()
+    budget_state = getattr(session.backend, "_interactive_budgets", None)
+    if hasattr(session.backend, "_interactive_budgets"):
+        session.backend._interactive_budgets = (
+            preferences.answer_limit(
+                prefs, preferences.DEFAULT_PLAIN_ANSWER_TOKENS
+            ),
+            preferences.separate_think_limit(prefs),
+        )
     try:
         # the glow belongs to the prefill; decoding prints the answer over it
         text, stats = session.backend.generate(
@@ -692,6 +712,8 @@ def run_turn_plain(session, prompt: str, glow: IngestGlow) -> None:
         print(f"\n{C['dim']}generation interrupted; conversation reset{C['0']}\n")
         return
     finally:
+        if hasattr(session.backend, "_interactive_budgets"):
+            session.backend._interactive_budgets = budget_state
         glow.finish()
     if prefs["stream_answers"]:
         tail = thinking.finish()
@@ -743,9 +765,32 @@ def run_benchmark(session, prompt: str, ready_seconds: float) -> dict:
         from models.flashnext.diskio import disk_bytes_read
     except Exception:
         disk_bytes_read = None
-    read_before = disk_bytes_read() if disk_bytes_read else -1
+    read_before = [-1]
+
+    def mark_decode_start() -> None:
+        read_before[0] = disk_bytes_read() if disk_bytes_read else -1
+
     began = time.time()
-    text, stats = session.backend.generate(max_tokens=limit)
+    try:
+        generate_parameters = inspect.signature(backend.generate).parameters
+        supports_prefilled = (
+            "on_prefilled" in generate_parameters
+            or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in generate_parameters.values()
+            )
+        )
+    except (TypeError, ValueError):
+        supports_prefilled = True
+    if supports_prefilled:
+        text, stats = session.backend.generate(
+            max_tokens=limit, on_prefilled=mark_decode_start
+        )
+    else:
+        # Lightweight benchmark adapters may expose the old two-argument
+        # method. They have no prefill callback, so physical telemetry is
+        # unavailable instead of mixing prompt and decode reads.
+        text, stats = session.backend.generate(max_tokens=limit)
     turn_seconds = time.time() - began
     read_after = disk_bytes_read() if disk_bytes_read else -1
     produced = session.backend.tape[-stats.tokens:] if stats.tokens else []
@@ -773,11 +818,14 @@ def run_benchmark(session, prompt: str, ready_seconds: float) -> dict:
         "turn_seconds": turn_seconds,
         "complete_tps": stats.tokens / turn_seconds if turn_seconds else 0.0,
         "physical_bytes": (
-            read_after - read_before if read_before >= 0 and read_after >= 0 else -1
+            read_after - read_before[0]
+            if read_before[0] >= 0 and read_after >= read_before[0] else -1
         ),
         "mb_per_token": (
-            (read_after - read_before) / 1e6 / stats.tokens
-            if read_before >= 0 and read_after >= 0 and stats.tokens else -1.0
+            (read_after - read_before[0]) / 1e6 / stats.tokens
+            if read_before[0] >= 0
+            and read_after >= read_before[0]
+            and stats.tokens else -1.0
         ),
     }
     try:
@@ -794,7 +842,8 @@ def run_benchmark(session, prompt: str, ready_seconds: float) -> dict:
 
 
 def run_product_benchmark(session, prompt: str, window: int = 32,
-                          label: str = "chat.sh", tokens: int = 256) -> None:
+                          label: str = "chat.sh", tokens: int = 256,
+                          sampling_mode: str = "greedy") -> None:
     """Stream long-generation product metrics as one JSON object per window.
 
     This is a separate product probe. The established ``--benchmark-json``
@@ -803,7 +852,7 @@ def run_product_benchmark(session, prompt: str, window: int = 32,
     if window <= 0 or tokens <= 0 or tokens % window:
         raise ValueError("benchmark tokens must be a positive multiple of its window")
     backend = session.backend
-    if hasattr(backend, "sampling"):
+    if sampling_mode == "greedy" and hasattr(backend, "sampling"):
         from macqwen.sampling import Sampling
 
         backend.sampling = Sampling.greedy_settings()
@@ -824,6 +873,7 @@ def run_product_benchmark(session, prompt: str, window: int = 32,
     answer_tokens = [0]
     phase = ["thinking" if getattr(backend, "thinking_enabled", False) else "answer"]
     produced = []
+    physical_trace = [None]
 
     def slab_counts() -> tuple[int, int]:
         hits = misses = 0
@@ -841,23 +891,22 @@ def run_product_benchmark(session, prompt: str, window: int = 32,
         before[0] = disk_bytes_read() if disk_bytes_read else -1
         window_started[0] = time.perf_counter()
         previous_hits[0], previous_misses[0] = slab_counts()
+        if os.environ.get("FLASHNEXT_PHYSICAL_MISS_TRACE") == "1":
+            from models.flashnext.physical_miss import start_trace
 
-    def on_token(value: int, piece: str) -> None:
-        produced.append(value)
-        if phase[0] == "thinking":
-            thinking_tokens[0] += 1
-        else:
-            answer_tokens[0] += 1
-        if "</think>" in piece:
-            phase[0] = "answer"
-        if len(produced) % window:
-            return
+            physical_trace[0] = start_trace(f"product-long:{label}")
+            if label.startswith("core48-calibration"):
+                physical_trace[0].profile["calibration"] = {
+                    "canonical_core_slots": 48,
+                    "equal_residency": True,
+                }
+
+    def emit_window(count: int) -> None:
         now = time.perf_counter()
         after = disk_bytes_read() if disk_bytes_read else -1
-        count = min(window, len(produced))
         physical = ((after - before[0]) / 1e6 / count
                     if before[0] >= 0 and after >= before[0] else -1.0)
-        active = (mx.metal.get_active_memory() / 1e6
+        active = (mx.get_active_memory() / 1e6
                   if mx is not None else -1.0)
         hits, misses = slab_counts()
         window_hits = max(0, hits - previous_hits[0])
@@ -889,11 +938,35 @@ def run_product_benchmark(session, prompt: str, window: int = 32,
         previous_misses[0] = misses
         window_index[0] += 1
 
-    _text, stats = backend.generate(
-        max_tokens=tokens,
-        on_prefilled=on_prefilled,
-        on_decode_token=on_token,
-    )
+    def on_token(value: int, piece: str) -> None:
+        produced.append(value)
+        if phase[0] == "thinking":
+            thinking_tokens[0] += 1
+        else:
+            answer_tokens[0] += 1
+        if "</think>" in piece:
+            phase[0] = "answer"
+        if len(produced) % window == 0:
+            emit_window(window)
+
+    try:
+        _text, stats = backend.generate(
+            max_tokens=tokens,
+            on_prefilled=on_prefilled,
+            on_decode_token=on_token,
+        )
+    finally:
+        if physical_trace[0] is not None:
+            from models.flashnext.physical_miss import stop_trace
+
+            physical_trace[0].profile["tokens"] = len(produced)
+            stop_trace(os.environ.get(
+                "FLASHNEXT_PHYSICAL_MISS_PROFILE",
+                "~/.cache/flashnext/physical-misses.json",
+            ))
+    remainder = len(produced) % window
+    if remainder:
+        emit_window(remainder)
     digest = hashlib.sha256(
         b"".join(int(value).to_bytes(4, "little", signed=False) for value in produced)
     ).hexdigest()
@@ -903,6 +976,8 @@ def run_product_benchmark(session, prompt: str, window: int = 32,
         "context_tokens": len(backend.tape),
         "thinking_tokens": thinking_tokens[0],
         "answer_tokens": answer_tokens[0],
+        "sampling": sampling_mode,
+        "effort": session.preferences.get("effort", ""),
     }), flush=True)
 
 
@@ -984,6 +1059,12 @@ def run_turn_agent(session, prompt: str) -> None:
         animator[0] = None
 
     began = time.time()
+    budget_state = getattr(session.backend, "_interactive_budgets", None)
+    if hasattr(session.backend, "_interactive_budgets"):
+        session.backend._interactive_budgets = (
+            preferences.answer_limit(prefs),
+            preferences.separate_think_limit(prefs),
+        )
     try:
         reason = run_agent(
             session.backend, session.tools, out,
@@ -1002,6 +1083,9 @@ def run_turn_agent(session, prompt: str) -> None:
         if animator[0] is not None:
             animator[0].cancel()
         raise
+    finally:
+        if hasattr(session.backend, "_interactive_budgets"):
+            session.backend._interactive_budgets = budget_state
     elapsed = time.time() - began
     print(f"\n{C['dim']}{token_stats_text(turn_stats, len(session.backend.tape), elapsed)}"
           f"\nstopped: {reason}{C['0']}\n")

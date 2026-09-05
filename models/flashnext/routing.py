@@ -15,6 +15,7 @@ PROFILES = (
 # `shared_mmap` and keep it. Every other profile takes the store's default, so
 # FLASHNEXT_READ reaches the chat instead of being overwritten here.
 DEFAULT_READ_MODE = os.environ.get("FLASHNEXT_READ", "pread")
+READ_MODES = ("pread", "preadv", "resident", "shared_mmap", "hybrid")
 # Turn one decodes on a cold page cache and is the slowest turn of a session.
 # The expert set a session pins is stable, so recording it and reading those
 # rows once at load puts them in the cache before the user types. The mlock
@@ -108,7 +109,25 @@ class RoutingProfile:
         self.pinned_signature = ""
         self._saved_signature = ""
         self._prefixes: dict = {}
+        saved_read_mode = getattr(
+            self.store, "_flashnext_requested_read_mode", None
+        )
+        self._requested_read_mode = (
+            saved_read_mode
+            if saved_read_mode in READ_MODES
+            else self._read_mode()
+        )
+        self._read_mode_was_forced = getattr(
+            self.store, "_flashnext_read_mode_forced", None
+        )
+        self._effective_read_mode = None
         self.reset()
+
+    def _read_mode(self) -> str:
+        value = getattr(self.store, "_read_mode", DEFAULT_READ_MODE)
+        if value in READ_MODES:
+            return value
+        return DEFAULT_READ_MODE if DEFAULT_READ_MODE in READ_MODES else "pread"
 
     @property
     def quality(self):
@@ -141,10 +160,31 @@ class RoutingProfile:
         set_renorm_blend(
             self.default_renorm if self.mode == "standard" else 1.0
         )
-        self.store._read_mode = DEFAULT_READ_MODE
+        current_read_mode = self._read_mode()
+        if self.mode != "fast":
+            # Keep benchmark/live writes made directly on the store. A
+            # profile-forced effective mode must not become the next request.
+            if (
+                self._effective_read_mode is None
+                and (
+                    self._read_mode_was_forced != "shared_mmap"
+                    or current_read_mode != "shared_mmap"
+                )
+            ) or (
+                self._effective_read_mode is not None
+                and current_read_mode != self._effective_read_mode
+            ):
+                self._requested_read_mode = current_read_mode
+            self.store._read_mode = self._requested_read_mode
+            self._read_mode_was_forced = None
+        else:
+            self.store._read_mode = "shared_mmap"
+            self._read_mode_was_forced = "shared_mmap"
+        self._effective_read_mode = self.store._read_mode
+        self.store._flashnext_requested_read_mode = self._requested_read_mode
+        self.store._flashnext_read_mode_forced = self._read_mode_was_forced
         if self.mode == "fast":
             set_fast_profile()
-            self.store._read_mode = "shared_mmap"
         self.candidates = {layer: Counter() for layer in range(48)}
         self.route_counts = {layer: Counter() for layer in range(48)}
         self.observed = {layer: 0 for layer in range(48)}
@@ -292,6 +332,9 @@ class RoutingProfile:
         if self.mode == "fast-quality":
             set_resident_experts(resident)
             self.store._read_mode = "shared_mmap"
+            self._read_mode_was_forced = "shared_mmap"
+            self._effective_read_mode = "shared_mmap"
+            self.store._flashnext_read_mode_forced = "shared_mmap"
             set_threshold(0.20)
             set_layer_thresholds({layer: 0.40 for layer in FAST_LAYERS})
             set_renorm_blend(0.10)

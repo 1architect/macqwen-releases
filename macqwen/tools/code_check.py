@@ -23,7 +23,6 @@ generation, and pyflakes only parses.
 """
 import difflib
 import json
-import re
 import subprocess
 import tempfile
 from pathlib import Path

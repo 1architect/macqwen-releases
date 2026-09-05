@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from macqwen.text import CompletedTextBuffer, ThinkingStreamFilter
 from macqwen.profiles import system_prompt
+from macqwen.conversation import reasoning_system_text
 
 
 MAX_BODY = 16 * 1024 * 1024
@@ -283,13 +284,27 @@ class ModelService:
         backend = session.backend
         try:
             normalized = _normalize_messages(messages)
-            if not any(message["role"] == "system" for message in normalized):
+            system_index = next(
+                (index for index, message in enumerate(normalized)
+                 if message["role"] == "system"),
+                None,
+            )
+            if system_index is None:
+                current_prompt = getattr(session, "current_system_prompt", None)
+                prompt = (
+                    current_prompt()
+                    if callable(current_prompt)
+                    else system_prompt("plain", session.preferences["workspace"])
+                )
                 normalized.insert(0, {
-                    "role": "system",
-                    "content": session.preferences["system_prompt"] or system_prompt(
-                        "plain", session.preferences["workspace"]
-                    ),
+                    "role": "system", "content": prompt,
                 })
+                system_index = 0
+            system_text, template_effort = reasoning_system_text(
+                normalized[system_index]["content"],
+                session.preferences["effort"],
+            )
+            normalized[system_index] = dict(normalized[system_index], content=system_text)
             tokenizer = _model_tokenizer(backend)
             rendered = tokenizer.apply_chat_template(
                 normalized,
@@ -297,7 +312,7 @@ class ModelService:
                 add_generation_prompt=True,
                 tokenize=False,
                 enable_thinking=session.preferences["thinking_enabled"],
-                reasoning_effort=session.preferences["effort"],
+                reasoning_effort=template_effort,
             )
             self._adopt(rendered)
             thinking = ThinkingStreamFilter(

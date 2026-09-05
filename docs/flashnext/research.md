@@ -4587,3 +4587,341 @@ reduced paired physical reads by 4.9 MB/token. All arms kept digest
 
 User decision: retain the Up-QMV to SwiGLU fusion in the runtime. The measured
 status remains visible; the suite does not decide enablement or defaults.
+
+## Session results: I/O, fusion, and long answer validation, 2026-09-04
+
+The session kept the oQ4 checkpoint, exact-quality routing, the 32-token
+benchmark horizon, and greedy digest checks. The final long answer check used
+one directional run per selected path. It did not replace the 32-token controls.
+
+### Verification
+
+The checkpoint-free FlashNext suite ran 220 tests in 1.063 seconds. It passed.
+
+### Frontier 8B with the retained Up-QMV/SwiGLU fusion
+
+The 12-arm comparison kept 60 skew slots and compared Frontier 8A with 8B.
+Up-QMV/SwiGLU stayed enabled in both conditions.
+
+| Condition | Gen median | Tail median | Physical MB/token |
+|---|---:|---:|---:|
+| Frontier 8A + Up | 3.08 | 3.00 | 279.7 |
+| Frontier 8B + Up | 2.96 | 2.90 | 282.0 |
+
+The 8B paired mean was +2.1%, and the paired median was -3.5%. It won two of
+six pairs. The two-SE band was 9.8%, and all digests matched
+`29d04075ed7021b3`. Keep Frontier 8B disabled.
+
+### Corrected decode-only Section 17 control
+
+The 16-worker control reset counters after prefill. It measured 3.13 tok/s,
+3.04 tok/s tail, 262.0 MB/token, and 3,620.7 MB active memory. Its I/O split
+was 79.8 ms/token queue residence, 77.6 ms positioned-read time, 3.4 ms task
+overhead, and 0.3 ms completion overhead. Total I/O wait was 160.9 ms/token.
+The digest was `29d04075ed7021b3`.
+
+Queue residence is therefore a valid decode-time observation. It does not
+identify worker saturation, storage limits, or lock contention.
+
+### Worker-width sweep
+
+The sweep used the same projection task topology and the same 32-token
+workload. Profiling remained enabled for attribution, so these rates select a
+diagnostic direction rather than a production default.
+
+| Workers | Gen median | Tail median | Queue ms/token | Pread ms/token | Total I/O ms/token | Physical MB/token |
+|---:|---:|---:|---:|---:|---:|---:|
+| 8 | **3.19** | **3.08** | 116.6 | 40.7 | **159.5** | 266.3 |
+| 16 | 3.14 | 3.05 | 80.8 | 77.6 | 161.7 | 266.0 |
+| 24 | 3.03 | 2.96 | 58.8 | 105.8 | 168.8 | 276.9 |
+| 32 | 3.01 | 2.93 | 45.9 | 121.1 | 171.5 | 281.2 |
+
+All arms kept digest `29d04075ed7021b3`. Eight workers had the best diagnostic
+medians, but the difference from 16 workers was small. Run one unprofiled
+8-versus-16 production comparison before changing the runtime default.
+
+### One task per expert
+
+The task-topology comparison used eight workers because the worker sweep made
+the topology premise eligible. It kept destinations, reads, and digest fixed.
+Expert grouping reduced queue residence from about 121 to 7 ms/token, but
+positioned-read time rose from about 42 to 168 ms/token. Generation fell from
+about 3.06 to 2.59 tok/s, or -15.5%. All digests matched. Reject expert-task
+grouping.
+
+### Long answer slab comparison
+
+An earlier normal-versus-canonical probe was invalid because the first process
+rewrote `pins.json` before the second process selected its slab. Later runs used
+private copies of the initial pin profile.
+
+One 256-token answer run compared 60 and 48 skew slots. Both paths started
+after a closed thinking block.
+
+| Metric | 60 slots | 48 slots |
+|---|---:|---:|
+| Complete rate | **2.86 tok/s** | 2.53 tok/s |
+| First 128 tokens | **2.80 tok/s** | 2.58 tok/s |
+| Last 128 tokens | **2.93 tok/s** | 2.49 tok/s |
+| Physical reads | **328.8 MB/token** | 365.2 MB/token |
+
+The 60-slot path won seven of eight windows. Digests matched
+`fbdcadd6e667ec5d7bf514e96cfc80cf1bda5ff3999ca962d8b31d630b367330`. This is
+directional evidence, not a promotion statistic. It supports keeping 60
+slots for long answer generation.
+
+The separate long fusion-baseline run was interrupted after eight completed
+256-token generations. All completed paths remained inside thinking and
+produced no answer tokens. Its return code was `-2`; discard it as a fusion
+comparison.
+
+### Physical-miss calibration and topology gate
+
+The earlier full residual-miss replacement completed a 256-token thinking run
+before the corrected answer calibration. It selected 60 rows covering 4.145 GB
+of calibrated misses. Its identical digest run produced these windows:
+
+| Window | Canonical tok/s | Physical-miss tok/s | Difference |
+|---:|---:|---:|---:|
+| 1 | 2.184 | 2.114 | -3.2% |
+| 2 | 1.820 | 1.697 | -6.8% |
+| 3 | 2.050 | 1.913 | -6.7% |
+| 4 | 1.948 | 1.770 | -9.2% |
+| 5 | 2.069 | 2.007 | -3.0% |
+| 6 | 2.302 | 2.040 | -11.4% |
+| 7 | 2.422 | 2.004 | -17.3% |
+| 8 | 2.381 | 2.144 | -10.0% |
+
+The complete rates were 2.128 and 1.949 tok/s. The replacement lost 8.4%,
+lost every window, and remained inside thinking. The calibration made
+canonical resident experts invisible as misses. Keep the full replacement
+rejected.
+
+The serialized 48-slot-core calibration completed one 256-token answer run.
+It used one I/O worker and one expert per read, so its 1.50 tok/s rate is not a
+production rate. It recorded 870,294 samples across 48 layers and 14,763
+layer-expert rows. Requested expert data was 292.87 GB. Attributed physical
+reads were 129.06 GB, about 504 MB/token. It created comparable physical-read
+evidence for extension selection.
+
+The offline gate then predicted these savings:
+
+| Candidate | Predicted saving |
+|---|---:|
+| Canonical-core hybrid | 1.66 MB/token |
+| Depth 6 | 12.63 MB/token |
+| Depth 8 | 13.39 MB/token |
+| Depth 10 | 13.59 MB/token |
+
+The required premise was 20 MB/token. Every candidate failed. The guarded
+physical-miss model comparison was blocked before loading the model.
+
+The full residual-miss replacement remains rejected. Its earlier 256-token
+run lost 8.4% and every window because canonical resident experts were absent
+from its evidence.
+
+### Chunk two versus chunk four
+
+The 12-arm comparison used six reversed pairs and the selected eight-worker
+setting from the diagnostic sweep.
+
+| Condition | Gen median | Tail | Physical MB/token |
+|---|---:|---:|---:|
+| Chunk 2 | **3.45** | **3.17** | 437.9 |
+| Chunk 4 | 3.37 | 3.12 | 438.7 |
+
+Chunk 4 won one of six pairs. Its paired median was -2.3%, its paired mean was
++0.9%, and the two-SE band was 7.9%. Digests matched
+`29d04075ed7021b3`. Keep chunk 2. Do not repeat this comparison.
+
+### Session decisions
+
+- Keep oQ4, 60 skew slots, Frontier 8A, Up-QMV/SwiGLU, chunk 2, and projection tasks.
+- Keep 16 I/O workers until an unprofiled 8-versus-16 comparison resolves the small worker result.
+- Reject Frontier 8B and one-task-per-expert grouping.
+- Reject all tested physical-miss and depth-topology candidates at the offline gate.
+- Do not run another 256-token comparison in this session.
+- Keep cache-aware outside the active workstream.
+
+## Unprofiled worker comparison, 2026-09-04
+
+We ran six reversed pairs with 32 tokens per arm. Each fresh process
+used the same private pin-profile snapshot, 60 skew slots, Frontier 8A,
+Up-QMV/SwiGLU, chunk 2, and projection tasks. I/O profiling stayed off.
+Evidence: `models/flashnext/tests/results/io-worker-production.json`.
+
+| Workers | Generation median | Tail median | Physical MB/token | Active MB |
+|---:|---:|---:|---:|---:|
+| 16 | 3.055 | 2.932 | 280.6 | 3620.7 |
+| 8 | 3.061 | 2.978 | 272.0 | 3620.7 |
+
+Eight workers measured +4.45% paired mean and +4.11% paired median inside
+a 9.15% two-SE band. They won four of six pairs, with sign-test p=0.344.
+The median paired physical reduction was 11.9 MB/token. All arms preserved
+token digest `29d04075ed7021b3` and allocation digest `a41a68d5ca43eaf4`.
+The difference between condition medians was only +0.18%.
+
+The first pair contributed +22.4% and 108 MB/token of physical reduction.
+The final three paired effects were -2.95%, -9.90%, and +0.62%. Retain all
+pairs; the result does not establish a consistent worker benefit.
+
+Swap counters stayed at zero. Decompression ranged from 25,737 to 181,467
+pages per arm. Three 16-worker arms also recorded compression. These are
+system-wide counters and do not identify which process caused the activity.
+The empty `vm_warnings` list checks only the swap/pageout advisory limit.
+It does not establish quiet compressor conditions.
+
+Keep 16 workers. This completes the requested unprofiled comparison without
+resolving a gain. It does not explain the gap between chat and benchmark rates.
+Do not repeat the worker sweep or start
+a long candidate comparison on this result alone.
+
+### Chat-versus-benchmark scope clarification
+
+Our observed problem is lower throughput through `chat.sh`. We suspected
+generation length, but have not established a within-generation slowdown.
+The latest 60-slot answer run had a faster second half, 2.93 versus 2.80 tok/s.
+
+Static inspection confirms the same Python environment through the local
+launcher override. The benchmark uses a short raw prompt, greedy sampling,
+a closed thinking block, and 32 tokens. Our saved chat settings use a system
+prompt, `xhigh`, sampling, and a 4,050-token combined allowance. These settings
+change the workload; their individual performance effects remain unmeasured here.
+
+`bench_chat_parity.py` prepares three conditions through `chat.sh`: raw silent,
+formatted silent, and formatted with the real plain-chat renderer. All use
+32 greedy tokens and a closed thinking block. The rendering pair requires
+identical prompt and output tokens. Raw versus formatted measures different
+workloads. The parent imports no MLX and gives each child identical private
+pins. A PTY preserves terminal rendering when the suite captures output.
+This diagnostic and its focused checks await execution. No speed fix is claimed.
+
+## Short chat-path comparison, 2026-09-04
+
+We ran three reversed rounds at 32 tokens through `chat.sh`. The formatted
+silent and rendered arms used identical prompt and output token digests.
+All arms used the same interpreter, checkpoint, locked 60-slot allocation,
+16 workers, greedy sampling, and a closed thinking block.
+Evidence: `models/flashnext/tests/results/chat-parity.json`.
+
+| Path | Prompt tokens | Generation median | Physical MB/token | Prefill median |
+|---|---:|---:|---:|---:|
+| Raw prompt, silent | 23 | 3.155 tok/s | 259.8 | 5.04 s |
+| Formatted prompt, silent | 56 | 3.146 tok/s | 261.7 | 10.35 s |
+| Formatted prompt, rendered | 56 | 3.138 tok/s | 264.6 | 10.57 s |
+
+Rendering measured -1.19% paired mean inside a 4.78% two-SE band. Its callback
+used 0.389 ms median across the complete 32-token arm. The formatted prompt
+increased prefill time in this run, but decode stayed near the raw-prompt rate.
+System-wide compressor activity remained nonzero, with zero swap movement.
+
+This result establishes short greedy chat parity only for photosynthesis.
+It does not establish parity for everyday prompts, sampling, or thinking.
+Our reported gap usually occurs in fresh conversations. Prompt content is
+the next hypothesis: different text can change expert reuse and physical reads.
+
+The prepared `chat-workload` case compares the formatted photosynthesis prompt
+with our recorded SketchUp request. It keeps 32 tokens, greedy sampling, closed
+thinking, the renderer, and the initial pin profile fixed. Output differences
+between prompts are expected. This measures workload sensitivity, not an
+optimization gain. The separate `chat-settings` case remains pending until
+this prompt comparison is assessed. Neither new case has run.
+
+## Everyday prompt comparison under swap activity, 2026-09-04
+
+We compared formatted photosynthesis with our recorded SketchUp request in
+three reversed pairs. All arms completed 32 greedy answer tokens through the
+real renderer. Each prompt retained its own token digest across rounds.
+Interpreter, checkpoint, locked slab allocation, and worker count matched.
+Evidence: `models/flashnext/tests/results/chat-workload.json`.
+
+| Prompt | Generation median | Tail median | Physical MB/token |
+|---|---:|---:|---:|
+| Photosynthesis | 2.145 tok/s | 2.692 tok/s | 385.1 |
+| SketchUp | 2.127 tok/s | 2.445 tok/s | 415.6 |
+
+SketchUp measured -1.87% paired mean inside a 25.39% two-SE band. Individual
+effects were +0.05%, +19.09%, and -24.76%. This is inconclusive.
+
+Every arm exceeded the 256-page swap advisory limit. Swapins ranged from 916
+to 8,563 pages. Three arms also swapped out 25,372 to 44,204 pages. Compression
+and decompression were substantial. These system-wide counters prevent causal
+attribution to prompt content. Both prompts ran slower than the prior parity
+run, but that cross-run difference is not a controlled regression measurement.
+
+The harness now flags contaminated arms in its summary and retains every raw
+record. MLX active memory excludes the separate expert rows pinned through
+`SafeTensorStore.pin_rows`. The optional `--profile-pins` diagnostic records
+their size, duration, physical reads, VM deltas, and measurement overhead.
+It has not run. Pinning is a hypothesis to measure, not an established cause.
+
+## Expert-pin operation measurements, 2026-09-04
+
+We measured the pin operation during the same three reversed workload pairs.
+Evidence: `models/flashnext/tests/results/chat-pin-memory.json`.
+
+| Prompt | Pinned expert MB | Pin time range | Pin physical-read range | Generation median | Tail median |
+|---|---:|---:|---:|---:|---:|
+| Photosynthesis | 4543.7 | 0.142–0.796 s | 12.7–637.3 MB | 2.456 tok/s | 2.836 tok/s |
+| SketchUp | 4649.2 | 0.200–1.680 s | 48.6–1016.7 MB | 2.083 tok/s | 2.380 tok/s |
+
+Pinning occurs after generated token 9. The first SketchUp pin operation
+coincided with 17,448 system-wide swapout pages. All swapouts in that arm
+occurred inside this interval. In the third SketchUp arm, 9,456 swapout pages
+occurred outside the pin interval. Compression appeared during every pin.
+The two added VM snapshots cost 23–37 ms per arm, reported separately.
+
+Pin duration is a direct contribution to complete generation time. The
+system-wide VM counters establish concurrent memory activity, not sole
+responsibility for it. Slower tail generation remains beyond the one-time
+pin duration. The -14.67% workload effect stays inside a 16.67% two-SE band.
+
+The next opt-in comparison reduces the broad expert pin set from 32 to 8
+per layer while retaining the current 60-slot slab. The premise is the
+measured 4.65 GB locked set and pin-time memory activity on the current stack.
+It changes no routing arithmetic. Both pin and I/O profiling stay off; prompt,
+token digest, and slab allocation must match. Six reversed 32-token pairs use
+the SketchUp prompt. Actual pinned MB must fall before interpretation. The
+runtime default remains 32 until this comparison is assessed. It has not run.
+
+## Correction to the native DMA interpretation, 2026-09-04
+
+The Issue #45 native probe keeps its raw GPU timings, process-level physical
+read counts, and requested-read levels. Its worker latch is set after the first
+`pread` returns. That event proves that one read completed before the native
+GPU call; it does not prove that physical DMA stayed active throughout the GPU
+interval. The post-GPU flag is narrower: it records only that a read completed
+after the GPU call returned.
+
+The historical table therefore does not prove 100% continuous overlap, zero
+barrier or fence penalty, or a 5-12% bound on fabric contention. The F_NOCACHE
+request and `proc_pid_rusage` count support an observational read-volume record,
+but they do not identify the physical DMA interval for each read. Keep the
+historical numbers as raw measurements and leave Issue #45 unresolved until a
+future probe validates the interval premise. No rerun is claimed here.
+
+The production harness also now resets physical-read counters through
+`on_prefilled`, hard-fails digest mismatches for exact comparisons, and uses a
+matched paired effect for its resolution note. Fresh arms use a new backend and
+private pin-profile snapshot for each arm, while preserving reversed arm order
+at complete round boundaries. Routing-altering comparisons remain explicitly
+exempt from the exact digest gate and require separate quality interpretation.
+
+## Pin comparison interrupted by a source regression, 2026-09-04
+
+The 32-versus-8 pin comparison completed four of six pairs. Round 5 failed
+during prefill with `NameError: name 'requested_slab_pack' is not defined`.
+The storage draft had introduced this constructor-local name into
+`expert_cache._submit_read`. Its unprofiled branch requires an unconditional
+`else`. We restored that branch and added a focused submission regression check.
+
+We coordinated the repair with Reviewer while the broader runtime review
+finished. No tests or benchmarks ran during the repair. AST parsing and
+whitespace checks passed. The four saved pairs remain incomplete and must not
+be combined with new arms from the revised runtime.
+
+The chat comparison now checks a repository runtime-source fingerprint before
+and after each arm. It saves planned rounds, explicit run status, and bounded
+failure output through atomic JSON writes. A source change stops the comparison
+and prevents a completed summary. A fresh comparison requires stable runtime
+sources and focused validation first.

@@ -46,6 +46,9 @@ def env_setter(key, attribute=None):
         store = getattr(backend, "store", None)
         if attribute and store is not None:
             setattr(store, attribute, value)
+            if attribute == "_read_mode":
+                store._flashnext_requested_read_mode = value
+                store._flashnext_read_mode_forced = None
     return setter
 
 
@@ -61,6 +64,21 @@ def integer(raw):
     return int(raw)
 
 
+def positive_integer(raw):
+    value = int(raw)
+    if value <= 0:
+        raise ValueError("value must be positive")
+    return value
+
+
+def read_mode(raw):
+    value = str(raw)
+    options = ("pread", "preadv", "resident", "shared_mmap", "hybrid")
+    if value not in options:
+        raise ValueError(f"read-mode must be one of: {', '.join(options)}")
+    return value
+
+
 SETTINGS = (
     Setting("metal-runtime", ("FLASHNEXT_METAL_RUNTIME",), "0", choice(("0", "1"), "metal-runtime"), "live", "runtime", "public", "flashnext", live_env_reader("FLASHNEXT_METAL_RUNTIME", "0"), env_setter("FLASHNEXT_METAL_RUNTIME"), lambda _b: os.environ.get("FLASHNEXT_METAL_RUNTIME", "0") == "1", None, "FLASHNEXT_METAL_RUNTIME", __file__),
     Setting("slab-global", ("FLASHNEXT_SLAB_GLOBAL",), 0, integer, "startup", "storage", "public", "flashnext", env_reader("FLASHNEXT_SLAB_GLOBAL", 0, integer), None, lambda _b: True, None, "FLASHNEXT_SLAB_GLOBAL", __file__),
@@ -70,9 +88,9 @@ SETTINGS = (
     Setting("fused-shared-parts", ("FLASHNEXT_FUSED_SHARED_PARTS",), "0", choice(("0", "1"), "fused-shared-parts"), "startup", "runtime", "public", "flashnext", env_reader("FLASHNEXT_FUSED_SHARED_PARTS", "0"), None, env_active("FLASHNEXT_FUSED_SHARED_PARTS"), None, "FLASHNEXT_FUSED_SHARED_PARTS", __file__),
     Setting("fused-up-swiglu", ("FLASHNEXT_FUSED_UP_SWIGLU",), "0", choice(("0", "1"), "fused-up-swiglu"), "startup", "runtime", "public", "flashnext", env_reader("FLASHNEXT_FUSED_UP_SWIGLU", "0"), None, env_active("FLASHNEXT_FUSED_UP_SWIGLU"), None, "FLASHNEXT_FUSED_UP_SWIGLU", __file__),
     Setting("stream-pack", ("FLASHNEXT_STREAM_PACK",), "0", str, "startup", "storage", "public", "flashnext", env_reader("FLASHNEXT_STREAM_PACK", "0"), None, lambda _b: True, None, "FLASHNEXT_STREAM_PACK", __file__),
-    Setting("pread-chunk", ("FLASHNEXT_PREAD_CHUNK",), 2, integer, "live", "storage", "public", "flashnext", store_reader("_pread_chunk", "FLASHNEXT_PREAD_CHUNK", 2, integer), env_setter("FLASHNEXT_PREAD_CHUNK", "_pread_chunk"), lambda _b: True, None, "FLASHNEXT_PREAD_CHUNK", __file__),
+    Setting("pread-chunk", ("FLASHNEXT_PREAD_CHUNK",), 2, positive_integer, "live", "storage", "public", "flashnext", store_reader("_pread_chunk", "FLASHNEXT_PREAD_CHUNK", 2, positive_integer), env_setter("FLASHNEXT_PREAD_CHUNK", "_pread_chunk"), lambda _b: True, None, "FLASHNEXT_PREAD_CHUNK", __file__),
     Setting("io-workers", ("FLASHNEXT_IO_WORKERS",), 16, integer, "startup", "storage", "public", "flashnext", env_reader("FLASHNEXT_IO_WORKERS", 16, integer), None, lambda _b: True, None, "FLASHNEXT_IO_WORKERS", __file__),
-    Setting("read-mode", ("FLASHNEXT_READ",), "pread", str, "live", "storage", "public", "flashnext", store_reader("_read_mode", "FLASHNEXT_READ", "pread"), env_setter("FLASHNEXT_READ", "_read_mode"), lambda _b: True, None, "FLASHNEXT_READ", __file__),
+    Setting("read-mode", ("FLASHNEXT_READ",), "pread", read_mode, "live", "storage", "public", "flashnext", store_reader("_read_mode", "FLASHNEXT_READ", "pread", read_mode), env_setter("FLASHNEXT_READ", "_read_mode"), lambda _b: True, None, "FLASHNEXT_READ", __file__),
     Setting("model-path", (), "", str, "read-only", "runtime", "public", "flashnext", lambda b: getattr(b, "model_path", ""), None, lambda _b: True, None, None, __file__),
     Setting("session-dir", (), "~/.cache/flashnext/sessions", str, "startup", "runtime", "public", "flashnext", lambda b: getattr(b, "session_dir", "~/.cache/flashnext/sessions"), None, lambda _b: True, None, None, __file__),
     Setting("pinned-bytes", (), 0, int, "read-only", "routing", "public", "flashnext", lambda b: getattr(getattr(b, "routing", None), "pinned_bytes", 0), None, lambda _b: True, None, None, __file__),

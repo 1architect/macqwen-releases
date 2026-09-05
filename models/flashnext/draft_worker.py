@@ -18,7 +18,6 @@ import argparse
 import json
 import os
 import signal
-import sys
 import time
 
 _STOP = [False]

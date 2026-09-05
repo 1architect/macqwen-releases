@@ -11,6 +11,7 @@ def command(config, _result_path: Path) -> list[str]:
     return [
         str(config.python), str(FLASHNEXT / "bench_product_long.py"),
         "--tokens", "256", "--window", "32",
+        "--rounds", "1", "--paths", "current", "--phase", "answer",
     ]
 
 
@@ -25,7 +26,9 @@ def live_parser(line: str) -> dict | None:
             "progress": (
                 f"window {record.get('window', '?')}  "
                 f"ctx {record.get('context_tokens', 0)}  "
-                f"phase {record.get('phase', '?')}"
+                f"phase {record.get('phase', '?')}  "
+                f"think {record.get('thinking_tokens', 0)}  "
+                f"answer {record.get('answer_tokens', 0)}"
             ),
             "gen": record.get("generation_tps"),
             "physical": record.get("physical_mb_token"),
@@ -47,30 +50,33 @@ def interpret(returncode: int, output: str, _arms: list[dict]) -> str:
             continue
         if row.get("type") == "complete":
             records.append(row)
-    if len(records) < 2:
-        return "Incomplete run. Both startup paths must produce a completion record."
-    digests = {row.get("digest") for row in records if row.get("digest")}
-    if len(digests) > 1:
-        return "Observed result: the startup paths produced different token digests."
+    if not records:
+        return "Incomplete run. No long-answer path completed."
+    if len(records) > 1:
+        digests = {row.get("digest") for row in records if row.get("digest")}
+        if len(digests) > 1:
+            return "Observed result: the long-answer paths produced different token digests."
+        return (
+            "Observed result: the single directional long-answer pair completed. "
+            "Inspect every 32-token window. This pair cannot promote a change."
+        )
     return (
-        "Observed result: both startup paths completed. Compare every 32-token "
-        "window for rate decay, physical I/O, slab hits, memory, context, and phase. "
-        "This product horizon has no 32-token baseline or promotion decision."
+        "Observed result: the single long-answer validation completed. Inspect "
+        "every 32-token window. This run cannot promote a performance change."
     )
 
 
 TEST = TestSpec(
-    id="product-long-256",
-    title="256-token product generation windows",
+    id="product-long-answer",
+    title="Single 256-token answer validation",
     category="performance",
     explanation=(
-        "Starts two real chat.sh processes and reports metrics after every "
-        "32-token window of a 256-token generation."
+        "Starts one current-runtime chat process after a closed thinking block. "
+        "It reports metrics after every 32 answer tokens."
     ),
     why=(
-        "The existing 32-token benchmark cannot show route-locality decay. "
-        "This separate product horizon compares normal startup with canonical "
-        "60-slot Frontier 8A startup."
+        "The 32-token comparisons select candidates. This single long answer "
+        "checks sustained behavior without repeating the workload."
     ),
     script=command,
     metrics=(
@@ -79,14 +85,15 @@ TEST = TestSpec(
         "slab hit rate per window",
         "active memory per window",
         "context size per window",
-        "thinking and answer phase counts",
-        "token digest per startup path",
+        "answer phase count",
+        "token digest",
     ),
     controls={
         "horizon": "256 generated tokens",
         "window": "32 generated tokens",
-        "normal": "chat.sh startup with inherited environment",
-        "canonical": "60-slot skew slab pack + Frontier 8A controls",
+        "path": "current 60-slot Frontier 8A plus Up-QMV/SwiGLU",
+        "phase": "answer from a closed thinking block",
+        "rounds": "one; long runs never provide promotion statistics",
         "decode": "greedy",
         "digest": "required",
         "quality": "user via chat.sh, sampling and xhigh",

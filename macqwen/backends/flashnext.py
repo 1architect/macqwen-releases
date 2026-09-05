@@ -153,6 +153,10 @@ class FlashNextBackend(Conversation):
         self.reasoning_effort = "medium"
         self.think_budget = 0
         self.answer_budget = 0
+        # Interactive chat enables separate reasoning and answer quotas for
+        # this turn. Direct API and benchmark calls leave this unset, so their
+        # max_tokens value remains one total generation ceiling.
+        self._interactive_budgets = None
         self._store = None
         self._decoder = None
         self._fused_pending = routing_profile == "fused-quality"
@@ -245,7 +249,7 @@ class FlashNextBackend(Conversation):
         try:
             summary = self._sessions().save(
                 name, self.cache, self.tape, not self.tape,
-                self.thinking_enabled)
+                self.thinking_enabled, self.turn_closed)
         except (OSError, SessionError, ValueError) as exc:
             return f"could not save session: {exc}"
         return (f"saved {summary.name}  {summary.cached_tokens} tokens, "
@@ -271,7 +275,11 @@ class FlashNextBackend(Conversation):
         self.cache = loaded.cache
         self.tape = list(loaded.token_ids)
         self.pending = []
-        self.turn_closed = True
+        self.turn_closed = loaded.turn_closed
+        # A loaded snapshot contains only the target cache. Drop any draft
+        # decoder from the previous live turn before the next generation.
+        self._decoder = None
+        self._fused_pending = self.routing_profile == "fused-quality" and not self.tape
         self.thinking_enabled = loaded.thinking
         self.language._position_ids = loaded.position_ids
         self.language._rope_deltas = loaded.rope_deltas
@@ -392,8 +400,40 @@ class FlashNextBackend(Conversation):
 
         if not self.pending:
             return "", Stats(finish="stop")
+        interactive_budgets = getattr(self, "_interactive_budgets", None)
+        budget_answer = budget_think = 0
+        close_token = None
+        if interactive_budgets is not None:
+            budget_answer, budget_think = interactive_budgets
+            budget_answer = max(0, int(budget_answer))
+            budget_think = (
+                None if budget_think is None else max(0, int(budget_think))
+            )
+            if self.thinking_enabled and budget_think is not None:
+                close_ids = self.encode("</think>")
+                if len(close_ids) != 1:
+                    raise ValueError(
+                        "interactive reasoning closure must encode as one token"
+                    )
+                close_token = int(close_ids[0])
+        separate_budgets = (
+            interactive_budgets is not None
+            and self.thinking_enabled
+            and budget_think is not None
+            and budget_think > 0
+        )
         decoder = self._decoder
-        if decoder is None and self.routing_profile == "fused-quality":
+        if separate_budgets and decoder is not None:
+            # The fused draft path has no phase callback. Use the standard
+            # target decoder for interactive turns with separate quotas.
+            self.cache = decoder.target_cache
+            self._decoder = None
+            decoder = None
+        if (
+            decoder is None
+            and self.routing_profile == "fused-quality"
+            and not separate_budgets
+        ):
             decoder = self._start_fused_decoder()
         ids = mx.array(self.pending)[None]
         prompt_tokens = int(ids.shape[1])
@@ -437,6 +477,17 @@ class FlashNextBackend(Conversation):
         if on_prefilled is not None:
             on_prefilled()
         produced, partial, pieces = [], [], []
+        budget_state = (
+            {
+                "phase": "thinking" if self.thinking_enabled else "answer",
+                "thinking": 0,
+                "answer": 0,
+                "answer_limited": False,
+                "stop_seen": False,
+                "forced_close": False,
+            }
+            if interactive_budgets is not None else None
+        )
         tail_began = None
         tail_index = 0
         timer = DecodeTimer()
@@ -451,8 +502,27 @@ class FlashNextBackend(Conversation):
             nonlocal token
             for _index in range(max_tokens):
                 value = int(token.item())
+                force_close = (
+                    budget_state is not None
+                    and budget_state["phase"] == "thinking"
+                    and budget_think is not None
+                    and budget_think > 0
+                    and budget_state["thinking"] == budget_think - 1
+                )
                 if value in self.stops:
+                    if budget_state is not None:
+                        budget_state["stop_seen"] = True
                     return
+                if force_close:
+                    value = close_token
+                    token = mx.array([value], dtype=mx.uint32)
+                if budget_state is not None:
+                    phase = budget_state["phase"]
+                    if phase == "answer" and budget_state["answer"] >= budget_answer:
+                        budget_state["answer_limited"] = True
+                        return
+                if budget_state is not None:
+                    budget_state["forced_close"] = force_close
                 yield value
                 sampler.observe(value)
                 step = self.language(token[None], cache=self.cache)
@@ -473,7 +543,19 @@ class FlashNextBackend(Conversation):
                     # Token warmup+1 was generated before pinning. The next
                     # model call produces the first pinned-tail output.
                     tail_index = len(produced)
-                piece = stream_decode(self.tokenizer, partial, value)
+                if budget_state is not None and budget_state["forced_close"]:
+                    prefix = self.tokenizer.decode(partial) if partial else ""
+                    partial.clear()
+                    piece = prefix + "</think>"
+                else:
+                    piece = stream_decode(self.tokenizer, partial, value)
+                if budget_state is not None:
+                    phase = budget_state["phase"]
+                    budget_state[phase] += 1
+                    if phase == "thinking" and (
+                        budget_state["forced_close"] or "</think>" in piece
+                    ):
+                        budget_state["phase"] = "answer"
                 if on_decode_token is not None:
                     on_decode_token(value, piece)
                 if not piece:
@@ -482,9 +564,17 @@ class FlashNextBackend(Conversation):
                 if out is not None:
                     with timer.emitting():
                         out(piece)
-            if len(produced) < max_tokens:
+            if budget_state is not None and budget_state["answer_limited"]:
+                finish = "length"
+                self.turn_closed = False
+            elif budget_state is not None and budget_state["stop_seen"]:
+                # Stop IDs are protocol delimiters. We leave them out of the
+                # tape and close the turn synthetically on the next append.
                 finish = "stop"
-                self.turn_closed = True
+                self.turn_closed = False
+            elif len(produced) < max_tokens:
+                finish = "stop"
+                self.turn_closed = False
             else:
                 self.turn_closed = False
         finally:
@@ -495,7 +585,7 @@ class FlashNextBackend(Conversation):
 
         tail_tokens = len(produced) - tail_index if tail_began is not None else 0
         tail_seconds = timer.since(tail_began) if tail_began is not None else 0.0
-        return "".join(pieces), Stats(
+        stats = Stats(
             finish=finish, tokens=len(produced), seconds=timer.elapsed(),
             prompt_tokens=prompt_tokens, prefill_seconds=prefill_seconds,
             tail_tokens=tail_tokens, tail_seconds=tail_seconds,
@@ -503,3 +593,5 @@ class FlashNextBackend(Conversation):
             pinned_bytes=self.routing.pinned_bytes,
             pinned_signature=self.routing.pinned_signature,
         )
+        text = "".join(pieces)
+        return text, stats

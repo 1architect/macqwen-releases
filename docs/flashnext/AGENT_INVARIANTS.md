@@ -9,9 +9,10 @@ changes or experiments.
 - Keep the canonical control path unchanged unless a measured result promotes
   an opt-in path.
 - Make every optimization opt-in until it passes the promotion rules below.
-- Keep the current standard profile frozen at 60 skew-slots with Frontier 8A.
-- Keep Frontier 8B, streamed expert-major records, and Up-QMV-to-SwiGLU fusion
-  disabled by default.
+- Preserve two controls. The historical control is 60 skew slots with
+  Frontier 8A and Up-QMV-to-SwiGLU off. The current runtime control uses the
+  same settings with Up-QMV-to-SwiGLU on, following the user's decision.
+- Keep Frontier 8B and streamed expert-major records disabled by default.
 - Preserve the exact token digest. Any digest change rejects the optimization.
 - Preserve BF16 rounding boundaries. A small numerical difference is not an
   acceptable quality result.
@@ -76,6 +77,15 @@ memory pressure, and GPU utilization. Treat any duration change as a separate
 experiment with its own baseline. Report token-level or block-level metrics
 when the harness provides them.
 
+Treat every 256-token product test as a separate horizon. It never replaces
+or redefines either 32-token control.
+Run one long answer arm per selected path. Long runs are directional validation
+only. They never supply promotion statistics or repeat the short-arm protocol.
+
+Keep the losing full `physical-miss` replacement unavailable. The guarded
+`physical-miss-hybrid` must preserve the canonical 48-slot core, pass its
+20 MB/token offline premise gate, and change only the 12 extension slots.
+
 Resolution bands above 8–10% are environmentally unresolved for small-effect
 decisions. A 17%, 28.6%, or 32.4% band cannot establish a 1–5% gain. Do not
 claim such a result as resolved. Report the evidence and let the user decide
@@ -89,8 +99,9 @@ enablement, promotion, and defaults.
    positioned-read time, total I/O wait, physical MB/token, and generation.
 3. Test one task per expert only if the worker sweep supports a scheduling or
    queue hypothesis. Keep all other topology variables fixed.
-4. Build physical-miss attribution for the next slab allocator. A route trace
-   alone cannot prove that a request caused physical storage traffic.
-5. Keep 60 slots and Frontier 8A frozen as the canonical profile.
+4. Calibrate the 48-slot core, then run the offline physical-miss ceiling gate.
+   Do not run the hybrid model comparison below 20 MB/token predicted saving.
+5. Keep both 60-slot Frontier 8A controls frozen. Historical has Up fusion
+   off. Current runtime has Up fusion on.
 
 Do not run benchmarks, sweeps, or tests without explicit user permission.

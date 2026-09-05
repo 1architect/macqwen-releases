@@ -12,11 +12,12 @@ rewriting a 20 MB cache buffer.
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -33,12 +34,17 @@ from .slab_pack import (
     GATE_SCALES_OFFSET,
     GATE_WEIGHT_OFFSET,
     RECORD_STRIDE,
+    validate_slab_allocation,
     UP_BIASES_OFFSET,
     UP_SCALES_OFFSET,
     UP_WEIGHT_OFFSET,
 )
 from .store import SafeTensorStore, begin_read_profile, finish_read_profile
-from .physical_miss import allocate_physical_miss_slots, load_profile
+from .physical_miss import (
+    allocate_physical_miss_hybrid_slots,
+    last_hybrid_summary,
+    load_profile,
+)
 
 
 _POOL = ThreadPoolExecutor(
@@ -174,6 +180,8 @@ _TIMERS = {
     "critical_pread": 0.0,
     "critical_task_overhead": 0.0,
     "completion_overhead": 0.0,
+    "layer_completion_sum": 0.0,
+    "layer_completion_count": 0,
 }
 
 
@@ -351,6 +359,8 @@ def _record_read_timing(timings, wait_started, wait_ended) -> None:
         for started, ended in critical.pread_intervals
     )
     wait = max(0.0, wait_ended - wait_started)
+    _TIMERS["layer_completion_sum"] += wait
+    _TIMERS["layer_completion_count"] += 1
     _TIMERS["critical_queue"] += queue
     _TIMERS["critical_pread"] += pread
     _TIMERS["critical_task_overhead"] += max(0.0, service - pread)
@@ -363,15 +373,6 @@ def set_metal_runtime(enabled: bool) -> None:
 
 def metal_runtime() -> bool:
     return os.environ.get("FLASHNEXT_METAL_RUNTIME") == "1"
-
-# Reading whole tensors instead of gathering rows was measured and rejected.
-# The arithmetic looked right (a scattered gather runs ~900 MB/s, a sequential
-# one ~2.5 GB/s, crossing near 185 experts), but on a 93-token prefill it ran
-# 208 s against 124.6 s for the gather. Two reasons the model missed: a prefill
-# routes about 400 distinct experts, not 512, so bulk reads 28% more bytes than
-# it needs; and 943 MB per layer evicts the page cache that later layers want.
-# Set FLASHNEXT_BULK to a threshold to experiment.
-_BULK_ABOVE = int(os.environ.get("FLASHNEXT_BULK", 1 << 30))
 
 # Rows per read. A gather's throughput collapses once its output buffer gets
 # large: measured at 16 workers, 1027 MB/s for 10 rows, 1205 MB/s for 96, and
@@ -546,6 +547,119 @@ class _SharedRead:
         return self
 
 
+class _ExpertGroupRead:
+    """One pool task per expert, with three projection reads in that task.
+
+    The result keeps the existing projection-major shape. This makes the
+    topology experiment change only task grouping, not destination layout or
+    the requested rows.
+    """
+
+    __slots__ = ("futures", "chunks")
+
+    def __init__(self, futures, chunks):
+        self.futures = futures
+        self.chunks = chunks
+
+    def wait(self, timings=None):
+        for future in self.futures:
+            _resolve_future(future, timings)
+        return self.chunks
+
+
+def io_task_topology() -> str:
+    """Return the experimental read-task grouping.
+
+    ``projection`` is the production topology. ``expert`` is diagnostic and
+    groups the three projection reads for one expert into one pool task.
+    """
+    value = os.environ.get("FLASHNEXT_IO_TASK_TOPOLOGY", "projection")
+    return value if value in {"projection", "expert"} else "projection"
+
+
+def _submit_expert_group(projections, experts):
+    """Submit one task per expert into the control's destination buffers.
+
+    In the production pread path, each projection and part owns one full
+    destination buffer while chunk-2 controls only submission boundaries. The
+    grouped diagnostic uses that same shape and buffer count, then changes
+    only which task performs each chunk's row writes.
+    """
+    chunks = []
+    modes = []
+    for projection in projections:
+        projection_chunks = []
+        projection_modes = []
+        for part in _PARTS:
+            store = projection.cache.store
+            mode = store._read_mode
+            if mode == "hybrid":
+                mode = (
+                    "shared_mmap"
+                    if len(experts) <= store._hybrid_cutoff
+                    else "pread"
+                )
+            if mode == "mixed":
+                mode = "pread" if part == "weight" else "shared_mmap"
+            chunk = len(experts) if shared_buffer(mode) else (
+                store._pread_chunk
+                if mode in ("pread", "preadv", "resident")
+                else _CHUNK
+            )
+            buffers = [
+                store.empty_rows(
+                    f"{projection.cache.prefix}.{part}",
+                    min(chunk, len(experts) - start),
+                )
+                for start in range(0, len(experts), chunk)
+            ]
+            projection_chunks.append(buffers)
+            projection_modes.append(mode)
+        chunks.append(projection_chunks)
+        modes.append(projection_modes)
+
+    futures = []
+    for index, expert in enumerate(experts):
+        calls = []
+        for projection_index, projection in enumerate(projections):
+            for part_index, part in enumerate(_PARTS):
+                store = projection.cache.store
+                mode = modes[projection_index][part_index]
+                buffers = chunks[projection_index][part_index]
+                chunk_size = len(experts) if shared_buffer(mode) else (
+                    store._pread_chunk
+                    if mode in ("pread", "preadv", "resident")
+                    else _CHUNK
+                )
+                chunk_index = index // max(1, chunk_size)
+                offset = index % max(1, chunk_size)
+                calls.append(
+                    (
+                        store.rows_into,
+                        f"{projection.cache.prefix}.{part}",
+                        [expert],
+                        buffers[chunk_index][offset:offset + 1],
+                        mode,
+                    )
+                )
+
+        def read_group(calls=calls):
+            return tuple(
+                function(name, rows, destination, mode)
+                for function, name, rows, destination, mode in calls
+            )
+
+        futures.append(_submit_read(read_group))
+    return _ExpertGroupRead(futures, chunks)
+
+
+def submit_projection_tasks(projections, experts):
+    """Submit the selected topology while preserving destination layout."""
+    if io_task_topology() == "expert" and experts:
+        return _submit_expert_group(projections, experts)
+    return [projection.cache.submit(experts, False) for projection in projections]
+
+
 class ExpertLRU:
     """Per-projection reader for routed expert rows.
 
@@ -694,6 +808,13 @@ def _await_read(pending, timings=None):
     ]
 
 
+def _await_projection_tasks(pending, timings=None):
+    """Resolve either projection-major or expert-grouped read tasks."""
+    if isinstance(pending, _ExpertGroupRead):
+        return pending.wait(timings)
+    return [_await_read(futures, timings) for futures in pending]
+
+
 def build_plan(indices):
     """Resolve routed experts to cache slots. Costs one host sync; share it."""
     flat = indices.reshape(-1)
@@ -762,23 +883,108 @@ class StreamingSwitchLinear(nn.Module):
 
 def get_hot_slab_experts(layer_id: int, count: int) -> List[int]:
     """Retrieve top hot experts for a layer from the persistent profile cache."""
-    pin_file = os.path.expanduser(
+    data = _load_pin_profile()
+    if data is None or count <= 0:
+        return []
+    ranked_scores = data["ranked_scores"].get(str(layer_id))
+    if ranked_scores:
+        return [int(exp) for exp, _score in ranked_scores[:count]]
+    layers_data = data["layers"].get(str(layer_id), [])
+    if layers_data:
+        return [int(x) for x in layers_data[:count]]
+    return []
+
+
+def _pin_profile_path() -> str:
+    return os.path.expanduser(
         os.environ.get("FLASHNEXT_PIN_CACHE", "~/.cache/flashnext/pins.json")
     )
-    if not os.path.isfile(pin_file) or count <= 0:
-        return []
+
+
+def _load_pin_profile() -> dict | None:
+    """Load the pin profile, distinguishing absence from corruption."""
+    pin_file = _pin_profile_path()
+    if not os.path.isfile(pin_file):
+        return None
     try:
-        with open(pin_file, "r") as f:
-            data = json.load(f)
-        ranked_scores = data.get("ranked_scores", {}).get(str(layer_id))
-        if ranked_scores:
-            return [int(exp) for exp, _score in ranked_scores[:count]]
-        layers_data = data.get("layers", {}).get(str(layer_id), [])
-        if layers_data:
-            return [int(x) for x in layers_data[:count]]
-    except Exception:
-        pass
-    return []
+        with open(pin_file, "r") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"invalid FlashNext pin profile {pin_file}: {error}") from error
+    if not isinstance(data, dict):
+        raise ValueError(f"invalid FlashNext pin profile {pin_file}: expected an object")
+    normalized = dict(data)
+    for field in ("layers", "ranked_scores", "ranked_counts"):
+        value = data.get(field, {})
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"invalid FlashNext pin profile {pin_file}: {field} must be an object"
+            )
+        normalized[field] = value
+    for field in ("layers", "ranked_scores", "ranked_counts"):
+        clean = {}
+        for layer, values in normalized[field].items():
+            try:
+                layer_id = int(layer)
+                if layer_id < 0 or str(layer_id) in clean:
+                    raise ValueError
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"invalid FlashNext pin profile {pin_file}: {field}/{layer}"
+                ) from error
+            clean[str(layer_id)] = values
+        normalized[field] = clean
+    for layer, values in normalized["layers"].items():
+        if not isinstance(values, list):
+            raise ValueError(f"invalid FlashNext pin profile {pin_file}: layers/{layer}")
+        seen = set()
+        for expert in values:
+            try:
+                expert_id = int(expert)
+                if expert_id < 0 or expert_id in seen:
+                    raise ValueError
+                seen.add(expert_id)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"invalid FlashNext pin profile {pin_file}: layers/{layer}"
+                ) from error
+    for field in ("ranked_scores", "ranked_counts"):
+        for layer, values in normalized[field].items():
+            if not isinstance(values, list):
+                raise ValueError(f"invalid FlashNext pin profile {pin_file}: {field}/{layer}")
+            seen = set()
+            clean = []
+            for pair in values:
+                if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                    raise ValueError(
+                        f"invalid FlashNext pin profile {pin_file}: {field}/{layer}"
+                    )
+                try:
+                    expert_id = int(pair[0])
+                    score = float(pair[1])
+                    if expert_id < 0 or expert_id in seen or not math.isfinite(score):
+                        raise ValueError
+                    seen.add(expert_id)
+                    clean.append((expert_id, score))
+                except (TypeError, ValueError) as error:
+                    raise ValueError(
+                        f"invalid FlashNext pin profile {pin_file}: {field}/{layer}"
+                    ) from error
+            normalized[field][layer] = clean
+    return normalized
+
+
+def _pin_profile_signature() -> tuple:
+    """Return a cheap cache key that changes when the pin profile changes."""
+    path = _pin_profile_path()
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return (path, None)
+    return (
+        path, stat.st_dev, stat.st_ino, stat.st_size,
+        stat.st_mtime_ns, stat.st_ctime_ns,
+    )
 
 
 _GLOBAL_SLAB_CACHE: Dict[Any, Dict[int, List[int]]] = {}
@@ -790,7 +996,7 @@ def get_physical_miss_slab_allocation(
     max_slots: int = 6,
     num_layers: int = 12,
 ) -> Dict[int, List[int]]:
-    """Read long-run physical-miss evidence for the opt-in slab probe."""
+    """Read evidence for the guarded physical-miss hybrid probe."""
     profile_path = os.environ.get(
         "FLASHNEXT_PHYSICAL_MISS_PROFILE", "~/.cache/flashnext/physical-misses.json"
     )
@@ -801,14 +1007,26 @@ def get_physical_miss_slab_allocation(
             "physical-miss slab policy needs a valid measured profile at "
             f"{os.path.expanduser(profile_path)}: {error}"
         ) from error
-    return allocate_physical_miss_slots(
+    # Import lazily to keep the module's existing model boundary unchanged.
+    canonical = get_skew_slab_allocation(
+        total_slots,
+        min_slots=min_slots,
+        max_slots=max_slots,
+        num_layers=num_layers,
+    )
+    if not canonical:
+        raise RuntimeError("physical-miss hybrid needs a canonical skew allocation")
+    allocation = allocate_physical_miss_hybrid_slots(
         profile,
+        canonical,
         total_slots,
         min_slots=min_slots,
         max_slots=max_slots,
         num_layers=num_layers,
         min_samples=int(os.environ.get("FLASHNEXT_PHYSICAL_MISS_MIN_SAMPLES", "1")),
+        require_core_calibration=True,
     )
+    return allocation
 
 
 def get_global_slab_allocation(total_slots: int, min_slots: int = 1) -> Dict[int, List[int]]:
@@ -821,83 +1039,76 @@ def get_global_slab_allocation(total_slots: int, min_slots: int = 1) -> Dict[int
     if total_slots <= 0:
         return {}
     min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", str(min_slots)))
-    cache_key = (total_slots, min_slots)
+    cache_key = ("global", _pin_profile_signature(), total_slots, min_slots)
     if cache_key in _GLOBAL_SLAB_CACHE:
         return _GLOBAL_SLAB_CACHE[cache_key]
-    pin_file = os.path.expanduser(
-        os.environ.get("FLASHNEXT_PIN_CACHE", "~/.cache/flashnext/pins.json")
-    )
-    if not os.path.isfile(pin_file):
+    data = _load_pin_profile()
+    if data is None:
         return {}
-    try:
-        with open(pin_file, "r") as f:
-            data = json.load(f)
-        ranked = data.get("ranked_scores", {})
-        if ranked:
-            if min_slots <= 1:
-                all_candidates = []
-                for l_str, pairs in ranked.items():
-                    l_idx = int(l_str)
-                    for exp, score in pairs:
-                        all_candidates.append((float(score), l_idx, int(exp)))
-                if all_candidates:
-                    all_candidates.sort(key=lambda x: x[0], reverse=True)
-                    allocation: Dict[int, List[int]] = {}
-                    for _, l_idx, exp in all_candidates[:total_slots]:
-                        allocation.setdefault(l_idx, []).append(exp)
-                    _GLOBAL_SLAB_CACHE[cache_key] = allocation
-                    return allocation
-
-            # Score each layer by the sum of its top min_slots experts
-            layer_scores = []
+    ranked = data["ranked_scores"]
+    if ranked:
+        if min_slots <= 1:
+            all_candidates = []
             for l_str, pairs in ranked.items():
                 l_idx = int(l_str)
-                s = sum(float(score) for _, score in pairs[:min_slots])
-                layer_scores.append((s, l_idx))
-            layer_scores.sort(reverse=True)
+                for exp, score in pairs:
+                    all_candidates.append((float(score), l_idx, int(exp)))
+            if all_candidates:
+                all_candidates.sort(key=lambda x: x[0], reverse=True)
+                allocation: Dict[int, List[int]] = {}
+                for _, l_idx, exp in all_candidates[:total_slots]:
+                    allocation.setdefault(l_idx, []).append(exp)
+                _GLOBAL_SLAB_CACHE[cache_key] = allocation
+                return allocation
 
-            k = max(1, total_slots // max(1, min_slots))
-            selected = [l_idx for _, l_idx in layer_scores[:k]]
-
-            allocation: Dict[int, List[int]] = {}
-            for l_idx in selected:
-                pairs = ranked.get(str(l_idx), [])
-                allocation[l_idx] = [int(exp) for exp, _ in pairs[:min_slots]]
-
-            # Remainder slots distributed greedily by next highest score
-            rem = total_slots - sum(len(v) for v in allocation.values())
-            for _ in range(rem):
-                best_l, best_s, best_e = -1, -1.0, -1
-                for l_idx in selected:
-                    curr_cnt = len(allocation[l_idx])
-                    pairs = ranked.get(str(l_idx), [])
-                    if curr_cnt < len(pairs):
-                        cand_e, cand_s = pairs[curr_cnt]
-                        if float(cand_s) > best_s:
-                            best_s = float(cand_s)
-                            best_l = l_idx
-                            best_e = int(cand_e)
-                if best_l >= 0:
-                    allocation[best_l].append(best_e)
-
-            _GLOBAL_SLAB_CACHE[cache_key] = allocation
-            return allocation
-        # Fallback to layers if ranked_scores is empty
-        layers = data.get("layers", {})
-        allocation = {}
-        slots_left = total_slots
-        for l_str, experts in layers.items():
-            if slots_left <= 0:
-                break
+        # Score each layer by the sum of its top min_slots experts
+        layer_scores = []
+        for l_str, pairs in ranked.items():
             l_idx = int(l_str)
-            take = [int(e) for e in experts[:slots_left]]
-            if take:
-                allocation[l_idx] = take
-                slots_left -= len(take)
+            s = sum(float(score) for _, score in pairs[:min_slots])
+            layer_scores.append((s, l_idx))
+        layer_scores.sort(reverse=True)
+
+        k = max(1, total_slots // max(1, min_slots))
+        selected = [l_idx for _, l_idx in layer_scores[:k]]
+
+        allocation: Dict[int, List[int]] = {}
+        for l_idx in selected:
+            pairs = ranked.get(str(l_idx), [])
+            allocation[l_idx] = [int(exp) for exp, _ in pairs[:min_slots]]
+
+        # Remainder slots distributed greedily by next highest score
+        rem = total_slots - sum(len(v) for v in allocation.values())
+        for _ in range(rem):
+            best_l, best_s, best_e = -1, -1.0, -1
+            for l_idx in selected:
+                curr_cnt = len(allocation[l_idx])
+                pairs = ranked.get(str(l_idx), [])
+                if curr_cnt < len(pairs):
+                    cand_e, cand_s = pairs[curr_cnt]
+                    if float(cand_s) > best_s:
+                        best_s = float(cand_s)
+                        best_l = l_idx
+                        best_e = int(cand_e)
+            if best_l >= 0:
+                allocation[best_l].append(best_e)
+
         _GLOBAL_SLAB_CACHE[cache_key] = allocation
         return allocation
-    except Exception:
-        return {}
+    # Fallback to layers if ranked_scores is empty
+    layers = data["layers"]
+    allocation = {}
+    slots_left = total_slots
+    for l_str, experts in layers.items():
+        if slots_left <= 0:
+            break
+        l_idx = int(l_str)
+        take = [int(e) for e in experts[:slots_left]]
+        if take:
+            allocation[l_idx] = take
+            slots_left -= len(take)
+    _GLOBAL_SLAB_CACHE[cache_key] = allocation
+    return allocation
 
 
 def get_skew_slab_allocation(
@@ -917,62 +1128,57 @@ def get_skew_slab_allocation(
     min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", str(min_slots)))
     max_slots = int(os.environ.get("FLASHNEXT_SLAB_MAX_SLOTS", str(max_slots)))
     num_layers = int(os.environ.get("FLASHNEXT_SLAB_NUM_LAYERS", str(num_layers)))
-    cache_key = ("skew", total_slots, min_slots, max_slots, num_layers)
+    cache_key = (
+        "skew", _pin_profile_signature(), total_slots, min_slots, max_slots,
+        num_layers,
+    )
     if cache_key in _GLOBAL_SLAB_CACHE:
         return _GLOBAL_SLAB_CACHE[cache_key]
 
-    pin_file = os.path.expanduser(
-        os.environ.get("FLASHNEXT_PIN_CACHE", "~/.cache/flashnext/pins.json")
-    )
-    if not os.path.isfile(pin_file):
+    data = _load_pin_profile()
+    if data is None:
         return {}
-    try:
-        with open(pin_file, "r") as f:
-            data = json.load(f)
-        # Prefer ranked_counts if present, fallback to ranked_scores
-        ranked = data.get("ranked_counts") or data.get("ranked_scores", {})
-        if not ranked:
-            return get_global_slab_allocation(total_slots, min_slots=min_slots)
+    # Prefer ranked_counts if present, fallback to ranked_scores
+    ranked = data["ranked_counts"] or data["ranked_scores"]
+    if not ranked:
+        return get_global_slab_allocation(total_slots, min_slots=min_slots)
 
-        # Score each layer by the sum of its top min_slots candidates
-        layer_scores = []
-        for l_str, pairs in ranked.items():
-            l_idx = int(l_str)
-            s = sum(float(score) for _, score in pairs[:min_slots])
-            layer_scores.append((s, l_idx))
-        layer_scores.sort(reverse=True)
+    # Score each layer by the sum of its top min_slots candidates
+    layer_scores = []
+    for l_str, pairs in ranked.items():
+        l_idx = int(l_str)
+        s = sum(float(score) for _, score in pairs[:min_slots])
+        layer_scores.append((s, l_idx))
+    layer_scores.sort(reverse=True)
 
-        k = min(num_layers, max(1, total_slots // max(1, min_slots)))
-        selected = [l_idx for _, l_idx in layer_scores[:k]]
+    k = min(num_layers, max(1, total_slots // max(1, min_slots)))
+    selected = [l_idx for _, l_idx in layer_scores[:k]]
 
-        allocation: Dict[int, List[int]] = {}
+    allocation: Dict[int, List[int]] = {}
+    for l_idx in selected:
+        pairs = ranked.get(str(l_idx), [])
+        allocation[l_idx] = [int(exp) for exp, _ in pairs[:min_slots]]
+
+    # Distribute remaining slots greedily to highest marginal candidate
+    rem = total_slots - sum(len(v) for v in allocation.values())
+    for _ in range(rem):
+        best_l, best_s, best_e = -1, -1.0, -1
         for l_idx in selected:
+            curr_cnt = len(allocation[l_idx])
+            if curr_cnt >= max_slots:
+                continue
             pairs = ranked.get(str(l_idx), [])
-            allocation[l_idx] = [int(exp) for exp, _ in pairs[:min_slots]]
+            if curr_cnt < len(pairs):
+                cand_e, cand_s = pairs[curr_cnt]
+                if float(cand_s) > best_s:
+                    best_s = float(cand_s)
+                    best_l = l_idx
+                    best_e = int(cand_e)
+        if best_l >= 0:
+            allocation[best_l].append(best_e)
 
-        # Distribute remaining slots greedily to highest marginal candidate
-        rem = total_slots - sum(len(v) for v in allocation.values())
-        for _ in range(rem):
-            best_l, best_s, best_e = -1, -1.0, -1
-            for l_idx in selected:
-                curr_cnt = len(allocation[l_idx])
-                if curr_cnt >= max_slots:
-                    continue
-                pairs = ranked.get(str(l_idx), [])
-                if curr_cnt < len(pairs):
-                    cand_e, cand_s = pairs[curr_cnt]
-                    if float(cand_s) > best_s:
-                        best_s = float(cand_s)
-                        best_l = l_idx
-                        best_e = int(cand_e)
-            if best_l >= 0:
-                allocation[best_l].append(best_e)
-
-        _GLOBAL_SLAB_CACHE[cache_key] = allocation
-        return allocation
-    except Exception:
-        pass
-    return get_global_slab_allocation(total_slots, min_slots=min_slots)
+    _GLOBAL_SLAB_CACHE[cache_key] = allocation
+    return allocation
 
 
 class ResidentSlab:
@@ -1056,42 +1262,25 @@ class StreamingSwitchGLU(nn.Module):
         use_slab_pack = os.environ.get("FLASHNEXT_SLAB_PACK") == "1"
         self.slab_pack = None
         self.slab_expert_to_slot = {}
-        if use_slab_pack and global_budget > 0:
-            from .slab_pack import get_or_create_slab_pack
-
-            alloc = getattr(store, "_slab_alloc", None)
-            if alloc is None:
-                policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
-                if policy == "uniform":
-                    alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
-                elif policy == "physical-miss":
-                    alloc = get_physical_miss_slab_allocation(
-                        global_budget, min_slots=min_slots
-                    )
-                else:
-                    alloc = get_skew_slab_allocation(global_budget, min_slots=min_slots)
-                store._slab_alloc = alloc
-            pack = getattr(store, "_slab_pack", None)
-            if pack is None:
-                pack = get_or_create_slab_pack(store, alloc)
-                store._slab_pack = pack
-            self.slab_pack = pack
-            hot = alloc.get(layer_id, [])
-            self.slab_expert_to_slot = {
-                e: self.slab_pack.layer_expert_to_slot[(layer_id, e)]
-                for e in hot
-                if (layer_id, e) in self.slab_pack.layer_expert_to_slot
-            }
-            has_slab = len(self.slab_expert_to_slot) > 0
-            make_slab = None
-        elif global_budget > 0:
+        # Packed slabs require the fixed Q4/G32 layout. Defer pack creation
+        # until the projections expose their actual shapes, so incompatible
+        # checkpoints remain on reference streaming.
+        requested_slab_pack = use_slab_pack and global_budget > 0
+        make_slab = None
+        if not requested_slab_pack and global_budget > 0:
             min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", 4))
             policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
             if policy == "uniform":
                 alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
-            elif policy == "physical-miss":
+            elif policy == "physical-miss-hybrid":
                 alloc = get_physical_miss_slab_allocation(
                     global_budget, min_slots=min_slots
+                )
+                store._slab_alloc_provenance = last_hybrid_summary()
+            elif policy == "physical-miss":
+                raise ValueError(
+                    "physical-miss is historical and unavailable; "
+                    "use physical-miss-hybrid for the guarded probe"
                 )
             else:
                 alloc = get_skew_slab_allocation(global_budget, min_slots=min_slots)
@@ -1099,7 +1288,7 @@ class StreamingSwitchGLU(nn.Module):
             slab_size = len(hot)
             has_slab = slab_size > 0
             make_slab = lambda name: ResidentSlab(store, f"{prefix}.{name}", slab_size, initial_experts=hot) if has_slab else None
-        else:
+        elif not requested_slab_pack:
             slab_size = int(os.environ.get("FLASHNEXT_SLAB", 0))
             max_slab_layer = int(os.environ.get("FLASHNEXT_SLAB_LAYERS", -1))
             has_slab = slab_size > 0 and (max_slab_layer < 0 or (0 <= layer_id < max_slab_layer))
@@ -1117,6 +1306,48 @@ class StreamingSwitchGLU(nn.Module):
         self.down_proj = make("down_proj")
         self.activation = activation
         self._metal_executors = {}
+        self._metal_runtime_capable = self._compute_metal_runtime_capable()
+        self._slab_pack_capable = self._metal_runtime_capable and validate_slab_allocation(
+            store, {layer_id: ()}
+        )
+
+        if requested_slab_pack and self._slab_pack_capable:
+            from .slab_pack import get_or_create_slab_pack
+
+            alloc = getattr(store, "_slab_alloc", None)
+            if alloc is None:
+                policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
+                if policy == "uniform":
+                    alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
+                elif policy == "physical-miss-hybrid":
+                    alloc = get_physical_miss_slab_allocation(
+                        global_budget, min_slots=min_slots
+                    )
+                    store._slab_alloc_provenance = last_hybrid_summary()
+                elif policy == "physical-miss":
+                    raise ValueError(
+                        "physical-miss is historical and unavailable; "
+                        "use physical-miss-hybrid for the guarded probe"
+                    )
+                else:
+                    alloc = get_skew_slab_allocation(global_budget, min_slots=min_slots)
+                store._slab_alloc = alloc
+            # Missing history is expected on first launch. Keep reference
+            # streaming active until a valid allocation becomes available.
+            if alloc and validate_slab_allocation(store, alloc):
+                pack = getattr(store, "_slab_pack", None)
+                if pack is None:
+                    pack = get_or_create_slab_pack(store, alloc)
+                    store._slab_pack = pack
+                self.slab_pack = pack
+                hot = alloc.get(layer_id, [])
+                self.slab_expert_to_slot = {
+                    e: self.slab_pack.layer_expert_to_slot[(layer_id, e)]
+                    for e in hot
+                    if (layer_id, e) in self.slab_pack.layer_expert_to_slot
+                }
+            elif alloc:
+                store._slab_pack_disabled = True
 
     @property
     def metal_combines_scores(self) -> bool:
@@ -1124,7 +1355,61 @@ class StreamingSwitchGLU(nn.Module):
         return (
             os.environ.get("FLASHNEXT_METAL_RUNTIME") == "1"
             and self.layer_id != 0
+            and self._metal_runtime_capable
         )
+
+    @property
+    def metal_runtime_capable(self) -> bool:
+        """Whether this layer matches the custom executor's Q4/G32 contract."""
+        return self._metal_runtime_capable
+
+    def _compute_metal_runtime_capable(self) -> bool:
+        """Check the generic custom executor contract once during setup."""
+        projections = (self.gate_proj, self.up_proj, self.down_proj)
+        if any(
+            projection.group_size != 32
+            or projection.bits != 4
+            or projection.mode != "affine"
+            for projection in projections
+        ):
+            return False
+        gate = self.gate_proj
+        up = self.up_proj
+        down = self.down_proj
+        if gate.num_experts != up.num_experts or gate.num_experts != down.num_experts:
+            return False
+        try:
+            gate_shape = gate.cache.store.shape(f"{gate.cache.prefix}.weight")
+            up_shape = up.cache.store.shape(f"{up.cache.prefix}.weight")
+            down_shape = down.cache.store.shape(f"{down.cache.prefix}.weight")
+            hidden = gate_shape[2] * 8
+            inter = gate.output_dims
+            down_input = down_shape[2] * 8
+        except (IndexError, KeyError, TypeError):
+            return False
+        if (
+            len(gate_shape) != 3
+            or len(up_shape) != 3
+            or len(down_shape) != 3
+            or up_shape[2] * 8 != hidden
+            or inter != up.output_dims
+            or down_input != inter
+            or down.output_dims != hidden
+        ):
+            return False
+        store = gate.cache.store
+        if getattr(store, "refs", None):
+            for projection, shape in (
+                (gate, gate_shape), (up, up_shape), (down, down_shape)
+            ):
+                metadata_shape = (shape[0], shape[1], shape[2] * 8 // 32)
+                for part in ("scales", "biases"):
+                    try:
+                        if tuple(store.shape(f"{projection.cache.prefix}.{part}")) != metadata_shape:
+                            return False
+                    except (IndexError, KeyError, TypeError):
+                        return False
+        return hidden % 32 == 0 and inter % 32 == 0
 
     def prefetch(self, wanted) -> None:
         """Issue this layer's expert reads before the next host sync.
@@ -1153,7 +1438,7 @@ class StreamingSwitchGLU(nn.Module):
         pending = (
             self._submit_stream_pack(wanted)
             if pack is not None and stream_pack_enabled()
-            else [p.cache.submit(wanted, False) for p in projections]
+            else submit_projection_tasks(projections, wanted)
         )
         self._prefetch = (wanted, pending)
 
@@ -1292,7 +1577,7 @@ class StreamingSwitchGLU(nn.Module):
                     elif stream_pack_enabled():
                         pending = self._submit_stream_pack(wanted)
                     else:
-                        pending = [p.cache.submit(wanted, False) for p in projections]
+                        pending = submit_projection_tasks(projections, wanted)
                     if isinstance(pending, _StreamedPackRead):
                         timings = [] if _PROFILE else None
                         began = time.perf_counter()
@@ -1312,10 +1597,7 @@ class StreamingSwitchGLU(nn.Module):
                     elif _PROFILE:
                         timings = []
                         began = time.perf_counter()
-                        raw = [
-                            _await_read(futures, timings)
-                            for futures in pending
-                        ]
+                        raw = _await_projection_tasks(pending, timings)
                         ended = time.perf_counter()
                         _TIMERS["io_wait"] += ended - began
                         _TIMERS["io_calls"] += 1
@@ -1327,9 +1609,10 @@ class StreamingSwitchGLU(nn.Module):
                         ]
                         _TIMERS["to_mx"] += time.perf_counter() - began
                     else:
+                        raw = _await_projection_tasks(pending)
                         weights = [
-                            projection.cache.to_mx(_await_read(futures))
-                            for projection, futures in zip(projections, pending)
+                            projection.cache.to_mx(chunks)
+                            for projection, chunks in zip(projections, raw)
                         ]
                     miss_order = {e: i for i, e in enumerate(wanted)}
                 else:
@@ -1389,8 +1672,12 @@ class StreamingSwitchGLU(nn.Module):
                 if prefetched is not None and prefetched[0] == wanted:
                     pending = prefetched[1]
                 else:
-                    pending = [p.cache.submit(wanted, False) for p in projections]
-                weights = [p.cache.to_mx(_await_read(fs)) for p, fs in zip(projections, pending)]
+                    pending = submit_projection_tasks(projections, wanted)
+                raw = _await_projection_tasks(pending)
+                weights = [
+                    p.cache.to_mx(chunks)
+                    for p, chunks in zip(projections, raw)
+                ]
                 miss_order = {e: i for i, e in enumerate(wanted)}
             else:
                 weights = [
@@ -1506,15 +1793,12 @@ class StreamingSwitchGLU(nn.Module):
             if prefetched is not None and prefetched[0] == wanted:
                 pending = prefetched[1]
             else:
-                pending = [p.cache.submit(wanted, False) for p in projections]
+                pending = submit_projection_tasks(projections, wanted)
             if _PROFILE:
                 timings = []
                 began = time.perf_counter()
                 with hostwindow.window("io_await"):
-                    raw = [
-                        _await_read(futures, timings)
-                        for futures in pending
-                    ]
+                    raw = _await_projection_tasks(pending, timings)
                 ended = time.perf_counter()
                 _TIMERS["io_wait"] += ended - began
                 _TIMERS["io_calls"] += 1
@@ -1531,16 +1815,17 @@ class StreamingSwitchGLU(nn.Module):
                 # window. Production keeps the interleaved form below, so this
                 # reordering never reaches a normal run.
                 with hostwindow.window("io_await"):
-                    raw = [_await_read(fs) for fs in pending]
+                    raw = _await_projection_tasks(pending)
                 with hostwindow.window("to_mx_host"):
                     weights = [
                         p.cache.to_mx(chunks)
                         for p, chunks in zip(projections, raw)
                     ]
             else:
+                raw = _await_projection_tasks(pending)
                 weights = [
-                    p.cache.to_mx(_await_read(fs))
-                    for p, fs in zip(projections, pending)
+                    p.cache.to_mx(chunks)
+                    for p, chunks in zip(projections, raw)
                 ]
 
         issue_began = time.perf_counter() if _PROFILE else 0.0
@@ -1551,8 +1836,6 @@ class StreamingSwitchGLU(nn.Module):
                 and mask is None
                 and flat_input is not None
                 and flat_input.shape[0] <= 8
-                and self.gate_proj.group_size == 32
-                and self.gate_proj.bits == 4
             ):
                 from .metal_runtime import MetalMoEExecutor
 

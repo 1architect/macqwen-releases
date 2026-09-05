@@ -11,11 +11,104 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
 
 from models.qwen27b.settings import get_registry
 
 
 _SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_SESSION_FORMAT = 2
+
+
+def _is_mlx_array(value):
+    return (hasattr(value, "shape") and hasattr(value, "dtype")
+            and hasattr(value, "nbytes"))
+
+
+def _encode_tree(value, tensors, path=()):
+    """Encode nested cache state while keeping arrays in safetensors."""
+    if value is None:
+        return {"type": "none"}
+    if _is_mlx_array(value):
+        key = "t_" + "_".join(str(part) for part in path)
+        if key in tensors:
+            raise ValueError(f"duplicate cache tensor path {key}")
+        tensors[key] = value
+        return {"type": "array", "key": key}
+    if isinstance(value, tuple):
+        return {"type": "tuple", "items": [
+            _encode_tree(item, tensors, path + (index,))
+            for index, item in enumerate(value)
+        ]}
+    if isinstance(value, list):
+        return {"type": "list", "items": [
+            _encode_tree(item, tensors, path + (index,))
+            for index, item in enumerate(value)
+        ]}
+    if isinstance(value, dict):
+        return {"type": "dict", "items": [
+            [str(key), _encode_tree(item, tensors, path + (str(key),))]
+            for key, item in value.items()
+        ]}
+    if isinstance(value, (str, int, float, bool)):
+        return {"type": "value", "value": value}
+    raise TypeError(f"unsupported cache state value {type(value).__name__}")
+
+
+def _decode_tree(node, tensors):
+    if not isinstance(node, dict) or not isinstance(node.get("type"), str):
+        raise ValueError("invalid cache tree node")
+    kind = node["type"]
+    if kind == "none":
+        return None
+    if kind == "array":
+        key = node.get("key")
+        if not isinstance(key, str) or key not in tensors:
+            raise ValueError(f"cache tensor {key!r} is missing")
+        return tensors[key]
+    if kind in ("tuple", "list"):
+        items = node.get("items")
+        if not isinstance(items, list):
+            raise ValueError("invalid cache sequence")
+        values = [_decode_tree(item, tensors) for item in items]
+        return tuple(values) if kind == "tuple" else values
+    if kind == "dict":
+        items = node.get("items")
+        if not isinstance(items, list):
+            raise ValueError("invalid cache mapping")
+        result = {}
+        for item in items:
+            if not isinstance(item, list) or len(item) != 2 or not isinstance(item[0], str):
+                raise ValueError("invalid cache mapping item")
+            result[item[0]] = _decode_tree(item[1], tensors)
+        return result
+    if kind == "value" and isinstance(node.get("value"), (str, int, float, bool)):
+        return node["value"]
+    raise ValueError(f"unsupported cache tree node type {kind!r}")
+
+
+def _cache_config(cache):
+    if type(cache).__name__ != "PagedKVCache":
+        return {}
+    return {
+        "page_size": int(cache.page_size),
+        "top_k_pages": int(cache.top_k_pages),
+        "pinned_pages": int(cache.pinned_pages),
+        "recent_pages": int(cache.recent_pages),
+        "refresh_every": int(cache.refresh_every),
+        "min_context": int(cache.min_context),
+        "resident_pages": int(cache.resident_pages),
+        "gather_decode": bool(cache.gather_decode),
+    }
+
+
+def _cache_state(cache):
+    try:
+        return cache.state
+    except (AttributeError, IndexError, TypeError):
+        if hasattr(cache, "empty") and cache.empty():
+            return None
+        raise ValueError(f"could not read {type(cache).__name__} state")
 
 
 @dataclass
@@ -79,6 +172,7 @@ class FrankensteinBackend:
         }
         self._session_dir = Path(session_dir).expanduser()
         self.thinking_enabled = False
+        self._interactive_budgets = None
         self._startup_settings = {
             "prefill-step-size": prefill_step_size,
             "kv-bits": kv_bits if kv_bits is not None else "off",
@@ -205,12 +299,20 @@ class FrankensteinBackend:
             if out is not None and result.text:
                 out(result.text)
 
-        text, old = self.engine.generate(
-            max_tokens=max_tokens,
-            echo=False,
-            progress=progress,
-            on_token=on_token,
-        )
+        old_budgets = getattr(self.engine, "_interactive_budgets", None)
+        old_thinking = getattr(self.engine, "_thinking_enabled", None)
+        self.engine._interactive_budgets = getattr(self, "_interactive_budgets", None)
+        self.engine._thinking_enabled = getattr(self, "thinking_enabled", False)
+        try:
+            text, old = self.engine.generate(
+                max_tokens=max_tokens,
+                echo=False,
+                progress=progress,
+                on_token=on_token,
+            )
+        finally:
+            self.engine._interactive_budgets = old_budgets
+            self.engine._thinking_enabled = old_thinking
         prefilled()
         prompt_seconds = (
             old.new_prompt_tokens / old.prompt_tps if old.prompt_tps else 0.0
@@ -235,55 +337,259 @@ class FrankensteinBackend:
             )
         return self._session_dir / name
 
+    def _cache_records(self, tensors):
+        records = []
+        for index, cache in enumerate(self.cache):
+            state = _cache_state(cache)
+            try:
+                meta_state = cache.meta_state
+            except AttributeError:
+                meta_state = ""
+            records.append({
+                "class": type(cache).__name__,
+                "state": _encode_tree(state, tensors, (index,)),
+                "meta_state": _encode_tree(meta_state, tensors, ("meta", index)),
+                "config": _cache_config(cache),
+            })
+        return records
+
+    @staticmethod
+    def _atomic_json(path, content):
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent, delete=False,
+                prefix=f".{path.name}.", suffix=".tmp"
+            ) as handle:
+                temporary = Path(handle.name)
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _atomic_safetensors(path, tensors, metadata):
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            import mlx.core as mx
+            mx.save_safetensors(str(temporary), tensors, metadata=metadata)
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _new_cache(self, record, live_cache, tensors):
+        """Construct one supported cache and restore its complete tree."""
+        name = record.get("class")
+        live_name = type(live_cache).__name__
+        compatible = {name, live_name} <= {"KVCache", "QuantizedKVCache"}
+        if name != live_name and not compatible:
+            raise ValueError(
+                f"saved cache type {name!r} does not match {live_name!r}"
+            )
+        state = _decode_tree(record.get("state"), tensors)
+        meta_state = _decode_tree(record.get("meta_state"), tensors)
+        config = record.get("config", {})
+        if not isinstance(config, dict):
+            raise ValueError(f"invalid configuration for {name}")
+
+        from mlx_lm.models.cache import ArraysCache, KVCache, QuantizedKVCache
+
+        if name == "ArraysCache":
+            if not isinstance(state, list):
+                raise ValueError("ArraysCache state must be a list")
+            cache = ArraysCache(size=len(state))
+        elif name == "KVCache":
+            cache = KVCache()
+        elif name == "QuantizedKVCache":
+            if not isinstance(meta_state, (list, tuple)) or len(meta_state) != 3:
+                raise ValueError("QuantizedKVCache metadata is incomplete")
+            try:
+                group_size, bits = int(meta_state[1]), int(meta_state[2])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("QuantizedKVCache metadata is invalid") from exc
+            cache = QuantizedKVCache(group_size=group_size, bits=bits)
+        elif name == "PagedKVCache":
+            from models.qwen27b.paged_kv import PagedKVCache
+
+            allowed = (
+                "page_size", "top_k_pages", "pinned_pages", "recent_pages",
+                "refresh_every", "min_context", "resident_pages", "gather_decode",
+            )
+            if any(key not in config for key in allowed):
+                raise ValueError("PagedKVCache configuration is incomplete")
+            parent = self._cache_options.get("spill_dir")
+            if parent is None:
+                parent = getattr(live_cache, "_spill_parent", None)
+            cache = PagedKVCache(
+                page_size=int(config["page_size"]),
+                top_k_pages=int(config["top_k_pages"]),
+                pinned_pages=int(config["pinned_pages"]),
+                recent_pages=int(config["recent_pages"]),
+                refresh_every=int(config["refresh_every"]),
+                min_context=int(config["min_context"]),
+                resident_pages=int(config["resident_pages"]),
+                spill_dir=parent,
+            )
+            cache.gather_decode = bool(config["gather_decode"])
+        else:
+            raise ValueError(f"unsupported cache type {name!r}")
+
+        if state is not None:
+            cache.state = state
+            if name == "PagedKVCache":
+                cache._update_bounds()
+                cache._enforce_budget()
+        if meta_state not in (None, "", []):
+            cache.meta_state = meta_state
+        return cache
+
+    def _legacy_records(self, tensors, tape):
+        """Read the old one-level format when its structure remains safe."""
+        records = []
+        for index, live_cache in enumerate(self.cache):
+            prefix = f"c{index}_"
+            indexed = sorted(
+                (int(key[len(prefix):]), key) for key in tensors
+                if key.startswith(prefix) and key[len(prefix):].isdigit()
+            )
+            values = {part: tensors[key] for part, key in indexed}
+            name = type(live_cache).__name__
+            if name == "ArraysCache":
+                expected = len(live_cache.state)
+                if any(part >= expected for part in values):
+                    raise ValueError("legacy ArraysCache state has invalid slots")
+                state = [values.get(part) for part in range(expected)]
+            elif name == "KVCache":
+                if sorted(values) != [0, 1]:
+                    raise ValueError(f"legacy {name} state is incomplete")
+                state = (values[0], values[1])
+            elif name == "QuantizedKVCache":
+                raise ValueError(
+                    "legacy QuantizedKVCache state lacks nested quantization metadata"
+                )
+            elif name == "PagedKVCache":
+                if len(values) % 2 or sorted(values) != list(range(len(values))):
+                    raise ValueError("legacy PagedKVCache state is incomplete")
+                state = [values[part] for part in range(len(values))]
+            else:
+                raise ValueError(f"unsupported legacy cache type {name!r}")
+            meta_state = getattr(live_cache, "meta_state", "")
+            if name == "QuantizedKVCache" and isinstance(meta_state, (list, tuple)):
+                meta_state = (str(len(tape)), str(meta_state[1]), str(meta_state[2]))
+            records.append({
+                "class": name,
+                "state": _encode_tree(state, tensors, ("legacy", index)),
+                "meta_state": _encode_tree(meta_state, tensors, ("legacy-meta", index)),
+                "config": _cache_config(live_cache),
+            })
+        return records
+
+    @staticmethod
+    def _validate_cache(cache, tape):
+        offsets = [int(item.offset) for item in cache if hasattr(item, "offset")]
+        if not offsets:
+            if tape:
+                raise ValueError("saved cache has no token offset")
+            return
+        if any(offset != len(tape) for offset in offsets):
+            raise ValueError("saved cache and token tape disagree")
+
     def save_session(self, name: str) -> str:
+        tensors = {}
         try:
             import mlx.core as mx
 
             directory = self._path(name)
             directory.mkdir(parents=True, exist_ok=True)
-            tensors = {}
-            for index, cache in enumerate(self.cache):
-                state = cache.state
-                arrays = state if isinstance(state, (list, tuple)) else [state]
-                for part, array in enumerate(arrays):
-                    if array is not None:
-                        tensors[f"c{index}_{part}"] = array
-            mx.save_safetensors(str(directory / "cache.safetensors"), tensors)
             metadata = {
+                "format": _SESSION_FORMAT,
                 "tape": self.tape,
                 "started": bool(self.tape),
                 "turn_closed": self.engine.turn_closed,
                 "thinking": self.thinking_enabled,
             }
-            (directory / "meta.json").write_text(json.dumps(metadata))
-        except (OSError, TypeError, ValueError) as exc:
+            metadata["caches"] = self._cache_records(tensors)
+            encoded = json.dumps(metadata, separators=(",", ":"))
+            self._atomic_safetensors(
+                directory / "cache.safetensors", tensors,
+                {"macqwen_session": encoded},
+            )
+            # Keep meta.json for listing and compatibility. Both files use
+            # replacement, so a failed write cannot truncate a good session.
+            self._atomic_json(directory / "meta.json", encoded)
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
             return f"could not save session: {exc}"
         size_mb = sum(value.nbytes for value in tensors.values()) / 1e6
         return f"saved {name}  {len(self.tape)} tokens, {size_mb:.0f} MB"
 
     def load_session(self, name: str) -> str:
+        temporary = []
         try:
             import mlx.core as mx
 
             directory = self._path(name)
-            metadata = json.loads((directory / "meta.json").read_text())
-            tensors = mx.load(str(directory / "cache.safetensors"))
-            self.reset()
-            for index, cache in enumerate(self.cache):
-                arrays = []
-                part = 0
-                while f"c{index}_{part}" in tensors:
-                    arrays.append(tensors[f"c{index}_{part}"])
-                    part += 1
-                if arrays:
-                    cache.state = arrays if len(arrays) > 1 else arrays[0]
-            self.engine.tape = [int(token) for token in metadata["tape"]]
+            loaded = mx.load(str(directory / "cache.safetensors"), return_metadata=True)
+            if isinstance(loaded, tuple) and len(loaded) == 2:
+                tensors, file_metadata = loaded
+            else:
+                tensors, file_metadata = loaded, {}
+            # Force the file payload through MLX before touching live caches.
+            # A corrupt or unreadable tensor must leave the current session intact.
+            mx.eval(list(tensors.values()))
+            embedded = file_metadata.get("macqwen_session") if isinstance(file_metadata, dict) else None
+            if isinstance(embedded, bytes):
+                embedded = embedded.decode("utf-8")
+            if embedded:
+                try:
+                    metadata = json.loads(embedded)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("embedded session metadata is invalid") from exc
+            else:
+                try:
+                    metadata = json.loads((directory / "meta.json").read_text())
+                except (OSError, TypeError, ValueError) as exc:
+                    raise ValueError("session metadata is missing or invalid") from exc
+            if not isinstance(metadata, dict):
+                raise ValueError("session metadata is not an object")
+            tape_data = metadata.get("tape")
+            if not isinstance(tape_data, list):
+                raise ValueError("session metadata has no token tape")
+            tape = [int(token) for token in tape_data]
+            if metadata.get("format") == _SESSION_FORMAT:
+                records = metadata.get("caches")
+                if not isinstance(records, list) or len(records) != len(self.cache):
+                    raise ValueError("saved cache list does not match this model")
+            elif "format" not in metadata:
+                records = self._legacy_records(tensors, tape)
+            else:
+                raise ValueError(f"unsupported session format {metadata.get('format')!r}")
+
+            for record, live_cache in zip(records, self.cache):
+                temporary.append(self._new_cache(record, live_cache, tensors))
+            self._validate_cache(temporary, tape)
+
+            old_cache = self.engine.cache
+            self.engine.cache = temporary
+            temporary = []
+            for cache in old_cache:
+                if hasattr(cache, "close"):
+                    cache.close()
+            self.engine.tape = tape
             self.engine.pending = []
             self.engine.turn_closed = bool(metadata.get("turn_closed", True))
             self.thinking_enabled = bool(metadata.get("thinking", False))
-            if not self.check_invariant():
-                raise ValueError("saved cache and token tape disagree")
-        except (OSError, KeyError, TypeError, ValueError) as exc:
+            self.engine.stats.clear()
+        except (OSError, KeyError, TypeError, ValueError, RuntimeError) as exc:
+            for cache in temporary:
+                if hasattr(cache, "close"):
+                    cache.close()
             return f"could not load session: {exc}"
         return f"loaded {name}  {len(self.tape)} tokens restored, no old prefill"
 

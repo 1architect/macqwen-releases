@@ -58,4 +58,5 @@ SETTINGS = (
     research("physical-miss-trace", "FLASHNEXT_PHYSICAL_MISS_TRACE", "0", "startup"),
     research("physical-miss-profile", "FLASHNEXT_PHYSICAL_MISS_PROFILE", "~/.cache/flashnext/physical-misses.json", "startup"),
     research("physical-miss-min-samples", "FLASHNEXT_PHYSICAL_MISS_MIN_SAMPLES", "1", "startup", integer),
+    research("io-task-topology", "FLASHNEXT_IO_TASK_TOPOLOGY", "projection", "startup"),
 )

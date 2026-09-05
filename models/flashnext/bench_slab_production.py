@@ -340,6 +340,7 @@ def run_arm(
     from macqwen.backends.flashnext import FlashNextBackend
     from models.flashnext.diskio import ReadMeter, free_memory_mb, vm_counters
     from models.flashnext.expert_cache import (
+        _POOL, io_task_topology,
         profile_enabled, profile_totals, reset_profile, set_profile,
     )
 
@@ -431,6 +432,13 @@ def run_arm(
             "pread_service_sum",
         )
     }
+    layer_completion_count = int(profile.get("layer_completion_count", 0))
+    profile_ms_tok["layer_completion"] = (
+        float(profile.get("layer_completion_sum", 0.0))
+        / layer_completion_count
+        * 1000.0
+        if layer_completion_count else 0.0
+    )
     vm_delta = {
         key: vm_after.get(key, 0) - vm_before.get(key, 0)
         for key in sorted(set(vm_before) | set(vm_after))
@@ -447,6 +455,9 @@ def run_arm(
     close_store(store)
 
     result = {
+        "io_workers": _POOL._max_workers,
+        "io_topology": io_task_topology(),
+        "profile_io": profile_enabled(),
         "slab": slab,
         "layers": layers,
         "global_budget": global_budget,
@@ -641,6 +652,7 @@ def main():
         "--profile-io", action="store_true",
         help="Enable perturbing per-read Frontier 5 attribution",
     )
+    parser.add_argument("--json", type=Path, help="write complete arm evidence")
     parser.add_argument(
         "--capacity-sweep", action="store_true",
         help="Run the trusted 56, 60, and 64-slot skew sweep",
@@ -679,7 +691,8 @@ def main():
             "slabpack60_skew", "slabpack60_skew_f5",
             "slabpack60_skew_f5c2", "slabpack60_skew_f5c3",
             "slabpack60_skew_f10_up",
-            "slabpack60_skew_8a", "slabpack60_skew_8b",
+            "slabpack60_skew_8a", "slabpack60_skew_8a_up",
+            "slabpack60_skew_8b", "slabpack60_skew_8b_up",
             "slabpack60_skew_unfused", "slabpack64_skew",
         ],
         help="Control configuration (default: 56-slot 8A skew pack)",
@@ -694,7 +707,8 @@ def main():
             "slabpack60_skew", "slabpack60_skew_f5",
             "slabpack60_skew_f5c2", "slabpack60_skew_f5c3",
             "slabpack60_skew_f10_up",
-            "slabpack60_skew_8a", "slabpack60_skew_8b",
+            "slabpack60_skew_8a", "slabpack60_skew_8a_up",
+            "slabpack60_skew_8b", "slabpack60_skew_8b_up",
             "slabpack60_skew_unfused", "slabpack64_skew",
         ],
         help="Target slab configuration (default: standard 60-slot 8A pack)",
@@ -732,7 +746,9 @@ def main():
         "slabpack60_skew_f5c3": (0, 0, 60, True, "skew", True, False, 3),
         "slabpack60_skew_f10_up": (0, 0, 60, True, "skew", True, False, False),
         "slabpack60_skew_8a": (0, 0, 60, True, "skew", True, False, False),
+        "slabpack60_skew_8a_up": (0, 0, 60, True, "skew", True, False, False),
         "slabpack60_skew_8b": (0, 0, 60, True, "skew", True, True, False),
+        "slabpack60_skew_8b_up": (0, 0, 60, True, "skew", True, True, False),
         "slabpack60_skew_unfused": (0, 0, 60, True, "skew", False, False, False),
         "slabpack64_skew": (0, 0, 64, True, "skew", True, False, False),
     }
@@ -822,7 +838,10 @@ def main():
         if stream_pack:
             chunk = "all" if stream_pack < 0 else str(stream_pack)
             fuse_str += f", STREAM_PACK={chunk}"
-        fuse_up_swiglu = name == "slabpack60_skew_f10_up"
+        fuse_up_swiglu = name in {
+            "slabpack60_skew_f10_up", "slabpack60_skew_8a_up",
+            "slabpack60_skew_8b_up",
+        }
         if fuse_up_swiglu:
             fuse_str += ", FUSED_UP_SWIGLU=1"
         print(f"Arm {idx:2d}/{len(schedule)}: Running {name:<24} (SLAB={slab}, LAYERS={layers}, GLOBAL={global_b}{pack_str}{fuse_str})...", flush=True)
@@ -865,6 +884,7 @@ def main():
             f"submit-start={breakdown['critical_queue']:.2f}, "
             f"task-overhead={breakdown['critical_task_overhead']:.2f}, "
             f"completion={breakdown['completion_overhead']:.2f} ms/tok | "
+            f"layer-completion={breakdown['layer_completion']:.2f} ms/layer | "
             f"pread-sum={breakdown['pread_service_sum']:.2f} ms/tok | "
             f"calls={res['pread_calls_tok']:.2f}/tok | "
             f"requested={res['pread_mb_tok']:.1f} MB/tok",
@@ -909,7 +929,7 @@ def main():
         )
         breakdown_keys = (
             "critical_pread", "critical_queue", "critical_task_overhead",
-            "completion_overhead",
+            "completion_overhead", "layer_completion",
         )
         medians = {
             key: st.median(
@@ -929,6 +949,18 @@ def main():
     control_name = arm_names[0]
     for target_name in arm_names[1:]:
         print_paired_analysis(control_name, target_name, collected)
+    if args.json:
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(json.dumps({
+            "tokens": args.tokens,
+            "rounds": rounds,
+            "schedule": schedule,
+            "conditions": [
+                {"condition": name, "arms": collected[name]}
+                for name in arm_names
+            ],
+        }, indent=2, sort_keys=True) + "\n")
+        print(f"wrote {args.json}", flush=True)
 
 
 if __name__ == "__main__":

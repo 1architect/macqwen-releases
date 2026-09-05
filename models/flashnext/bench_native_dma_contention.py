@@ -4,8 +4,8 @@
 Methodological controls:
 1. True unbuffered I/O using fcntl F_NOCACHE (48) on Darwin.
 2. Real large model shard (>4 GB) with advancing offsets across arms to prevent storage cache hits.
-3. Thread synchronization latch ensuring physical NVMe DMA is actively in flight
-   throughout GPU execution (GPUStartTime .. GPUEndTime).
+3. Thread synchronization latch after a completed read, plus completion timing
+   around the native GPU call. This records an observational interval only.
 4. Physical byte verification using proc_pid_rusage (ri_diskio_bytesread).
 5. Multi-arm interleaved rotation across scheduler strategies (serial, barrier, fence).
 """
@@ -72,9 +72,10 @@ class SynchronizedDmaWorker:
         self.offset = offset
         self.target_bytes = target_bytes
         self.chunk_bytes = chunk_bytes
-        self.started_latch = threading.Event()
+        self.read_completed_latch = threading.Event()
         self.gpu_done = threading.Event()
-        self.overlap_confirmed = False
+        self.read_after_gpu = False
+        self.read_completions: list[float] = []
         self.bytes_read = 0
         self.error: BaseException | None = None
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -82,8 +83,8 @@ class SynchronizedDmaWorker:
     def start(self):
         self._thread.start()
 
-    def wait_started(self, timeout: float = 5.0) -> bool:
-        return self.started_latch.wait(timeout)
+    def wait_read_completed(self, timeout: float = 5.0) -> bool:
+        return self.read_completed_latch.wait(timeout)
 
     def join(self, timeout: float = 10.0):
         self._thread.join(timeout)
@@ -94,8 +95,10 @@ class SynchronizedDmaWorker:
             first_chunk = min(self.chunk_bytes, self.target_bytes)
             data = os.pread(self.fd, first_chunk, self.offset)
             total += len(data)
-            # Physical DMA is confirmed active
-            self.started_latch.set()
+            self.read_completions.append(time.perf_counter())
+            # The latch means one read completed. It does not prove DMA stayed
+            # active after the syscall returned.
+            self.read_completed_latch.set()
 
             while total < self.target_bytes:
                 n = min(self.chunk_bytes, self.target_bytes - total)
@@ -103,13 +106,17 @@ class SynchronizedDmaWorker:
                 if not data:
                     break
                 total += len(data)
+                self.read_completions.append(time.perf_counter())
                 if self.gpu_done.is_set():
-                    self.overlap_confirmed = True
+                    # This flag has one narrow meaning: a read completed after
+                    # the GPU call returned. It is not a continuous-overlap
+                    # or physical-DMA proof.
+                    self.read_after_gpu = True
 
             self.bytes_read = total
         except BaseException as exc:
             self.error = exc
-            self.started_latch.set()
+            self.read_completed_latch.set()
 
 
 def run_benchmark():
@@ -189,6 +196,10 @@ def run_benchmark():
             samples_host: dict[str, list[float]] = {s: [] for s in DEFAULT_STRATEGIES}
             samples_phys_mb: dict[str, list[float]] = {s: [] for s in DEFAULT_STRATEGIES}
             overlaps: dict[str, int] = {s: 0 for s in DEFAULT_STRATEGIES}
+            completion_during_native_call: dict[str, int] = {
+                s: 0 for s in DEFAULT_STRATEGIES
+            }
+            read_spans_ms: dict[str, list[float]] = {s: [] for s in DEFAULT_STRATEGIES}
 
             meter = ReadMeter()
 
@@ -201,23 +212,50 @@ def run_benchmark():
                     worker = SynchronizedDmaWorker(fd, current_offset, bytes_target)
                     current_offset += bytes_target
                     worker.start()
-                    if not worker.wait_started():
-                        raise RuntimeError("Worker failed to signal start latch")
+                    if not worker.wait_read_completed():
+                        raise RuntimeError("Worker failed to signal completed read")
 
-                t0 = time.perf_counter()
-                out, gpu_ms = run_native_moe(
-                    x, routes, scores, gate_pack, up_pack, down_pack,
-                    strategy=strategy, expert_count=expert_count,
-                )
-                host_ms = (time.perf_counter() - t0) * 1000.0
+                call_start = time.perf_counter()
+                native_error = None
+                try:
+                    out, gpu_ms = run_native_moe(
+                        x, routes, scores, gate_pack, up_pack, down_pack,
+                        strategy=strategy, expert_count=expert_count,
+                    )
+                except BaseException:
+                    native_error = sys.exc_info()
+                call_end = time.perf_counter()
+                host_ms = (call_end - call_start) * 1000.0
 
                 if worker is not None:
+                    # Always finish the worker before the next arm or FD close,
+                    # including when the native call raises.
                     worker.gpu_done.set()
                     worker.join()
+                    if worker.is_alive():
+                        raise RuntimeError("DMA worker did not join")
                     if worker.error:
                         raise RuntimeError(f"Worker failed: {worker.error}")
-                    if worker.overlap_confirmed:
+                    if worker.bytes_read != bytes_target:
+                        raise RuntimeError(
+                            f"DMA worker read {worker.bytes_read} bytes, "
+                            f"expected {bytes_target}"
+                        )
+                    if worker.read_after_gpu:
                         overlaps[strategy] += 1
+                    completions = worker.read_completions
+                    if any(
+                        call_start <= completed <= call_end
+                        for completed in completions
+                    ):
+                        completion_during_native_call[strategy] += 1
+                    if len(completions) > 1:
+                        read_spans_ms[strategy].append(
+                            (completions[-1] - completions[0]) * 1000.0
+                        )
+
+                if native_error is not None:
+                    raise native_error[1].with_traceback(native_error[2])
 
                 phys_bytes = meter.bytes_since()
                 phys_mb = (phys_bytes / 1e6) if phys_bytes >= 0 else 0.0
@@ -229,24 +267,64 @@ def run_benchmark():
                 if args.pause > 0:
                     time.sleep(args.pause)
 
+            if bytes_target > 0:
+                physical_values = [
+                    value for values in samples_phys_mb.values() for value in values
+                ]
+                if not physical_values or any(value <= 0 for value in physical_values):
+                    raise RuntimeError(
+                        "physical read telemetry is unavailable; refusing DMA strategy comparison"
+                    )
+                physical_median = statistics.median(physical_values)
+                expected_mb = bytes_target / 1e6
+                if physical_median <= 0 or any(
+                    not 0.5 <= value / expected_mb <= 2.0
+                    for value in physical_values
+                ):
+                    raise RuntimeError(
+                        "physical read volume is not reasonable for the requested "
+                        "DMA level; refusing unsupported comparison"
+                    )
+                if any(
+                    abs(value - physical_median) / physical_median > 0.10
+                    for value in physical_values
+                ):
+                    raise RuntimeError(
+                        "physical read volumes differ by more than 10%; "
+                        "refusing unsupported DMA strategy comparison"
+                    )
+
             print(f"Level {mb:.0f} MB Results (n={len(schedule)//len(DEFAULT_STRATEGIES)} per arm):")
-            print(f"{'Strategy':<10} | {'GPU med (ms)':<12} | {'Host med (ms)':<13} | {'Phys MB Read':<12} | {'Overlap %':<9} | {'GPU Band':<8}")
-            print("-" * 75)
+            print(f"{'Strategy':<10} | {'GPU med (ms)':<12} | {'Host med (ms)':<13} | {'Phys MB Read':<12} | {'Post-native read':<16} | {'Read interval':<13} | {'GPU Band':<8}")
+            print("-" * 105)
             level_res = {}
             for strat in DEFAULT_STRATEGIES:
                 g_sum = summarize(samples_gpu[strat])
                 h_sum = summarize(samples_host[strat])
                 avg_phys = statistics.mean(samples_phys_mb[strat])
-                overlap_pct = (overlaps[strat] / len(samples_gpu[strat]) * 100) if bytes_target > 0 else 100.0
+                post_gpu_pct = (overlaps[strat] / len(samples_gpu[strat]) * 100) if bytes_target > 0 else 0.0
+                during_native_call_pct = (
+                    completion_during_native_call[strat]
+                    / len(samples_gpu[strat]) * 100
+                    if bytes_target > 0 else 0.0
+                )
+                read_span = (
+                    statistics.median(read_spans_ms[strat])
+                    if read_spans_ms[strat] else 0.0
+                )
                 print(
                     f"{strat:<10} | {g_sum.median_ms:12.3f} | {h_sum.median_ms:13.3f} | "
-                    f"{avg_phys:12.1f} | {overlap_pct:8.0f}% | {g_sum.resolution_band_pct:7.1f}%"
+                    f"{avg_phys:12.1f} | {post_gpu_pct:6.0f}% post | "
+                    f"{during_native_call_pct:6.0f}% call/{read_span:5.1f} ms | "
+                    f"{g_sum.resolution_band_pct:7.1f}%"
                 )
                 level_res[strat] = {
                     "gpu_summary": g_sum,
                     "host_summary": h_sum,
                     "phys_mb": avg_phys,
-                    "overlap_pct": overlap_pct,
+                    "post_gpu_read_pct": post_gpu_pct,
+                    "read_completion_during_native_call_pct": during_native_call_pct,
+                    "read_completion_span_ms": read_span,
                 }
             all_summaries[mb] = level_res
             print()
@@ -254,7 +332,7 @@ def run_benchmark():
     finally:
         os.close(fd)
 
-    print("=== Summary Across DMA Levels (GPU execution time in ms) ===")
+    print("=== Summary Across DMA Levels (observational GPU/read metrics) ===")
     header = f"{'DMA Level':<10} | {'Serial (ms)':<12} | {'Barrier (ms)':<12} | {'Fence (ms)':<12} | {'Barrier Delta':<14} | {'Fence Delta':<12}"
     print(header)
     print("-" * len(header))
@@ -269,6 +347,10 @@ def run_benchmark():
             f"{mb:5.0f} MB   | {s_gpu:12.3f} | {b_gpu:12.3f} | {f_gpu:12.3f} | "
             f"{b_diff:+13.3f} ms | {f_diff:+11.3f} ms"
         )
+    print(
+        "Observation limits: the latch marks a completed read. Post-native-call read "
+        "completion does not prove continuous physical DMA or full overlap."
+    )
 
 
 if __name__ == "__main__":

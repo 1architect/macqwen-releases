@@ -18,7 +18,7 @@ Run the unit test with no model load:
     python3 paged_kv.py --selftest
 """
 
-import argparse, itertools, shutil, sys, time
+import argparse, itertools, os, shutil, stat, sys, tempfile, time
 from pathlib import Path
 
 import mlx.core as mx
@@ -87,13 +87,25 @@ class PagedKVCache(_BaseCache):
         # selected pages stay resident, so physical KV stops tracking context
         # length. The min/max bounds always stay in RAM: they are tiny
         # (33 MB for 256K tokens) and selection needs them for every page.
-        self.spill_dir = Path(spill_dir) if spill_dir else None
+        # A caller may share one parent directory between layers and engine
+        # instances. Each cache owns one private directory below that parent.
+        # The private directory is created atomically, so processes cannot
+        # collide on page names or remove another cache's pages.
+        self._spill_parent = Path(spill_dir).expanduser() if spill_dir else None
+        self.spill_dir = None
+        self._spill_identity = None
         self.resident_pages = resident_pages   # 0 = never spill
         self._on_disk = set()
         self._cache_id = next(_CACHE_IDS)
         self.spill_stats = {"spilled": 0, "restored": 0, "bytes_out": 0, "bytes_in": 0}
-        if self.spill_dir:
-            self.spill_dir.mkdir(parents=True, exist_ok=True)
+        if self._spill_parent:
+            self._spill_parent.mkdir(parents=True, exist_ok=True)
+            self.spill_dir = Path(tempfile.mkdtemp(
+                prefix=f"macqwen-pages-{os.getpid()}-",
+                dir=str(self._spill_parent),
+            ))
+            identity = self.spill_dir.stat()
+            self._spill_identity = (identity.st_dev, identity.st_ino)
 
     # -- cache protocol -----------------------------------------------------
 
@@ -177,8 +189,21 @@ class PagedKVCache(_BaseCache):
             excess -= 1
 
     def close(self):
-        if self.spill_dir and self.spill_dir.exists():
-            shutil.rmtree(self.spill_dir, ignore_errors=True)
+        path = self.spill_dir
+        identity = self._spill_identity
+        if path is None or identity is None:
+            return
+        # Do not follow a replacement symlink or delete a directory that was
+        # created after this cache closed. The parent is never removed.
+        try:
+            current = path.lstat()
+            if not stat.S_ISDIR(current.st_mode):
+                return
+            if (current.st_dev, current.st_ino) != identity:
+                return
+            shutil.rmtree(path, ignore_errors=True)
+        except FileNotFoundError:
+            return
 
     def kv(self, i):
         """Filled slice of page i, restoring it from disk if needed."""
@@ -278,10 +303,40 @@ class PagedKVCache(_BaseCache):
 
     @state.setter
     def state(self, v):
+        if v is None:
+            v = []
+        if not isinstance(v, (list, tuple)) or len(v) % 2:
+            raise ValueError("PagedKVCache state must contain K/V pairs")
         n = len(v) // 2
-        self.k_pages, self.v_pages = list(v[:n]), list(v[n:])
-        self.fill = [p.shape[2] for p in self.k_pages]
+        source_k, source_v = list(v[:n]), list(v[n:])
+        if any(k is None or val is None for k, val in zip(source_k, source_v)):
+            raise ValueError("PagedKVCache state cannot contain empty pages")
+        self.fill = [p.shape[2] for p in source_k]
+        if any(fill > self.page_size for fill in self.fill):
+            raise ValueError("PagedKVCache state page exceeds page_size")
+
+        def pad(page, fill):
+            if fill == self.page_size:
+                return page
+            shape = page.shape[:2] + (self.page_size,) + page.shape[3:]
+            padded = mx.zeros(shape, page.dtype)
+            padded[..., :fill, :] = page
+            return padded
+
+        self.k_pages = [pad(page, fill) for page, fill in zip(source_k, self.fill)]
+        self.v_pages = [pad(page, fill) for page, fill in zip(source_v, self.fill)]
         self.offset = sum(self.fill)
+        self._on_disk.clear()
+        self.k_min = [None] * n
+        self.k_max = [None] * n
+        self._stack_dirty = True
+        self._min_stack = None
+        self._max_stack = None
+        self._selection = None
+        self._steps_since_refresh = 0
+        self.selection_log = []
+        self._gk = None
+        self._gv = None
         self._g_sig = None
 
     def is_trimmable(self):

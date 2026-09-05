@@ -37,16 +37,24 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import statistics as st
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 PROMPT = ("<|im_start|>user\nExplique a fotossintese em duas frases."
           "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
+
+# These comparisons change routed experts and can change the token trajectory.
+# They need a separate quality interpretation when their digests differ.
+ROUTING_ALTERING_COMPARISONS = {
+    "swap-resident", "swap-epsilon", "swap-epsilon-wide",
+}
 
 COMPARISONS = {
     "none": {"baseline": {}},
@@ -101,6 +109,14 @@ COMPARISONS = {
         },
         "buffer-chunk2": {
             "FLASHNEXT_SHARED_READ_BUFFER": "1", "FLASHNEXT_PREAD_CHUNK": "2",
+        },
+    },
+    "buffer-chunk2-vs-4": {
+        "buffer-chunk2": {
+            "FLASHNEXT_SHARED_READ_BUFFER": "1", "FLASHNEXT_PREAD_CHUNK": "2",
+        },
+        "buffer-chunk4": {
+            "FLASHNEXT_SHARED_READ_BUFFER": "1", "FLASHNEXT_PREAD_CHUNK": "4",
         },
     },
     # A token blocks on 98 evals for about 200 ms while the shaders are 9%
@@ -386,17 +402,41 @@ def check_load_time(env: dict, fresh_arms: bool) -> None:
         )
 
 
-def arm(backend, tokens, meter, run_began):
+def arm(backend, tokens, meter, run_began, condition=None):
     from models.flashnext.diskio import free_memory_mb
 
     free = free_memory_mb()
     backend.reset()
+    if condition:
+        # RoutingProfile.reset restores defaults. Apply the live condition at
+        # the point where this arm starts, then validate its effective value.
+        apply_condition(backend, condition)
     backend.append_text(PROMPT)
     meter.reset()
+    prefilled = False
+
+    def on_prefilled():
+        nonlocal prefilled
+        # Generation counters must exclude prompt reads. The backend invokes
+        # this callback after prefill and before the first decoded token.
+        meter.reset()
+        prefilled = True
+
     began = time.perf_counter()
-    _text, stats = backend.generate(max_tokens=tokens)
+    _text, stats = backend.generate(
+        max_tokens=tokens, on_prefilled=on_prefilled
+    )
+    if stats.tokens and not prefilled:
+        raise RuntimeError("backend did not report the prefill boundary")
+    if stats.tokens <= 0 or stats.rate <= 0:
+        raise RuntimeError(
+            f"generation produced no measurable tokens or rate: "
+            f"tokens={stats.tokens}, rate={stats.rate}"
+        )
     wall = time.perf_counter() - began
     read = meter.bytes_since()
+    if read < 0:
+        raise RuntimeError("physical read telemetry is unavailable")
     ids = tuple(backend.tape[-stats.tokens:]) if stats.tokens else ()
     tail = stats.tail_tokens / stats.tail_seconds if stats.tail_seconds else 0.0
     return {
@@ -404,7 +444,7 @@ def arm(backend, tokens, meter, run_began):
         "gen_tokens": stats.tokens,
         "gen_rate": stats.rate,
         "tail_rate": tail,
-        "mb_per_token": (read / stats.tokens / 1e6) if read > 0 and stats.tokens else -1.0,
+        "mb_per_token": read / stats.tokens / 1e6,
         "pinned_gb": stats.pinned_bytes / 1e9,
         "free_mb_before": free,
         "wall": wall,
@@ -438,7 +478,7 @@ def report(name, arms, drop):
     kept = arms[drop:]
     rates = [a["gen_rate"] for a in kept]
     tails = [a["tail_rate"] for a in kept]
-    mb = [a["mb_per_token"] for a in kept if a["mb_per_token"] > 0]
+    mb = [a["mb_per_token"] for a in kept if a["mb_per_token"] >= 0]
     line = {
         "condition": name,
         "arms_run": len(arms),
@@ -467,28 +507,41 @@ def report(name, arms, drop):
     return line
 
 
-def resolution_note(base, other, change) -> str:
-    """What this run can and cannot tell apart, from its own spread.
+def resolution_note(base, other, drop: int = 0) -> str:
+    """Report a matched paired two-SE band around the paired mean effect."""
+    from math import sqrt
 
-    Two standard errors of the difference between the medians. A result inside
-    that band is not a result, however much it looks like one. Doubling the
-    arms shrinks the band by about 30 percent, so the note says what to run
-    rather than leaving it to judgement.
-    """
-    import math
-
-    spread = math.sqrt(
-        base["gen_sd"] ** 2 / max(base["arms_kept"], 1)
-        + other["gen_sd"] ** 2 / max(other["arms_kept"], 1)
-    )
-    band = 2 * spread / base["gen_median"] * 100 if base["gen_median"] else 0.0
-    if abs(change) >= band:
-        return f"resolves differences above {band:.1f} percent, so this one stands."
-    doubled = max(base["arms_kept"], other["arms_kept"]) * 2
+    base_arms = base["arms"][drop:]
+    other_arms = other["arms"][drop:]
+    if len(base_arms) != len(other_arms):
+        return "matched paired resolution band unavailable: unequal pair counts"
+    diffs = [
+        (y["gen_rate"] - x["gen_rate"]) / x["gen_rate"] * 100
+        for x, y in zip(base_arms, other_arms)
+        if x["gen_rate"] > 0 and y["gen_rate"] > 0
+    ]
+    if len(diffs) != len(base_arms) or len(diffs) < 3:
+        return "matched paired resolution band unavailable"
+    effect = st.mean(diffs)
+    band = 2 * st.stdev(diffs) / sqrt(len(diffs))
+    if effect == 0.0 or band == 0.0:
+        return (
+            f"paired mean effect {effect:+.1f}% and band {band:.1f}% "
+            "cannot resolve an effect"
+        )
+    if band > 10.0:
+        return (
+            f"matched paired two-SE band is {band:.1f}%, too wide for a "
+            f"small-effect decision (mean {effect:+.1f}%)."
+        )
+    if abs(effect) >= band:
+        return (
+            f"paired mean effect {effect:+.1f}% resolves differences above "
+            f"{band:.1f} percent."
+        )
     return (
-        f"resolves differences above {band:.1f} percent, so this one is "
-        f"unresolved, which is not the same as absent. Re-run with --arms "
-        f"{doubled}, or stack it with another change and measure the pair."
+        f"paired mean effect {effect:+.1f}% is inside the matched paired "
+        f"two-SE band of {band:.1f} percent, so this remains unresolved."
     )
 
 
@@ -507,7 +560,8 @@ def report_paired(results, drop: int = 0) -> None:
         (x["gen_rate"], y["gen_rate"])
         for x, y in zip(base["arms"][drop:], other["arms"][drop:])
     ]
-    if len(pairs) < 4:
+    if len(pairs) < 3 or len(base["arms"][drop:]) != len(other["arms"][drop:]):
+        print("  matched paired result unavailable: need three equal pairs")
         return
     diffs = [(y - x) / x * 100 for x, y in pairs]
     wins = sum(1 for d in diffs if d > 0)
@@ -568,14 +622,24 @@ def main() -> None:
     parser.add_argument("--tokens", type=int, default=60)
     parser.add_argument("--compare", choices=sorted(COMPARISONS), default="none")
     parser.add_argument("--fresh-arms", action="store_true",
-                        help="reload the model between conditions; needed when a "
-                             "setting only takes effect at load, such as prewarm")
+                        help="reload the model for every arm in reversed rounds; "
+                             "needed for settings that take effect at load")
     parser.add_argument("--json", default="", help="write the summary here")
     args = parser.parse_args()
 
     conditions = COMPARISONS[args.compare]
+    if args.arms <= 0:
+        parser.error("--arms must be positive")
+    if args.min_arms <= 0 or args.min_arms > args.arms:
+        parser.error("--min-arms must be positive and no greater than --arms")
+    if args.drop < 0 or args.drop >= args.min_arms:
+        parser.error("--drop must be non-negative and less than --min-arms")
     if args.min_arms - args.drop < 3:
         parser.error("--min-arms must exceed --drop by at least three")
+    if args.tokens <= 0:
+        parser.error("--tokens must be positive")
+    if args.tolerance < 0:
+        parser.error("--tolerance must be non-negative")
 
     for env in conditions.values():
         check_load_time(env, args.fresh_arms)
@@ -585,75 +649,152 @@ def main() -> None:
     meter = ReadMeter()
     run_began = time.perf_counter()
     results, collected, first_ids = [], {name: [] for name in conditions}, None
+    routing_altering = args.compare in ROUTING_ALTERING_COMPARISONS
+    if routing_altering:
+        print(
+            "  routing-altering comparison: digest changes are expected; "
+            "apply the separate quality gate.",
+            flush=True,
+        )
+
+    condition_keys = set().union(*(env.keys() for env in conditions.values()))
+    initial_values = {key: os.environ.get(key) for key in condition_keys}
+
+    def set_condition_environment(env, pin_path=None):
+        for key in condition_keys:
+            value = env.get(key, initial_values[key])
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        if pin_path is not None:
+            os.environ["FLASHNEXT_PIN_CACHE"] = str(pin_path)
 
     if args.fresh_arms:
-        # Rebuild the backend per condition. Settings must be read at call
-        # time, never captured in a module constant: Python caches the module
-        # after the first import, so a constant keeps the first condition's
-        # value and both arms silently measure the same thing.
-        for name, env in conditions.items():
-            os.environ.update(env)
-            from macqwen.backends.flashnext import FlashNextBackend
-            from models.flashnext.routing import prewarm_enabled
+        # Fresh mode creates a new backend for every arm, while the arm order
+        # still alternates in reversed rounds. Stop only after a full round so
+        # every condition has the same number of matched observations.
+        from models.flashnext.routing import prewarm_enabled
 
-            if "FLASHNEXT_PREWARM" in env:
-                want = env["FLASHNEXT_PREWARM"] == "1"
-                if prewarm_enabled() != want:
-                    raise SystemExit(
-                        f"condition {name} asked for prewarm={want} but the "
-                        f"runtime reports {prewarm_enabled()}. Refusing to "
-                        f"report a comparison that did not happen."
+        source_pin = os.environ.get(
+            "FLASHNEXT_PIN_CACHE", "~/.cache/flashnext/pins.json"
+        )
+        source_path = os.path.expanduser(source_pin)
+        source_bytes = b"{}"
+        if os.path.isfile(source_path):
+            with open(source_path, "rb") as handle:
+                source_bytes = handle.read()
+
+        with tempfile.TemporaryDirectory(prefix="flashnext-production-pins-") as pin_dir:
+            cond_keys = list(conditions.keys())
+            rounds_run = 0
+            for round_index in range(args.arms):
+                order = (
+                    cond_keys if round_index % 2 == 0 else list(reversed(cond_keys))
+                )
+                for name in order:
+                    env = conditions[name]
+                    private_pin = os.path.join(
+                        pin_dir, f"round-{round_index + 1}-{name}.json"
                     )
-            backend = FlashNextBackend()
-            for index in range(args.arms):
-                row = arm(backend, args.tokens, meter, run_began)
-                first_ids = first_ids or row["ids"]
-                if row["ids"] != first_ids:
-                    print(f"  !! arm {index + 1} of {name} produced different tokens")
-                collected[name].append(row)
-                rates = [a["gen_rate"] for a in collected[name][args.drop:]]
-                if len(collected[name]) >= args.min_arms and settled(
-                    rates, args.min_arms // 2, args.tolerance
-                ):
-                    print(f"  {name}: median settled after {index + 1} arms")
-                    break
-            # Release the shards. Each backend maps 22 files, and a leaked map
-            # keeps page-cache references alive into the next condition, which
-            # is exactly the variable this harness is trying to hold still.
-            backend.store.close()
-            del backend
+                    with open(private_pin, "wb") as handle:
+                        handle.write(source_bytes)
+                    set_condition_environment(env, private_pin)
+                    if "FLASHNEXT_PREWARM" in env:
+                        want = env["FLASHNEXT_PREWARM"] == "1"
+                        if prewarm_enabled() != want:
+                            raise SystemExit(
+                                f"condition {name} asked for prewarm={want} but the "
+                                f"runtime reports {prewarm_enabled()}. Refusing to "
+                                f"report a comparison that did not happen."
+                            )
+                    # Allocation caches are process globals and historically
+                    # keyed only by slot count. Clear them between fresh arms
+                    # so a private profile cannot inherit another arm's map.
+                    try:
+                        from models.flashnext import expert_cache
+                        expert_cache._GLOBAL_SLAB_CACHE.clear()
+                    except ImportError:
+                        pass
+                    # Import after the first condition environment is active.
+                    from macqwen.backends.flashnext import FlashNextBackend
+                    backend = FlashNextBackend()
+                    try:
+                        row = arm(
+                            backend, args.tokens, meter, run_began, condition=env
+                        )
+                    finally:
+                        store = backend.store
+                        del backend
+                        gc.collect()
+                        store.close()
+                        del store
+                        gc.collect()
+                        try:
+                            import mlx.core as mx
+                            mx.clear_cache()
+                        except AttributeError:
+                            mx.metal.clear_cache()
+                    if first_ids is None:
+                        first_ids = row["ids"]
+                    if row["ids"] != first_ids:
+                        message = f"  !! round {round_index + 1} of {name} produced different tokens"
+                        if routing_altering:
+                            print(message + " (expected for routing-altering run)")
+                        else:
+                            raise SystemExit(message + "; exact comparison rejected")
+                    collected[name].append(row)
+                rounds_run += 1
+                if rounds_run >= args.min_arms:
+                    if all(
+                        settled(
+                            [a["gen_rate"] for a in rows[args.drop:]],
+                            args.min_arms // 2, args.tolerance,
+                        )
+                        for rows in collected.values()
+                    ):
+                        print(f"  every fresh median settled after {rounds_run} rounds")
+                        break
     else:
-        os.environ.update(next(iter(conditions.values())))
+        set_condition_environment(next(iter(conditions.values())))
         from macqwen.backends.flashnext import FlashNextBackend
 
         backend = FlashNextBackend()
         cond_keys = list(conditions.keys())
         print(f"  system load average before: {os.getloadavg()}", flush=True)
 
-        order = []
-        for i in range(args.arms):
-            if i % 2 == 0:
-                order.extend(cond_keys)
-            else:
-                order.extend(reversed(cond_keys))
-
-        for index, name in enumerate(order, 1):
-            os.environ.update(conditions[name])
-            apply_condition(backend, conditions[name])
-            row = arm(backend, args.tokens, meter, run_began)
-            first_ids = first_ids or row["ids"]
-            if row["ids"] != first_ids and args.compare != "swap-resident":
-                print(f"  !! arm {index} of {name} produced different tokens")
-            collected[name].append(row)
-            if all(
-                len(rows) >= args.min_arms
-                and settled(
+        rounds_run = 0
+        for round_index in range(args.arms):
+            order = (
+                cond_keys if round_index % 2 == 0 else list(reversed(cond_keys))
+            )
+            for name in order:
+                set_condition_environment(conditions[name])
+                row = arm(
+                    backend, args.tokens, meter, run_began,
+                    condition=conditions[name],
+                )
+                if first_ids is None:
+                    first_ids = row["ids"]
+                if row["ids"] != first_ids:
+                    message = (
+                        f"  !! round {round_index + 1} of {name} "
+                        "produced different tokens"
+                    )
+                    if routing_altering:
+                        print(message + " (expected for routing-altering run)")
+                    else:
+                        raise SystemExit(message + "; exact comparison rejected")
+                collected[name].append(row)
+            rounds_run += 1
+            if rounds_run >= args.min_arms and all(
+                settled(
                     [a["gen_rate"] for a in rows[args.drop:]],
                     args.min_arms // 2, args.tolerance,
                 )
                 for rows in collected.values()
             ):
-                print(f"  every median settled after {index} arms")
+                print(f"  every median settled after {rounds_run} rounds")
                 break
 
     import hashlib
@@ -673,11 +814,16 @@ def main() -> None:
         base, other = results
         change = (other["gen_median"] - base["gen_median"]) / base["gen_median"] * 100
         print(f"\n  {other['condition']} vs {base['condition']}: {change:+.1f}% gen median")
-        print(f"  {resolution_note(base, other, change)}")
+        print(f"  {resolution_note(base, other, args.drop)}")
 
     if args.json:
         with open(args.json, "w") as handle:
-            json.dump({"comparison": args.compare, "conditions": results}, handle, indent=2)
+            json.dump({
+                "comparison": args.compare,
+                "fresh_arms": args.fresh_arms,
+                "routing_altering": routing_altering,
+                "conditions": results,
+            }, handle, indent=2)
         print(f"\n  wrote {args.json}")
 
 

@@ -343,8 +343,9 @@ def _moe_call(self, x: mx.array) -> mx.array:
         _TIMERS["shared_expert"] += time.perf_counter() - shared_began
 
     predictor_mode = _TAIL_MODE[0]
+    metal_capable = getattr(self.switch_mlp, "metal_combines_scores", False)
     custom_combines = (
-        getattr(self.switch_mlp, "metal_combines_scores", False)
+        metal_capable
         and x.size // x.shape[-1] <= 8
         and predictor_mode == "off"
     )

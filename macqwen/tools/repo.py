@@ -10,16 +10,13 @@ generation loop and could not be reached by any other model.
 from __future__ import annotations
 
 import fnmatch
-import json
 import os
-import re
 import subprocess
 import tempfile
-import time
 from pathlib import Path
 
 from macqwen.api_keys import sanitized_environment
-from macqwen.tools import PARAM_TYPES, REQUIRED_PARAMS
+from macqwen.tools import PARAM_TYPES
 
 SKIP = {".git", ".build", "DerivedData", ".swiftpm", "node_modules", "Pods", ".idea", ".vscode"}
 
@@ -120,10 +117,12 @@ class Repo:
                 if p.suffix.lower() not in TEXT and n != "project.pbxproj":
                     continue
                 try:
-                    if p.stat().st_size > 2_000_000:
+                    target = p.resolve()
+                    target.relative_to(self.root)
+                    if target.stat().st_size > 2_000_000:
                         continue
-                    lines = p.read_text(errors="replace").splitlines()
-                except Exception:
+                    lines = target.read_text(errors="replace").splitlines()
+                except (OSError, RuntimeError, ValueError):
                     continue
                 for i, line in enumerate(lines, 1):
                     if q in line.lower():
