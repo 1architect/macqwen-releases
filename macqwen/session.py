@@ -737,7 +737,10 @@ def run_turn_plain(session, prompt: str, glow: IngestGlow) -> None:
     print(f"\n\n{C['dim']}{stats.prompt_tokens} new tok @ "
           f"{stats.prompt_rate:.1f} t/s | gen {stats.tokens} @ {stats.rate:.1f} t/s"
           f"{tail_text} | "
-          f"ctx {len(session.backend.tape)} | {elapsed:.1f}s{C['0']}\n")
+          f"ctx {len(session.backend.tape)} | {elapsed:.1f}s | "
+          f"finish {getattr(stats, 'finish', 'unknown')}{C['0']}\n")
+    if getattr(stats, "finish", None) == "length":
+        print("Generation limit reached. Use /config tokens to inspect the answer limit.\n")
 
 
 def run_benchmark(session, prompt: str, ready_seconds: float) -> dict:

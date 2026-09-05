@@ -11,7 +11,7 @@ changes or experiments.
 - Make every optimization opt-in until it passes the promotion rules below.
 - Preserve two controls. The historical control is 60 skew slots with
   Frontier 8A and Up-QMV-to-SwiGLU off. The current runtime control uses the
-  same settings with Up-QMV-to-SwiGLU on, following the user's decision.
+  same settings with Up-QMV-to-SwiGLU on, following our decision.
 - Keep Frontier 8B and streamed expert-major records disabled by default.
 - Preserve the exact token digest. Any digest change rejects the optimization.
 - Preserve BF16 rounding boundaries. A small numerical difference is not an
@@ -50,7 +50,7 @@ callbacks, or context managers when disabled.
   as explicit diagnostics. They are disabled by default.
 - Never stop `dynamic_pager`, delete swapfiles, or invoke `memory_pressure` as
   benchmark preparation.
-- Performance work uses greedy decoding and exact digests. The user performs
+- Performance work uses greedy decoding and exact digests. We perform
   final quality evaluation through `chat.sh` with sampling and `xhigh` effort.
 
 Every optimization experiment must:
@@ -88,12 +88,12 @@ Keep the losing full `physical-miss` replacement unavailable. The guarded
 
 Resolution bands above 8–10% are environmentally unresolved for small-effect
 decisions. A 17%, 28.6%, or 32.4% band cannot establish a 1–5% gain. Do not
-claim such a result as resolved. Report the evidence and let the user decide
+claim such a result as resolved. Report the evidence and let us decide
 enablement, promotion, and defaults.
 
 ## Current next-work order
 
-1. With user approval, rerun the corrected decode-only Section 17 control.
+1. With our approval, rerun the corrected decode-only Section 17 control.
 2. Then sweep worker-pool width using the Section 17
    instrumentation. Use the same reads and report queue residence,
    positioned-read time, total I/O wait, physical MB/token, and generation.
@@ -104,4 +104,4 @@ enablement, promotion, and defaults.
 5. Keep both 60-slot Frontier 8A controls frozen. Historical has Up fusion
    off. Current runtime has Up fusion on.
 
-Do not run benchmarks, sweeps, or tests without explicit user permission.
+Do not run benchmarks, sweeps, or tests without our explicit permission.

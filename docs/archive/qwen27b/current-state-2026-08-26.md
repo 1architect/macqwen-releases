@@ -32,7 +32,7 @@ deleted on 2026-08-26 before any A/B test ran, so the comparison is still unmade
 ./chat.sh
 ```
 
-With no arguments the launcher lists the builds it finds on disk, then exits. It had no default. The user selected a
+With no arguments the launcher lists the builds it finds on disk, then exits. It had no default. We selected a
 build by its directory suffix:
 
 ```bash

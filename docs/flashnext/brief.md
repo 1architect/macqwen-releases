@@ -82,12 +82,31 @@ long-context comparison stayed coherent, but the exact-quality answer was better
   no allocation is wired by default.
 - A standalone 2 GB wired-limit sweep looked 13.5% faster. The live harness
   measured -0.4% inside a 7.6% band because it applied the limit after loading.
-  Issue #43 tracks the controlled comparison.
+  The later pre-load comparison found no resolved gain. Issue #43 remains open
+  until the issue record is closed with the corrected result.
 - A GPU capture measured 5,778 dispatches in 86.99 ms without drive traffic.
   The Compute Shader Launch Limiter stayed near 100%, with low occupancy and
   ALU use. The zero-drive GPU is launch-bound.
 - A controlled RMSNorm compile is bit-exact and 1.7% faster at zero drive, but
   remains unresolved in production. Keep it disabled by default.
+
+## Current runtime and speed
+
+The current FlashNext runtime enables a custom SIMD Q4/G32 Metal MoE executor,
+60 skew-selected slab slots, file-backed slab storage, shared-output fusion,
+and Up-QMV/SwiGLU fusion. The active settings remain opt-in until each result
+passes the promotion rules in the handoff.
+
+The current controlled 60-slot Frontier 8A profile with Up-QMV/SwiGLU measures
+3.08 tok/s generation, 3.00 tok/s tail, and 279.7 MB/token. The corrected
+decode-only 16-worker control measures 3.13 tok/s generation, 3.04 tok/s tail,
+and 262.0 MB/token. These results use newer runtime paths and separate control
+conditions from the accepted 2.83 tok/s clean-boot baseline.
+
+The custom Metal path combines routed down-projection and router scores, avoids
+the intermediate routed output, and removes 48 `astype` launches per token.
+The isolated kernel is bit-identical and 3.5% to 4.4% faster on production
+shapes. The complete-model result is unresolved inside a 7.8% band.
 
 The reference machine is an M4 Mac with 16 GB of unified memory and a 256 GB SSD. Prefill and decode measurements are separate. Short
 prompts have lower prefill rates because fixed setup and streamed-read costs apply to fewer tokens. Performance also depends on prompt type,
@@ -147,5 +166,6 @@ Threshold `1.0` keeps the shipped router selection.
 
 The text runtime, six routing profiles, exact sessions, and shared chat integration are active. Cache-aware is optional. The production
 backend keeps the included MTP weights disabled. Current performance work is
-tracked by issues #23 through #25, #33 through #39, #43, and #45. Issues #21, #22,
-#26 through #27, and #41 through #42 are closed.
+tracked by issues #23 through #25, #43, #45, and #48. Issue #49 tracks FlashNext
+prefill on open for both chat profiles. Issues #21, #22, #26 through #27, and
+#41 through #42 are closed.

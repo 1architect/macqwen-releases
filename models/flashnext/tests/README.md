@@ -1,7 +1,7 @@
 # FlashNext terminal test suite
 
 This terminal uses the same colors, prompts, progress glow, and compact command
-language as `chat.sh`. It does not run a test until the user types `/run TEST`
+language as `chat.sh`. It does not run a test until we type `/run TEST`
 and confirms with `yes`.
 
 Start it with:
@@ -25,17 +25,33 @@ is required.
 Primary commands:
 
 ```text
+/help
 /list performance
 /show up-swiglu
 /run up-swiglu
 /controls
+/config
 /config tokens 32
 /config pairs 6
 /config workers 16
 /config purge off
+/config settle 0
+/config timeout 60
+/config max-load 4
+/config compressor-rate 100
+/config checkpoint auto
+/config results ~/.cache/flashnext/test-results
+/config python .venv/bin/python
 /research prefetch
 /results
+/status
+/quit
 ```
+
+`/config` accepts `tokens`, `pairs`, `workers`, `purge`, `settle`, `timeout`,
+`max-load`, `compressor-rate`, `checkpoint`, `results`, and `python`.
+The suite requires at least three pairs for interleaved tests.
+Use `auto` or `automatic` to clear an explicit checkpoint.
 
 The terminal discovers every `case_*.py` file in this folder. Adding a file
 does not require a central registry change.
@@ -75,7 +91,7 @@ Every runnable test shows:
 - a JSON result record.
 
 The default control is 60-slot skew plus Frontier 8A. Benchmarks use greedy
-decoding and exact digests. The user evaluates final quality with `chat.sh`,
+decoding and exact digests. We evaluate final quality with `chat.sh`,
 normal sampling, and `xhigh` effort.
 
 The suite never requires a reboot. The VM quiescence gate and file-cache purge

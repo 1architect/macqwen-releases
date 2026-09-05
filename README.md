@@ -12,17 +12,56 @@ The project includes no model weights.
 
 | Operation | Result |
 |---|---:|
-| Short terminal generation | About 2.0 to 2.5 tok/s |
-| Complete oQ4 benchmark decode | 2.83 tok/s |
-| Cache-aware oQ4 benchmark decode | 2.91 tok/s |
-| Long-prompt prefill near 5,000 tokens | About 40 to 50 tok/s |
+| Short terminal generation | About 2.0 to 3.0 tok/s |
+| Current 60-slot Frontier 8A + Up-QMV/SwiGLU | 3.08 tok/s gen, 3.00 tok/s tail, 279.7 MB/token |
+| Corrected 16-worker decode-only control | 3.13 tok/s gen, 3.04 tok/s tail, 262.0 MB/token |
+| Long-prompt prefill near 5,000 tokens | About 40 to 50 tok/s; 62.19 tok/s synthetic result |
 
 These results come from the reference Mac.
 Speed changes with memory pressure, SSD state, and the macOS file cache.
 See [measurement evidence](docs/flashnext/measurements/) for test conditions.
 
-The 2.83 tok/s result is the accepted clean-boot `buffer-chunk2` comparison.
-It uses 457.7 MB of physical reads per token and preserves token IDs.
+The listed controlled results preserve token IDs.
+
+## Current FlashNext runtime
+
+The current FlashNext runtime adds a custom Metal execution path for the
+FlashNext MoE layers. The launcher enables these current settings:
+
+```text
+FLASHNEXT_METAL_RUNTIME=1
+FLASHNEXT_SLAB_GLOBAL=60
+FLASHNEXT_SLAB_PACK=1
+FLASHNEXT_SLAB_POLICY=skew
+FLASHNEXT_FUSED_SHARED=1
+FLASHNEXT_FUSED_UP_SWIGLU=1
+```
+
+The current controlled 60-slot Frontier 8A profile with Up-QMV/SwiGLU measured
+3.08 tok/s generation, 3.00 tok/s tail, and 279.7 MB/token. All arms kept the
+same token digest. Use the research record for comparison rules and status.
+
+The corrected decode-only 16-worker control measured 3.13 tok/s generation,
+3.04 tok/s tail, 262.0 MB/token, and 3,620.7 MB active memory. The result is a
+control measurement, not a new production guarantee.
+
+### Custom Metal kernels
+
+The custom path lives in `models/flashnext/metal_runtime.py` and
+`models/flashnext/metal_runtime_native.mm`. It uses SIMD Q4/G32 helpers with
+float32 activations and bfloat16 scales and biases. It combines the routed
+down-projection with router scores and writes the output without the separate
+intermediate routed tensor. It also removes 48 `astype` launches per token.
+
+The isolated production-shape kernel is bit-identical to the MLX reference and
+measures about 3.5% to 4.4% faster across controlled miss levels. The complete
+model comparison measured 2.91 tok/s for the custom path versus 2.89 tok/s for
+stock MLX, inside a 7.8% resolution band. The full-model gain remains
+unresolved.
+
+The slab path uses page-aligned, file-backed storage and direct expert-major
+Metal addressing. The 60-slot setting remains the engineering control. Frontier
+8B and streamed expert-major records remain disabled.
 
 ## Current support
 
@@ -277,6 +316,8 @@ The loader checks the checkpoint configuration, index, and required shard files.
 ```text
 macqwen/                 Shared chat, commands, settings, and tools
 models/flashnext/        Flash-Next runtime and benchmarks
+models/flashnext/settings/ FlashNext setting registry and launch defaults
+models/flashnext/tests/  FlashNext interactive research test catalog
 models/qwen27b/          Qwen3.8-27B runtime and research utilities
 docs/                    Current guides, results, and historical records
 docs/MLX/               MLX Metal backend source notes
@@ -311,3 +352,28 @@ Historical experiments stay in [docs/archive](docs/archive/README.md).
 MACQWEN source code uses the MIT License.
 Models and dependencies use their own licenses.
 See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+## Acknowledgements
+
+MACQWEN uses and builds on these third-party projects and platform tools:
+
+- Apple macOS, Apple Silicon, Metal, Objective-C++ Metal APIs, Xcode, and
+  Instruments provide the runtime platform, custom kernels, and trace tools.
+- MLX, MLX-LM, and MLX-VLM provide tensor execution, model loading, and model
+  architecture support.
+- Transformers, NumPy, Requests, and Hugging Face Hub provide tokenization,
+  array operations, HTTP access, and checkpoint access.
+- Hugging Face hosts the public checkpoint files and model discussions used in
+  this project and its evidence record.
+- The Qwen team provides the model architecture, tokenizer, sampling guidance,
+  and checkpoint family used by MACQWEN.
+- Vontra provides the public FlashNext MLX checkpoints used in this work.
+- Tavily and Context7 provide optional search and documentation tools for the
+  repository-tool chat profile.
+- Python provides the runtime and standard-library components.
+- GitHub provides repository hosting, issue tracking, and GitHub Actions CI.
+- The MACQWEN research record credits external reports and source notes where
+  they affect a measurement or a decision.
+
+Each dependency, model, checkpoint, and platform tool keeps its own license
+and terms. Review those terms before redistribution.

@@ -72,8 +72,8 @@ What changed in the code recently:
   then falling to 125.7 ms/token at full miss. Token time stays close to
   linear in physical bytes. The peak needs three arms per cell.
 - VM counters show about 33 page-ins per MB, with reclaim, compression, and
-  swap flat during decode. The corrected `FLASHNEXT_RDAHEAD=0` result is 1.3%
-  faster, not 13% slower, and does not clear a band.
+  swap flat during decode. The corrected read-ahead comparison remains inside
+  the resolution band. No current runtime setting exposes read-ahead control.
 - The default Metal per-set cap is 750 MB, but the total wired budget is zero.
   Raising it to 3,750 MB changes neither token time nor VM counters because no
   allocation is wired by default.
@@ -87,7 +87,7 @@ What changed in the code recently:
   remains unresolved in production. Keep it disabled by default.
 - The remaining cost is still scheduling and graph execution, not a named
   removable stage.
-- The `flashnext-runtime` branch integrates a specialized SIMD Q4/G32 Metal MoE
+- The current runtime integrates a specialized SIMD Q4/G32 Metal MoE
   executor (`FLASHNEXT_METAL_RUNTIME=1`) fusing down-projection and router score
   combination directly to bfloat16. It eliminates intermediate `(tokens, slots, hidden)`
   tensor allocations and removes 48 `astype` kernel launches per token.
@@ -98,8 +98,8 @@ What changed in the code recently:
 - Issue #45 has a native DMA probe with raw GPU and process read metrics, but its
   latch only marks a completed read and its post-GPU flag only marks a later read
   completion. It does not prove continuous physical DMA, zero barrier penalty,
-  or full overlap. Issue #43 proved pre-load wired memory reservation provides no
-  latency benefit over dynamic residency sets.
+  or full overlap. Issue #43 found no resolved pre-load wired-memory benefit over
+  dynamic residency sets, but its public issue remains open.
 - Concentrated global slab allocation (`FLASHNEXT_SLAB_GLOBAL=48, FLASHNEXT_SLAB_MIN_SLOTS=4`)
   concentrates resident expert slots into the top-utility layers ([5, 11, 20, 23, 29, 32, 35, 39, 40, 44, 46, 47]),
   boosting decode hit rate from 14.1% to 23.5% (+67% relative gain) for the exact same 149 MB
@@ -111,7 +111,7 @@ What changed in the code recently:
 - File-backed mlocked slab pack (`FLASHNEXT_SLAB_PACK=1`, `models/flashnext/slab_pack.py`) implements
   Frontier 2 & 3: a single 4K page-aligned 140.63 MB `.bin` file mapped via `mmap` + `mlock` into a
   single zero-copy `MTLBuffer` with direct expert-major addressing in Metal. Controlled 8-arm A/B testing
-  breaks through the 3.0 tok/s target, reaching **3.10 tok/s generation rate** and **3.07 tok/s tail rate**
+  reaches **3.10 tok/s generation rate** and **3.07 tok/s tail rate**
   (+8.3% mean paired speedup, median +9.3%) at 29.4% decode hit rate and 100% bit-identical digest (`29d04075ed7021b3`).
 - Skew-aware slab pack 56 (`FLASHNEXT_SLAB_POLICY=skew, FLASHNEXT_SLAB_GLOBAL=56, FLASHNEXT_SLAB_PACK=1`, `models/flashnext/expert_cache.py`)
   implements the Frontier 1 & 2 extension: concentrates 56 slots into the top 12 hot layers with depth 4–6 based on marginal hit gain (164.07 MiB pack),
@@ -153,15 +153,15 @@ What changed in the code recently:
 - The opt-in Up-QMV to SwiGLU fusion matches the MLX Metal-header arithmetic for
   all 65,536 bfloat16 gate patterns at two Up values. Its 12-arm comparison
   measured +2.0% median and +3.3% mean, inside the 14.8% resolution band.
-  This result remains the historical off/on comparison. The user later enabled
+  This result remains the historical off/on comparison. We later enabled
   the bit-exact fusion in the current chat preset.
 - The corrected uninstrumented 32-token retest measured 3.45 against 3.41
   tok/s. Paired mean was +0.2% inside a 1.5% two-SE band. Physical reduction
-  was 0.7 MB/token. The fusion result is unresolved. The user decides its
+  was 0.7 MB/token. The fusion result is unresolved. We decide its
   runtime status.
 - A later terminal JSON measured 3.39 against 3.31 tok/s, +5.6% paired mean
   and +2.8% paired median inside a 6.2% band. Physical reads fell by 4.9
-  MB/token. The user decided to retain the fusion in the runtime.
+  MB/token. We decided to retain the fusion in the runtime.
 - The current chat preset uses 60 skew slots, Frontier 8A, and Up-QMV/SwiGLU
   enabled. The historical comparison keeps the same stack with Up fusion off.
 - A 256-token physical-miss full replacement lost 8.4% and lost all eight
@@ -169,7 +169,7 @@ What changed in the code recently:
   48-slot core and can change only 12 extensions after a 20 MB/token premise
   gate.
 - Commit `59503a2` recorded 187 passing tests. The audit changes below remain
-  untested until the user approves a test run.
+  untested until we approve a test run.
 
 Session results from the approved test run on 2026-09-04:
 
@@ -210,25 +210,28 @@ Checkpoint   one complete compatible Flash-Next directory
 Override the interpreter with `MACQWEN_FLASHNEXT_PYTHON`. Select the checkpoint with `--checkpoint`, `--model-path`, or
 `MACQWEN_FLASHNEXT_MODEL`. The launcher saves an explicit selection. Set `MACQWEN_MODEL_ROOT` to change the automatic search directory.
 
-## Revised performance direction
+## Current performance status
 
-Issue #43 is closed. The Issue #45 native probe remains observational because its
-completion latch does not prove continuous physical DMA or a complete GPU/read
-overlap interval.
-Concentrated global slabs (`FLASHNEXT_SLAB_GLOBAL=48, min_slots=4`) combined with the scratch-free
-register fused-down kernel reached **2.86 tok/s generation median** (with individual arms at **2.90–2.93 tok/s**)
-and **2.79 tok/s tail rate** at 23.5% decode hit rate and 100% bit-identical digest (`29d04075ed7021b3`).
+Issue #43 remains open after the corrected pre-load wired-limit comparison found
+no resolved gain. Issue #45 remains open because its native probe did not prove
+continuous physical SSD DMA or a complete GPU/read overlap interval.
 
-The clean-boot baseline is 2.83 tok/s; the current production slab baseline is 2.86 tok/s (~345–350 ms/token).
-The practical target is breaking through **3.0 tok/s** (<333 ms/token), requiring an additional **~9 to 12 ms per token**.
+The current controlled 60-slot Frontier 8A profile with Up-QMV/SwiGLU measures
+3.08 tok/s generation, 3.00 tok/s tail, and 279.7 MB/token. The corrected
+decode-only 16-worker control measures 3.13 tok/s generation, 3.04 tok/s tail,
+and 262.0 MB/token. These are current measurements, not minimum guarantees.
 
-The next performance work focuses on the SSD $\rightarrow$ Memory $\rightarrow$ Metal frontier roadmap detailed in
-[Next work](#next-work), prioritizing:
-1. Keep Frontier 5 scheduling changes and Frontier 8B disabled.
-2. With user approval, rerun the corrected decode-only Section 17 control.
-3. Then sweep worker-pool width with the same instrumentation.
-4. Test one task per expert only if that sweep supports a scheduling hypothesis.
-5. Build physical-miss evidence before changing slab selection. Keep 60 slots and 8A frozen.
+The branch includes a SIMD Q4/G32 Metal MoE executor, file-backed skew slabs,
+scratch-free fused-down accumulation, shared-output fusion, and Up-QMV/SwiGLU.
+The isolated kernel is bit-identical and faster. The complete-model gain remains
+inside its resolution band.
+
+Next work uses the SSD, memory, and Metal frontier in this order:
+
+1. Keep 60 slots, Frontier 8A, chunk 2, and 16 workers as controls.
+2. Run the corrected physical-DMA probe for #45.
+3. Complete the pre-load wired-limit record for #43.
+4. Measure Q4/G64, Q4/G128, and REAP-288 through #24 and #25.
 
 ## Download
 
@@ -321,6 +324,18 @@ Use `/new` before enabling the one-shot fused draft for a new conversation.
 | `models/flashnext/bench_slab_production.py` | Paired reversed-order production benchmark for selective slabs |
 | `models/flashnext/bench_native_dma_contention.py` | Measure barrier and fence contention under true unbuffered F_NOCACHE SSD DMA |
 | `models/flashnext/bench_wired_limit.py` | Pre-load wired memory limit comparison with fresh instances |
+| `models/flashnext/metal_runtime.py` | SIMD Q4/G32 Metal MoE kernels and fused output paths |
+| `models/flashnext/metal_native.py` | Python bridge for native Metal scheduling probes |
+| `models/flashnext/metal_runtime_native.mm` | Native Objective-C++ command-buffer and synchronization probe |
+| `models/flashnext/slab_pack.py` | File-backed, page-aligned expert slab storage |
+| `models/flashnext/slab_topology.py` | Offline slab allocation and topology analysis |
+| `models/flashnext/swiglu_contract.py` | Exactness checks for fused SwiGLU arithmetic |
+| `models/flashnext/bench_runtime_layer.py` | Fixed-route custom-kernel layer benchmark |
+| `models/flashnext/bench_score_sync.py` | Score-sync boundary timing diagnostic |
+| `models/flashnext/bench_chat_parity.py` | Chat-path versus benchmark-path comparison |
+| `models/flashnext/bench_io_scheduling.py` | Queue, read, and completion timing diagnostic |
+| `models/flashnext/settings/` | FlashNext setting registry, launch defaults, and source reporting |
+| `models/flashnext/tests/` | Interactive research test catalog and runnable cases |
 | `models/flashnext/diskio.py` | Physical bytes read, to tell a cold run from a warm one |
 | `models/flashnext/metal_trace.py` | Export Metal command-buffer spans and nesting depth |
 | `models/flashnext/capture_dispatches.py` | Capture a small `.gputrace` for Xcode dispatch inventory |
@@ -449,7 +464,7 @@ The profile decides whether the variable applies:
   to investigate machine state. Trusted comparisons rely on long paired arms,
   reversed ordering, live VM metrics, and measured-arm contamination checks.
 - A measured arm warns when swap or pageout movement exceeds eight pages per
-  token, with a minimum allowance of 256 pages. The user decides whether the
+  token, with a minimum allowance of 256 pages. We decide whether the
   control and machine state are acceptable.
 - Production rate comparisons keep `FLASHNEXT_PROFILE_IO=0`. Frontier 5
   attribution uses a separate `--profile-io` diagnostic run because per-read
@@ -534,7 +549,7 @@ and routing profiles alike. Prose won't catch this kind of failure.
 The task: ask for a SketchUp extension that extrudes several selected faces to a height supplied in the prompt. The reply has to be a complete `.rb`
 file. Load it in SketchUp and run it. Record the checkpoint, the effort level, and whether it works.
 
-Performance work does not run an automated quality gate. The user evaluates a
+Performance work does not run an automated quality gate. We evaluate a
 final candidate through `chat.sh` with normal sampling and Qwen's documented
 `xhigh` effort.
 
@@ -577,7 +592,7 @@ Current work is tracked in the public issue tracker:
 
 - [#4](https://github.com/1architect/macqwen-releases/issues/4) Re-run the cache-aware quality and trajectory gate with sampling.
 - [#5](https://github.com/1architect/macqwen-releases/issues/5) Measure cache-aware routing at long generation and 5K context.
-- [#6](https://github.com/1architect/macqwen-releases/issues/6) Measure prefill recovery after `FLASHNEXT_SWAP_MAX_ROWS`.
+- [#6](https://github.com/1architect/macqwen-releases/issues/6) Measure prefill recovery after selective expert residency changes.
 - [#7](https://github.com/1architect/macqwen-releases/issues/7) Confirm draft contention with a warm page cache.
 - [#8](https://github.com/1architect/macqwen-releases/issues/8) Fix missing spaces at streamed chunk joins.
 - [#9](https://github.com/1architect/macqwen-releases/issues/9) Widen the cache-aware quality gate.
@@ -589,21 +604,28 @@ Open exact-quality performance experiments:
 - [#24](https://github.com/1architect/macqwen-releases/issues/24) Probe routed-expert Q4 group sizes 64 and 128.
 - [#25](https://github.com/1architect/macqwen-releases/issues/25) Gate and benchmark REAP-288. Use REAP-384 as the fallback.
 
+Open runtime and measurement experiments:
+
+- [#43](https://github.com/1architect/macqwen-releases/issues/43) Resolve FlashNext Metal wired-limit behavior.
+- [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under physical SSD DMA.
+- [#48](https://github.com/1architect/macqwen-releases/issues/48) Isolate SSD DMA and GPU contention outside FlashNext.
+- [#49](https://github.com/1architect/macqwen-releases/issues/49) Prefill FlashNext when opened for plain and agent profiles.
+
 ### SSD -> Memory -> Metal Runtime Frontiers (The 10 Next Steps)
 
 The path to breaking through 3.0 tok/s (<333 ms/token) from the current 2.86 tok/s baseline (~345 ms/token) spans 10 architectural frontiers across the storage, unified memory, and Metal boundary:
 
-1. **Corrigir o slab A/B e usar experts realmente hot** (Priority: High | Status: **CLOSED / IMPLEMENTED**):
+1. **Correct slab A/B and use hot experts** (Priority: High | Status: **CLOSED / IMPLEMENTED**):
    - Decoupled resident slab from prefill tokens; fixed test-isolation bugs wiping `pins.json`.
    - Solved the *layer utility inversion* problem: replaced uniform first-12 layer assignment with concentrated global allocation (`FLASHNEXT_SLAB_GLOBAL=48, min_slots=4`), focusing on the 12 highest-utility layers (`[5, 11, 20, 23, 29, 32, 35, 39, 40, 44, 46, 47]`).
    - Decode hit rate jumped from 14.1% to **23.5%** (+67.4% relative gain) for **0 extra RAM** (+144 MB active RAM).
    - Delivered **+8.3% mean / +5.5% median paired speedup** (2.70 -> 2.86 tok/s, tail 2.79 tok/s) with 100% bit-identical digest `29d04075ed7021b3`.
 
-2. **Slab file-backed: mlocked mmap + streamed buffer no mesmo kernel** (Priority: Very High | Status: **CLOSED / IMPLEMENTED**):
+2. **File-backed slab: mlocked mmap and streamed buffer in one kernel** (Priority: Very High | Status: **CLOSED / IMPLEMENTED**):
    - File-backed mlocked slab pointers now pass directly into the unified Metal MoE kernel, with the bit-31 pointer encoding accepting mixed slab and streamed inputs.
    - The resident allocation remains bounded to the 48–64-slot class. The 60-slot profile is the selected engineering default.
 
-3. **1 expert-major record -> custom kernel direto** (Priority: High | Status: **MEASURED / OPT-IN**):
+3. **One expert-major record to the custom kernel** (Priority: High | Status: **MEASURED / OPT-IN**):
    - The expert-major streamed record path is implemented and measured in Sections 18 and 19.
    - It changes destination layout and worker grouping. It does not remove source positioned reads or requested bytes.
    - Its observed gains remain unresolved. Keep it disabled until a controlled topology test supports promotion.
@@ -613,11 +635,11 @@ The path to breaking through 3.0 tok/s (<333 ms/token) from the current 2.86 tok
    - Slicing composite buffers in Python/MLX caused non-aligned slicing and graph evaluation stalls, dropping generation rate from 2.94 to 2.30 tok/s.
    - Independent row buffers per part (`_SharedRead` with `empty_rows`) preserve threadpool concurrency and are retained as optimal.
 
-5. **Fused-down sem global scratch/barriers** (Priority: Medium | Status: **CLOSED / IMPLEMENTED**):
+5. **Fused-down without global scratch or barriers** (Priority: Medium | Status: **CLOSED / IMPLEMENTED**):
    - Replaced intermediate device scratch tensor write/read with in-register accumulation (`qmv_accumulate_impl`).
    - Eliminated the 40 KB device memory scratch allocation per call and 768 threadgroup barriers per token across 48 layers. Bit-exact on bfloat16 (`test_scratchless_fused_down_bfloat16`).
 
-6. **Up-QMV + SwiGLU** (Priority: Low/Med | Status: **ENABLED BY USER**):
+6. **Up-QMV + SwiGLU** (Priority: Low/Med | Status: **ENABLED IN CURRENT CHAT PRESET**):
    - Fusing `activation = up * silu(gate)` in the Up-QMV epilogue eliminates `up_out` tensor allocation and saves 48 MLX elementwise launches per token.
    - The MLX-header bfloat16 sequence matches all tested encodings and preserves the exact token digest. The current chat preset enables it.
 
@@ -677,7 +699,6 @@ Closed exact-quality performance issues:
 - [#27](https://github.com/1architect/macqwen-releases/issues/27) Attribute the remaining FlashNext GPU layer cost. Closed after Metal trace attribution.
 - [#41](https://github.com/1architect/macqwen-releases/issues/41) Resolve reusable destination-ring performance. Closed with no resolved benefit; diagnostic remains disabled.
 - [#42](https://github.com/1architect/macqwen-releases/issues/42) Characterize the GPU-busy hump across drive miss levels. Closed after the reversed-order sweep.
-- [#43](https://github.com/1architect/macqwen-releases/issues/43) Resolve FlashNext Metal wired-limit behavior. Closed on 2026-09-03: pre-loading `FLASHNEXT_WIRED_GB=2` strictly before model loading showed no resolved gain or penalty across 8 interleaved reversed arms (-2.1% mean, +0.6% median, p=0.688, band 15.8%). Unified memory residency sets handle streaming decode without static OS page wiring.
 - [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under mixed residency. The 2026-09-03 native probe retains its raw GPU and process read results, but its latch marked completed reads and did not prove continuous physical DMA. Its post-GPU flag only marked a read completing after GPU wait. The probe therefore does not establish zero barrier penalty, 100% overlap, or a 5-12% contention bound.
 
 Follow-up issues from the 2026-09-01 sweep:
