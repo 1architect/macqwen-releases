@@ -11,8 +11,20 @@ QSA_CHUNK_THRESHOLD = int(
     os.environ.get("FLASHNEXT_QSA_CHUNK_THRESHOLD", "2048")
 )
 QSA_QUERY_CHUNK = int(os.environ.get("FLASHNEXT_QSA_QUERY_CHUNK", "2048"))
+# Upstream builds a dense block-selection mask with this shape:
+# (batch, query, block_topk, key). Route to our sparse mask before that
+# temporary crosses the allocator budget, even when query is below the old
+# length-only threshold.
+QSA_DENSE_MASK_MAX_BYTES = int(os.environ.get(
+    "FLASHNEXT_QSA_DENSE_MASK_MAX_BYTES", str(512 * 1024 * 1024)
+))
 
 _ORIGINAL_CALL = None
+
+
+def _dense_mask_bytes(batch, query, past, block_topk) -> int:
+    """Estimate upstream QSA's dense block-selection mask allocation."""
+    return int(batch) * int(query) * int(block_topk) * (int(past) + int(query))
 
 
 def _prepare_indexer(indexer, hidden_states, cache, position_ids):
@@ -140,8 +152,13 @@ def _chunked_call(
         isinstance(mask, str) and mask == "causal"
     )
     past_len = getattr(cache, "offset", None)
+    dense_mask_bytes = (
+        _dense_mask_bytes(x.shape[0], length, past_len, self.indexer.block_topk)
+        if isinstance(past_len, int)
+        else 0
+    )
     if (
-        length <= QSA_CHUNK_THRESHOLD
+        (length <= QSA_CHUNK_THRESHOLD and dense_mask_bytes <= QSA_DENSE_MASK_MAX_BYTES)
         or not supported_mask
         or cache is None
         or not isinstance(past_len, int)
@@ -219,6 +236,8 @@ def apply() -> bool:
         return False
     if QSA_QUERY_CHUNK < 1 or QSA_CHUNK_THRESHOLD < 1:
         raise ValueError("QSA chunk sizes must be positive")
+    if QSA_DENSE_MASK_MAX_BYTES < 1:
+        raise ValueError("QSA dense mask byte budget must be positive")
     _ORIGINAL_CALL = Qwen4ExpAttention.__call__
     Qwen4ExpAttention.__call__ = _chunked_call
     Qwen4ExpAttention._flashnext_chunked_qsa = True

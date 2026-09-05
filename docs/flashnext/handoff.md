@@ -7,7 +7,14 @@ rules.
 
 ## Where things stand
 
-Last worked on 2026-09-04.
+Last worked on 2026-09-05.
+
+The latest fix addresses cached tool-result prefill. A 1,978-token input can
+exceed the Metal buffer limit when QSA includes the earlier conversation.
+We now select the existing bounded QSA mask path when the projected upstream
+mask exceeds 512 MiB. The estimate includes cached tokens and batch size.
+The focused QSA and prefill suite passes 12 tests. Manual agent validation
+remains pending. See the final `research.md` section for allocation evidence.
 
 ### REAP branch preparation
 

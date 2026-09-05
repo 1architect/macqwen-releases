@@ -3520,3 +3520,31 @@ We change one factor at a time and retain the established 32-token control horiz
 We report resolution bands, physical reads, RAM, and exact digests for exact optimizations.
 Checkpoint comparisons require quality evaluation rather than matching oQ4 token digests.
 We adopt these directions as our next steps. We schedule or run no new experiment today.
+
+## Cached tool-result prefill allocation guard, 2026-09-05
+
+Our manual agent session fails while ingesting 1,978 tokens after a SketchUp
+API lookup. Metal rejects a 10,930,459,648-byte buffer against its
+9,534,832,640-byte single-buffer limit. The exception surfaces at `mx.eval(scores)`.
+That synchronization point evaluates earlier work; it does not identify the allocating operation.
+
+Upstream QSA constructs a boolean intermediate with dimensions
+`batch × new_queries × selected_blocks × total_keys`.
+The reported size exactly matches `1 × 1978 × 512 × 10793`.
+This is consistent with 8,815 cached tokens plus the new 1,978-token input.
+Our existing QSA guard checks only whether new input exceeds 2,048 tokens.
+It therefore misses this cached follow-up.
+
+We retain the existing length guard and add a projected allocation guard.
+For supported QSA calls, an estimate above 512 MiB selects our existing
+scatter-based, query-chunked mask path. We include batch size and cached tokens
+in that estimate. We preserve small decode calls on the original path.
+`FLASHNEXT_QSA_DENSE_MASK_MAX_BYTES` controls the threshold and must be positive.
+This threshold governs the upstream mask temporary, not total runtime RAM.
+We preserve the conversation context and checkpoint weights.
+The correction applies to compatible FlashNext releases, including unpruned checkpoints.
+
+Our focused QSA and prefill suite passes 12 tests in 0.021 seconds.
+It verifies dispatch for the reported allocation, preserves the small decode path,
+and compares cached-prefix masks exactly with the dense reference, including partial tails.
+We run no model generation or benchmark. Manual agent validation remains pending.
