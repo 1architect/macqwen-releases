@@ -1,5 +1,50 @@
 # Changelog
 
+## MACQWEN 0.4.0 - 2026-09-04
+
+### Added
+
+- Add the SIMD Q4/G32 Metal MoE executor with fused down-projection and router
+  score combination.
+- Add the native Objective-C++ Metal scheduler and DMA contention probes.
+- Add file-backed, page-aligned expert slabs with skew-aware allocation and
+  direct expert-major Metal addressing.
+- Add the FlashNext settings registry and source reporting for runtime options.
+- Add physical-miss, I/O scheduling, score-sync, chat-parity, long-answer,
+  slab, kernel, and wired-limit benchmark tools.
+- Add the interactive FlashNext research test catalog with runnable cases and
+  result tracking.
+
+### Changed
+
+- Use 60 skew-selected slots, file-backed slabs, chunk 2, and the current
+  fused runtime controls as the engineering profile.
+- Strengthen benchmark controls with reversed ordering, private pin snapshots,
+  physical-byte checks, digest checks, and corrected post-prefill counters.
+- Replace strict kernel bit identity as the only kernel criterion with layer
+  tolerance, fixed-route performance, and end-to-end trajectory checks.
+- Rewrite the FlashNext research record and reference documentation for the
+  current runtime, measurements, commands, and third-party acknowledgements.
+
+### Fixed
+
+- Remove stale runtime setting paths and expose current options through the
+  shared settings registry.
+- Correct fresh-arm isolation, slab cache state, read accounting, and source
+  fingerprint checks in the production harness.
+- Keep experimental Frontier 8B, physical-miss, expert-major stream, and
+  cache-aware paths disabled when their controls remain unresolved.
+
+### Measured
+
+- The current 60-slot Frontier 8A profile with Up-QMV/SwiGLU measures 3.08
+  tok/s generation, 3.00 tok/s tail, and 279.7 MB/token.
+- The corrected 16-worker decode-only control measures 3.13 tok/s generation,
+  3.04 tok/s tail, and 262.0 MB/token.
+- The isolated custom Q4 kernel is bit-identical and 3.5% to 4.4% faster on
+  production shapes. The complete-model comparison remains unresolved inside a
+  7.8% resolution band.
+
 ## MACQWEN 0.3.6 - 2026-09-03
 
 ### Fixed
