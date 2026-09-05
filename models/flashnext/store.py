@@ -126,9 +126,9 @@ class SafeTensorStore:
         }
         self.refs: Dict[str, TensorRef] = {}
         self._maps: Dict[str, mmap.mmap] = {}
-        self._files: Dict[str, object] = {}
         self._fds: Dict[str, int] = {}
         self._fd_lock = threading.Lock()
+        self._map_lock = threading.Lock()
         self._views: Dict[str, np.ndarray] = {}
         self._shared_views: Dict[str, np.ndarray] = {}
         self._drop_ngram = os.environ.get("FLASHNEXT_NGRAM_DONTNEED") == "1"
@@ -269,16 +269,23 @@ class SafeTensorStore:
     def _map(self, shard: str) -> mmap.mmap:
         handle = self._maps.get(shard)
         if handle is None:
-            file = open(os.path.join(self.dir, shard), "rb")
-            handle = mmap.mmap(file.fileno(), 0, prot=mmap.PROT_READ)
-            advice = {
-                "normal": mmap.MADV_NORMAL,
-                "random": mmap.MADV_RANDOM,
-                "sequential": mmap.MADV_SEQUENTIAL,
-            }[self._mmap_advice]
-            handle.madvise(advice)
-            self._files[shard] = file
-            self._maps[shard] = handle
+            with self._map_lock:
+                handle = self._maps.get(shard)
+                if handle is None:
+                    file = open(os.path.join(self.dir, shard), "rb")
+                    try:
+                        handle = mmap.mmap(file.fileno(), 0, prot=mmap.PROT_READ)
+                    finally:
+                        # mmap keeps its own descriptor on this platform. The
+                        # Python file object is not needed after mapping.
+                        file.close()
+                    advice = {
+                        "normal": mmap.MADV_NORMAL,
+                        "random": mmap.MADV_RANDOM,
+                        "sequential": mmap.MADV_SEQUENTIAL,
+                    }[self._mmap_advice]
+                    handle.madvise(advice)
+                    self._maps[shard] = handle
         return handle
 
     def _shared_view(self, name: str) -> np.ndarray:
@@ -351,8 +358,9 @@ class SafeTensorStore:
     def pin_size(self, name: str, rows: Sequence[int]) -> int:
         """Return the bytes `pin_rows` would lock without changing residency."""
         ref = self.refs[name]
-        view = self._shared_view(name)
-        base = int(view.__array_interface__["data"][0])
+        # The mapping base is page-aligned, so its address does not affect
+        # the page span. Avoid opening a shard while routing candidates.
+        base = ref.start
         page = mmap.PAGESIZE
         total = 0
         for row in rows:
@@ -629,10 +637,8 @@ class SafeTensorStore:
             self._slab_pack = None
         for handle in self._maps.values():
             handle.close()
-        for file in self._files.values():
-            file.close()
         for fd in self._fds.values():
             os.close(fd)
         self._views.clear()
         self._maps.clear()
-        self._files.clear()
+        self._fds.clear()

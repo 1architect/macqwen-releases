@@ -491,6 +491,15 @@ def warm_layer(switch_mlp, layer_id) -> None:
     experts = _LAST.get(layer_id)
     if not experts:
         return
+    # Pin profiles are shared across model launches.  A profile from a wider
+    # checkpoint can contain expert IDs that do not exist in this layer.
+    # Filter before submitting background reads; `_touch` deliberately hides
+    # read errors because warming is only a best-effort optimization.
+    count = getattr(switch_mlp.gate_proj, "num_experts", 0)
+    if count > 0:
+        experts = [int(expert) for expert in experts if 0 <= int(expert) < count]
+    if not experts:
+        return
     for projection in (
         switch_mlp.gate_proj,
         switch_mlp.up_proj,
@@ -1207,6 +1216,13 @@ class ResidentSlab:
     def populate(self, experts: List[int]) -> None:
         """Pre-populate the slab with known high-utility recurrent experts."""
         if self.parts is not None or not experts:
+            return
+        # Pin history can outlive the checkpoint that created it.  Keep stale
+        # IDs out of rows() so a REAP model can reuse the shared history safely.
+        try:
+            expert_count = int(self.store.shape(f"{self.prefix}.weight")[0])
+            experts = [int(e) for e in experts if 0 <= int(e) < expert_count]
+        except (IndexError, KeyError, TypeError):
             return
         for expert in experts[:self.capacity]:
             if expert not in self.slot and len(self._pending) < self.capacity:

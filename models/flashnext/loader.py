@@ -28,6 +28,7 @@ from mlx_vlm.utils import (
 from .expert_cache import StreamingSwitchGLU
 from .adaptive_topk import apply as apply_adaptive_topk
 from .patch_rmsnorm import apply as apply_rmsnorm_fix
+from .patch_rmsnorm import configure as configure_rmsnorm
 from .qsa_chunk import apply as apply_qsa_chunk
 from .ngram import (
     StreamingQuantizedEmbedding,
@@ -36,6 +37,10 @@ from .ngram import (
 from .store import SafeTensorStore
 
 STREAMED = (".switch_mlp.", ".ngram_embedding.")
+_REAP_NORM_KEY = "language_model.model.hyper_connection_mixer.hc_norm.weight"
+_REAP_NORM_FINGERPRINT = (
+    "59f7a6ebc4e47b0dba46d5bd7f10c156bc08cb3709347e5c5dec5077e914ee79"
+)
 
 
 def _is_streamed(key: str) -> bool:
@@ -126,6 +131,7 @@ def load_streaming(
         from .mtp import attach
 
         attach(model.language_model)
+    configure_rmsnorm(model, one_centered=_norm_one_centered(config, store))
 
     # Lazy: shapes are known, nothing is read yet.
     weights = {}
@@ -179,6 +185,7 @@ def load_streaming(
         # hold, so RAM given to the vision tower is RAM taken from that cache.
         # A text-only agent never runs it.
         resident = {k: v for k, v in resident.items() if not k.startswith("vision_tower")}
+    _sanitize_conv1d_weights(model, resident)
     model.load_weights(list(resident.items()), strict=False)
     mx.eval(model.parameters())
     model.eval()
@@ -196,6 +203,35 @@ def load_streaming(
         print(f"  MTP       : {'on, experts on the drive' if use_mtp else 'off'}")
 
     return model, config, store
+
+
+def _sanitize_conv1d_weights(model: nn.Module, weights: dict) -> None:
+    """Convert Conv1d weights only when the target module needs it.
+
+    Upstream Qwen sanitization moves every Conv1d tensor whose last dimension
+    is not one. REAP contains both layouts in one checkpoint: linear-attention tensors already
+    match MLX, while the PLE depthwise tensor needs its kernel and channel
+    axes exchanged. Compare each tensor with its actual target shape so old
+    checkpoints remain unchanged and compatible tensors are not transposed.
+    """
+    targets = {
+        f"{path}.weight": module.weight.shape
+        for path, module in model.named_modules()
+        if path and isinstance(module, nn.Conv1d) and hasattr(module, "weight")
+    }
+    for key, value in list(weights.items()):
+        expected = targets.get(key)
+        if expected is None or value.shape == expected:
+            continue
+        if value.ndim == 3:
+            converted = value.moveaxis(2, 1)
+            if converted.shape == expected:
+                weights[key] = converted
+                continue
+        raise ValueError(
+            f"incompatible Conv1d weight {key}: checkpoint {value.shape}, "
+            f"target {expected}"
+        )
 
 
 def _nbytes(store: SafeTensorStore, key: str) -> int:
@@ -254,8 +290,8 @@ def _swap_ngram(model, store, capacity, mode) -> int:
         base = f"language_model.model.layers.{index}.ple.ple_embedding.ngram_embedding"
         shards = []
         for shard_index in range(len(table.shards)):
-            prefix = f"{base}.shard_{shard_index}"
-            if f"{prefix}.weight" not in store.refs:
+            prefix = _ngram_shard_prefix(store, base, shard_index)
+            if prefix is None:
                 break
             shards.append(
                 StreamingQuantizedEmbedding(
@@ -263,10 +299,68 @@ def _swap_ngram(model, store, capacity, mode) -> int:
                 )
             )
             count += 1
-        if len(shards) == len(table.shards):
-            ple.ple_embedding.ngram_embedding = StreamingShardedEmbedding(
-                shards,
-                table.shard_sizes,
-                table.dims,
+        if len(shards) != len(table.shards):
+            raise ValueError(
+                f"incomplete n-gram shard set at layer {index}: "
+                f"found {len(shards)} of {len(table.shards)}"
             )
+        ple.ple_embedding.ngram_embedding = StreamingShardedEmbedding(
+            shards, table.shard_sizes, table.dims
+        )
     return count
+
+
+def _ngram_shard_prefix(store, base: str, shard_index: int) -> str | None:
+    """Return the on-disk name for an n-gram shard.
+
+    Older converted checkpoints use ``shard_N``. REAP exports use the
+    upstream ``shards.N`` spelling. Probe the weight key only, so incomplete
+    shards fail closed and the existing replacement is not installed.
+    """
+    candidates = (
+        f"{base}.shards.{shard_index}",
+        f"{base}.shard_{shard_index}",
+    )
+    for prefix in candidates:
+        if f"{prefix}.weight" in store.refs:
+            return prefix
+    return None
+
+
+def _norm_one_centered(config: dict, store: SafeTensorStore) -> bool:
+    """Select the norm convention without guessing from a model family.
+
+    The historical conversion has one-centered gains and remains the default.
+    A converter can declare the newer zero-centered convention in config.
+    ``FLASHNEXT_NORM_CONVENTION`` is an explicit escape hatch for checkpoints
+    whose metadata predates the convention field.
+    """
+    override = os.environ.get("FLASHNEXT_NORM_CONVENTION", "").strip().lower()
+    if override in {"one", "one-centered", "one_centered"}:
+        return True
+    if override in {"zero", "zero-centered", "zero_centered"}:
+        return False
+    if override:
+        raise ValueError("FLASHNEXT_NORM_CONVENTION must be one or zero")
+    for source in (config, config.get("text_config", {})):
+        value = source.get("norm_convention") or source.get("rms_norm_convention")
+        if isinstance(value, str):
+            value = value.lower().replace("_", "-")
+            if value in {"zero", "zero-centered"}:
+                return False
+            if value in {"one", "one-centered"}:
+                return True
+    # The sh0wie REAP export is the only known corrected artifact. Fingerprint
+    # one small, stable norm tensor. Unknown derivatives retain legacy mode.
+    key = _REAP_NORM_KEY
+    ref = store.refs.get(key)
+    if ref is not None:
+        import hashlib
+
+        size = _nbytes(store, key)
+        with open(os.path.join(store.dir, ref.shard), "rb") as handle:
+            handle.seek(ref.start)
+            digest = hashlib.sha256(handle.read(size)).hexdigest()
+        if digest == _REAP_NORM_FINGERPRINT:
+            return False
+    return True

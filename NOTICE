@@ -2,6 +2,7 @@ MACQWEN
 
 This repository does not include model weights.
 
+The current research checkpoint is `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
 Qwen3.8-Flash-Next-MLX-oQ3-MTP, Qwen3.8-Flash-Next-MLX-oQ4, and Qwen3.8-27B
 checkpoints are distributed separately by their publishers. Review each
 checkpoint license before download, use, modification, or redistribution.

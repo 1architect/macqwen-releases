@@ -97,8 +97,14 @@ The 256 GB reference Mac normally holds only one Flash-Next checkpoint.
 
 | Checkpoint | Size | Guidance |
 |---|---:|---|
+| REAP-288 | 131 indexed shards | Current research checkpoint; quality and speed gates remain open |
 | oQ4 | 111.7 GB | Quality baseline; recommended for code and accurate API names |
 | oQ3-MTP | 86.2 GiB | Public quick start; faster and smaller |
+
+The current REAP checkpoint is `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
+It uses Q4/G64 expert weights and Q4/G32 n-gram weights. Its expert path
+uses reference streaming. The custom Q4/G32 Metal executor and packed slabs
+remain inactive until compatible support is measured.
 
 oQ4 passed a recorded API coding test that oQ3-MTP failed.
 Use oQ3-MTP for prose, general chat, and the smallest supported installation.
@@ -124,6 +130,13 @@ Create the tested Python environment:
 ```
 
 This command creates `.venv` and installs the pinned Flash-Next dependencies.
+
+Download the current REAP research checkpoint:
+
+```bash
+hf download sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit \
+  --local-dir "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
+```
 
 Download the public oQ3-MTP checkpoint:
 

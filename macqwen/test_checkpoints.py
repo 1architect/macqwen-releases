@@ -48,6 +48,54 @@ class CheckpointTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "choose a Flash-Next checkpoint"):
                     resolve_flashnext()
 
+    def test_stale_saved_checkpoint_falls_back_to_the_only_complete_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            expected = flashnext(root, "reap288")
+            stale = root / "deleted-oq4"
+            with patch.dict(os.environ, {"MACQWEN_MODEL_ROOT": str(root)}, clear=False):
+                with self.assertRaisesRegex(ValueError, "incomplete or incompatible"):
+                    resolve_flashnext(stale)
+                self.assertEqual(
+                    resolve_flashnext(stale, allow_stale_fallback=True),
+                    expected.resolve(),
+                )
+
+    def test_stale_fallback_requires_one_complete_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stale = root / "deleted-oq4"
+            flashnext(root, "first")
+            flashnext(root, "second")
+            with patch.dict(os.environ, {"MACQWEN_MODEL_ROOT": str(root)}, clear=False):
+                with self.assertRaisesRegex(ValueError, "incomplete or incompatible"):
+                    resolve_flashnext(stale, allow_stale_fallback=True)
+
+    def test_existing_incomplete_checkpoint_does_not_fall_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            damaged = flashnext(root, "damaged")
+            (damaged / "model-00001-of-00001.safetensors").unlink()
+            flashnext(root, "reap288")
+            with patch.dict(os.environ, {"MACQWEN_MODEL_ROOT": str(root)}, clear=False):
+                with self.assertRaisesRegex(ValueError, "incomplete or incompatible"):
+                    resolve_flashnext(damaged, allow_stale_fallback=True)
+
+    def test_invalid_environment_checkpoint_does_not_fall_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            flashnext(root, "reap288")
+            with patch.dict(
+                os.environ,
+                {
+                    "MACQWEN_MODEL_ROOT": str(root),
+                    "MACQWEN_FLASHNEXT_MODEL": str(root / "deleted-oq4"),
+                },
+                clear=False,
+            ):
+                with self.assertRaisesRegex(ValueError, "incomplete or incompatible"):
+                    resolve_flashnext()
+
     def test_qwen27b_discovery_uses_config_instead_of_a_local_name(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

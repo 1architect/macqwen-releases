@@ -48,7 +48,11 @@ def installed_flashnext(root: Path | None = None) -> list[Path]:
     return [path for path in sorted(children) if path.is_dir() and flashnext_compatible(path)]
 
 
-def resolve_flashnext(requested: str | os.PathLike[str] | None = None) -> Path:
+def resolve_flashnext(
+    requested: str | os.PathLike[str] | None = None,
+    *,
+    allow_stale_fallback: bool = False,
+) -> Path:
     root = model_root()
     value = str(requested or os.environ.get("MACQWEN_FLASHNEXT_MODEL", "")).strip()
     if value and value != "auto":
@@ -57,6 +61,10 @@ def resolve_flashnext(requested: str | os.PathLike[str] | None = None) -> Path:
         if not path.is_absolute():
             path = root / path
         if not flashnext_compatible(path):
+            if allow_stale_fallback and not path.exists():
+                choices = installed_flashnext(root)
+                if len(choices) == 1:
+                    return choices[0].resolve()
             raise ValueError(f"incomplete or incompatible Flash-Next checkpoint: {path}")
         return path.resolve()
 

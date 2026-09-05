@@ -66,11 +66,19 @@ def _rms_norm(self, x: mx.array) -> mx.array:
     else:
         y = x
         weight = self.weight
+    # The original Flash-Next conversion stores one-centered gains, while
+    # some newer converters store the zero-centered gains expected by
+    # mlx-vlm. Keep this decision on each norm instance. This allows callers
+    # to load both checkpoint families in one process.
+    if getattr(self, "_flashnext_one_centered", True):
+        weight = weight.astype(mx.float32)
+    else:
+        weight = 1.0 + weight.astype(mx.float32)
     if _COMPILE[0]:
         return _fused(y, weight, self.eps).reshape(x.shape).astype(dtype)
     y = y.astype(mx.float32)
     y = y * mx.rsqrt(mx.mean(mx.square(y), axis=-1, keepdims=True) + self.eps)
-    y = y * weight.astype(mx.float32)
+    y = y * weight
     return y.reshape(x.shape).astype(dtype)
 
 
@@ -84,3 +92,18 @@ def apply() -> bool:
     language.Qwen4ExpRMSNorm.__call__ = _rms_norm
     _applied = True
     return True
+
+
+def configure(model, *, one_centered: bool) -> int:
+    """Set the RMSNorm gain convention for one constructed model.
+
+    ``apply`` patches the shared class method before model construction.
+    Convention selection happens after construction, so it must be stored on
+    each norm rather than in module-global state.
+    """
+    count = 0
+    for _name, module in model.named_modules():
+        if module.__class__.__name__ == "Qwen4ExpRMSNorm":
+            module._flashnext_one_centered = bool(one_centered)
+            count += 1
+    return count

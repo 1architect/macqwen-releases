@@ -557,11 +557,16 @@ def main() -> int:
             or saved_checkpoint
             or None
         )
+        saved_only = bool(
+            saved_checkpoint and not explicit_checkpoint and not environment_checkpoint
+        )
         try:
-            args.model_path = str(resolve_flashnext(choice))
+            args.model_path = str(resolve_flashnext(
+                choice, allow_stale_fallback=saved_only
+            ))
         except ValueError as exc:
             parser.error(str(exc))
-        if explicit_checkpoint or not (environment_checkpoint or saved_checkpoint):
+        if explicit_checkpoint or saved_only or not (environment_checkpoint or saved_checkpoint):
             prefs["flashnext_checkpoint"] = args.model_path
     if benchmarking and prefs["profile"] != "plain":
         parser.error("benchmark mode requires --profile plain")

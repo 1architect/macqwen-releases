@@ -3405,3 +3405,118 @@ The 8-worker result does not justify a default change. The prompt comparison doe
 ### Resume order
 
 Run the independent DMA control first. Then resolve the remaining wired-limit record. Next measure structural working-set changes. Use the same controls, reversed ordering, physical-byte counters, active-memory counters, and digest checks for every comparison. Do not start another broad optimization sweep.
+
+## REAP compatibility and manual chat check, 2026-09-04
+
+This section is our current REAP resume point.
+We remove our installed oQ4 checkpoint with explicit approval and install
+`sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`. All 131 indexed shard files are present.
+The checkpoint contains 288 routed experts per layer, with Q4/G64 expert weights
+and Q4/G32 n-gram weights. oQ4 remains our historical quality control.
+We need another download or external copy before a new direct oQ4 comparison.
+
+### Compatibility changes
+
+- We recover automatic discovery when a saved checkpoint directory is missing
+  and exactly one complete compatible checkpoint remains. Explicit invalid
+  selections and existing incomplete directories still produce errors.
+- We accept both `ngram_embedding.shard_N` and `ngram_embedding.shards.N`.
+  Incomplete n-gram sets fail before the original table can become resident.
+- We configure RMSNorm separately for each model. Legacy one-centered weights
+  retain their existing arithmetic. The verified sh0wie norm fingerprint selects
+  zero-centered arithmetic, including the float32 `1 + weight` operation.
+  Explicit convention metadata or `FLASHNEXT_NORM_CONVENTION=one|zero` can override
+  selection. We do not assume every REAP derivative uses corrected norms.
+- We preserve the Q4/G32 custom Metal executor and packed slabs for compatible
+  checkpoints. REAP Q4/G64 currently uses generic MLX expert execution.
+  The launcher's enabled Metal flags do not establish that this checkpoint uses
+  the custom executor or the 60-slot packed slab.
+- We filter invalid expert IDs from warm history and resident slab preload lists.
+  History from a 512-expert checkpoint can contain IDs outside the REAP range.
+- We adapt resident Conv1d weights to their target module shapes.
+  The manual chat initially fails because the PLE weight uses `(10240, 1, 4)`.
+  Its MLX target expects `(10240, 4, 1)`. The other 36 convolution weights
+  already match MLX. We transpose only when the resulting shape matches.
+- We remove redundant file descriptors from shared mappings and serialize map creation.
+  We calculate pin sizes from file offsets without opening mappings.
+  We clear closed positioned-read descriptors during cleanup.
+  These changes address descriptor exhaustion during the next manual turn.
+
+Our final focused suite passes 60 tests in 0.166 seconds with
+`~/models/.venv-qwen4exp/bin/python`. It covers discovery, loader arithmetic,
+convolution layout, runtime fallback, store reads, and routing.
+The descriptor regression retains 96 mappings and 131 positioned-read descriptors
+simultaneously, plus 16 reserved descriptors, under a 256-descriptor limit.
+We run no model generation or performance benchmark through the agent.
+Our manual chat now works after both reported crashes are corrected.
+
+### Observations, not controlled measurements
+
+We observe chat generation around 3.0–3.5 tok/s, approximately 40% GPU use,
+no obvious RAM reduction, and similar apparent disk activity.
+GPU use appears higher than before. These are visual observations from our chat.
+We record no matched prompt, context, VM counters, or physical bytes per token.
+We therefore claim neither a measured speedup nor unchanged memory or I/O costs.
+The complete REAP quality gate remains open, including `xhigh` reasoning behavior.
+
+A smaller checkpoint does not require lower process RAM use in a streaming runtime.
+The dense core, pin budget, file cache, and temporary tensors contribute separately.
+Similar disk activity also does not establish equal physical bytes per generated token.
+The generic Q4/G64 path is a possible contributor to changed GPU use.
+We need attribution before assigning a cause.
+
+### Agreed next steps
+
+1. **Establish our REAP control and memory accounting.** Complete the retained
+   quality gate before performance claims. Record actual execution paths, pinned
+   bytes, MLX active and peak memory, process footprint, compression, and swap.
+   Measure physical MB/token with generation and tail rates on fixed prompts.
+   Treat macOS file cache and explicitly resident weights as separate quantities.
+
+2. **Attribute GPU utilization and remaining latency.** Separate routing, Python scheduling,
+   positioned reads, quantized matmul dispatch, and Metal completion waits.
+   Inspect REAP kernel counts and GPU occupancy before extending earlier oQ4 conclusions.
+   The observed 40% GPU use does not imply 60% recoverable throughput.
+   Higher GPU use could reflect less waiting or more GPU work per token.
+   Keep profiling separate from uninstrumented performance arms.
+
+3. **Restore a comparable kernel path for Q4/G64.** Audit the generic path first.
+   Our current optimized Q4/G32 executor and packed slabs are inactive for REAP.
+   Assess G64 support for expert kernels and packed records as separate changes.
+   Preserve BF16 rounding boundaries and compare exact outputs against generic MLX.
+   Measure full-runtime effects before claiming a kernel improvement.
+
+4. **Measure what extra RAM should hold.** Compare additional routed expert rows
+   with the existing file-cache policy. Rank residency candidates by measured
+   physical bytes avoided per resident MB. Consider layer locality and reuse.
+   Measure n-gram row caching separately before considering entire table residency.
+   Keep room for context state, prefill temporaries, macOS, and other applications.
+   More pinning can displace useful file cache and increase compression or swap.
+   Measure latency saved per extra resident MB alongside physical bytes avoided.
+   Prefer packed quantized expert rows before considering larger dequantized copies.
+   Check whether application caches duplicate pages already held by macOS.
+   Collect REAP-specific reuse data; valid old expert IDs do not imply equivalent experts.
+
+5. **Design automatic residency budgets after the memory comparison.** Use available memory and pressure signals,
+   checkpoint layout, and context needs instead of total installed RAM alone.
+   Start with conservative startup selection and an explicit user budget override.
+   Later test gradual cache growth and shrinkage with separate thresholds to avoid
+   repeated allocation changes. Release optional caches when memory pressure rises.
+   Residency must preserve expert selection and output arithmetic.
+   Larger machines can retain more experts or whole layers when measurements justify it.
+   GPU allocations and CPU allocations share the same physical RAM budget.
+   Free-memory counters alone cannot distinguish useful file cache from expendable capacity.
+   Reserve memory for longer contexts and verify behavior when another application needs RAM.
+
+Our reassessment prioritizes measurement before automation. REAP reduces the total
+expert bank but preserves configured top-10 routing. G64 reduces each routed
+record by 10% against G32; pruning can provide additional gains through cache reuse.
+Neither effect establishes a proportional reduction in arithmetic or process RAM.
+We optimize token latency and memory stability, rather than maximizing GPU utilization
+or minimizing the displayed RAM number.
+
+We use interleaved arms with reversed ordering for each performance comparison.
+We change one factor at a time and retain the established 32-token control horizon.
+We report resolution bands, physical reads, RAM, and exact digests for exact optimizations.
+Checkpoint comparisons require quality evaluation rather than matching oQ4 token digests.
+We adopt these directions as our next steps. We schedule or run no new experiment today.

@@ -7,12 +7,23 @@ MACQWEN runtime.
 
 ## Model and checkpoint
 
-The installed checkpoint is `Vontra/Qwen3.8-Flash-Next-MLX-oQ4`. It has 111.7 GB of model weights across 22 safetensors shards, quantised
-from the official BF16 weights with a 4-bit base and 228 protected modules at 5 and 8 bit. It is the quality baseline.
+The current research checkpoint is `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
+It has 131 indexed shard files, 288 routed experts per layer, Q4/G64 expert
+weights, and Q4/G32 n-gram weights. Its quality and speed gates remain open.
+
+`Vontra/Qwen3.8-Flash-Next-MLX-oQ4` remains the recorded quality baseline. It
+has 111.7 GB of model weights across 22 safetensors shards, quantised from the
+official BF16 weights with a 4-bit base and 228 protected modules at 5 and 8
+bit. It is not installed during the current REAP work.
 
 `Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP` is supported and is not installed. It has 86.2 GiB across 19 shards with a 3-bit base and 746
 protected modules. It runs faster and fails a code task that oQ4 passes, so it was removed from the reference machine. See the checkpoint
 quality section below.
+
+REAP compatibility accepts both n-gram shard naming conventions, selects the
+RMSNorm convention per model, sanitizes mixed Conv1d layouts, and filters stale
+expert IDs from old pin history. Q4/G64 uses reference streaming. The custom
+Q4/G32 Metal executor and packed slabs remain inactive for REAP.
 
 The runtime saves an explicit `--checkpoint` choice and otherwise selects the sole complete compatible local checkpoint.
 

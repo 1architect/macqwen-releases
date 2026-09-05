@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import struct
+import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 import unittest.mock
 
@@ -94,6 +97,13 @@ class ReadModeTests(unittest.TestCase):
         expected = self.store.pin_size(self.name, wanted)
         self.assertEqual(self.store.pin_rows(self.name, wanted), expected)
 
+    def test_pin_size_does_not_open_a_shared_mapping(self):
+        with unittest.mock.patch.object(
+            self.store, "_shared_view", side_effect=AssertionError("mapped")
+        ):
+            size = self.store.pin_size(self.name, [1, 4, 9])
+        self.assertGreater(size, 0)
+
     def test_every_mode_agrees(self):
         wanted = [11, 0, 6]
         self.store.pin_rows(self.name, [6])
@@ -121,6 +131,18 @@ class ReadModeTests(unittest.TestCase):
         self.assertEqual(len(profile["pread_intervals"]), len(wanted))
         self.assertTrue(all(end >= start for start, end in profile["pread_intervals"]))
 
+    def test_close_can_run_twice_after_positioned_reads(self):
+        self.rows([1], "pread")
+        self.store.close()
+        self.store.close()
+
+    def test_shared_map_creation_is_singleton_under_concurrency(self):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            maps = list(pool.map(lambda _item: self.store._map(
+                "model-00001-of-00001.safetensors"
+            ), range(32)))
+        self.assertEqual(len({id(handle) for handle in maps}), 1)
+
     def test_expert_record_view_writes_strided_rows(self):
         wanted = [3, 6, 1]
         record_stride = self.expected[0].nbytes + 128
@@ -134,6 +156,53 @@ class ReadModeTests(unittest.TestCase):
 
         np.testing.assert_array_equal(view, self.expected[wanted])
         self.assertTrue(np.all(buffer[:offset] == 0))
+
+    def test_many_shards_fit_a_low_descriptor_limit(self):
+        script = r'''
+import json, os, resource, struct, sys
+from models.flashnext.store import SafeTensorStore
+
+directory = sys.argv[1]
+shards = []
+weight_map = {}
+payload = b"x"
+for index in range(131):
+    shard = f"model-{index + 1:05d}-of-00131.safetensors"
+    name = f"block.{index}.experts.weight"
+    header = json.dumps({name: {"dtype": "U8", "shape": [1],
+                                "data_offsets": [0, 1]}}).encode()
+    with open(os.path.join(directory, shard), "wb") as stream:
+        stream.write(struct.pack("<Q", len(header)))
+        stream.write(header)
+        stream.write(payload)
+    shards.append(shard)
+    weight_map[name] = shard
+with open(os.path.join(directory, "model.safetensors.index.json"), "w") as stream:
+    json.dump({"weight_map": weight_map}, stream)
+
+# Leave room for the descriptors held by a live model process.
+resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
+reserved = [open(os.devnull, "rb") for _ in range(16)]
+store = SafeTensorStore(directory)
+names = list(weight_map)
+for name in names:
+    assert store.pin_size(name, [0]) == __import__("mmap").PAGESIZE
+for name in names[:96]:
+    assert int(store.rows_np(name, [0], "shared_mmap")[0]) == 120, name
+for name in names:
+    assert int(store.rows_np(name, [0], "pread")[0]) == 120, name
+store.close()
+for stream in reserved:
+    stream.close()
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [sys.executable, "-c", script, directory],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

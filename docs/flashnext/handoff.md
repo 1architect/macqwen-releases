@@ -9,10 +9,55 @@ rules.
 
 Last worked on 2026-09-04.
 
-The runtime streams a 176B sparse MoE model from SSD on a 16 GB M4 Mac. oQ4 is
-installed and is the baseline. `exact-quality` is the default routing profile.
-The accepted clean-boot `buffer-chunk2` result measures 2.83 gen, 2.70 tail,
-and 457.7 MB of physical reads per token.
+### REAP branch preparation
+
+The current checkpoint is `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
+We removed the local oQ4 checkpoint with our approval and downloaded REAP-288.
+All 131 indexed shard files are present. oQ4 remains our recorded quality
+baseline, but it is no longer installed. The installation statements below
+describe the earlier control environment.
+
+We add compatibility changes for both n-gram naming conventions and
+checkpoint-specific RMSNorm behavior. We recognize the verified sh0wie norm
+tensor by its content fingerprint. Unknown checkpoints keep our legacy norm
+behavior. Explicit `norm_convention` metadata or `FLASHNEXT_NORM_CONVENTION`
+(`one` or `zero`) can select a different convention. We keep this setting on
+each model instance and do not rewrite checkpoint weights.
+
+Q4/G64 uses reference streaming because
+our custom Metal executor and packed slabs require Q4/G32. We preserve that
+optimized path for compatible checkpoints. We also recover automatic discovery
+when the saved checkpoint directory is missing and one complete model remains.
+
+Our first manual generation exposed a mixed Conv1d layout: the PLE tensor
+uses `(10240, 1, 4)`, while 36 other convolution tensors already use MLX layout.
+We now compare each resident Conv1d tensor with its target module shape and
+transpose only when the result matches. Compatible tensors remain unchanged.
+
+With our approval, the focused compatibility suite passes 21 tests in 0.063
+seconds using `~/models/.venv-qwen4exp/bin/python`. The suite covers checkpoint
+discovery, loader conventions, norm arithmetic, runtime fallback, and a numerical
+mixed-layout convolution regression. We perform
+generation manually. We have not established REAP quality or speed on this machine.
+
+Our next manual turn exposed descriptor exhaustion while pinning experts.
+We remove redundant mapping descriptors, serialize map creation, and calculate
+pin sizes without mapping files. Store cleanup now clears closed descriptors.
+The expanded focused suite passes 60 tests in 0.166 seconds. Its subprocess
+regression holds 96 mappings and 131 positioned-read descriptors simultaneously,
+plus 16 reserved descriptors, under a 256-descriptor limit. No model generation
+runs as part of this validation.
+
+Our manual chat now works. We observe about 3.0–3.5 tok/s, approximately 40%
+GPU use, similar apparent disk activity, and no obvious RAM reduction.
+These observations are not controlled measurements. The final REAP section in
+`research.md` records our changes and agreed next steps. We stop for today;
+the quality gate and performance comparisons remain open.
+
+The runtime streams a 176B sparse MoE model from SSD on a 16 GB M4 Mac.
+REAP-288 is the current research checkpoint. oQ4 remains the recorded quality
+baseline. `exact-quality` is the default routing profile for compatible models.
+REAP quality and speed remain unverified.
 
 Recent decisions, with the evidence in `research.md`:
 
@@ -235,7 +280,7 @@ Next work uses the SSD, memory, and Metal frontier in this order:
 
 ## Download
 
-oQ4 is the baseline and the installed checkpoint.
+oQ4 is the recorded quality baseline.
 
 ```bash
 hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ4 \
@@ -243,6 +288,17 @@ hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ4 \
 ```
 
 oQ4 contains 22 safetensors shards and 111.7 GB of model weights.
+
+The current REAP research checkpoint is:
+
+```bash
+hf download sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit \
+  --local-dir "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
+```
+
+It contains 131 indexed shard files. It uses Q4/G64 expert weights and Q4/G32
+n-gram weights. Its expert path uses reference streaming while compatibility
+work continues.
 
 oQ3-MTP is supported and is not installed. It contains 19 shards, 86.2 GiB, and MTP weights the production backend does not load. It failed
 the trajectory gate, so it was removed:
@@ -570,8 +626,9 @@ coplanar one, which is the hard part of this task.
 
 ## Machine constraints
 
-The reference machine holds one checkpoint at a time. The data volume is 228 GB with about 22 GB free while oQ4 is installed. Swapping to
-oQ3-MTP means deleting oQ4 first, and back again means re-running `~/models/dl-oQ4.sh`.
+The reference machine holds one checkpoint at a time. The data volume was
+228 GB with about 22 GB free during the earlier oQ4 work. Swapping to oQ3-MTP
+required deleting oQ4 first and re-running `~/models/dl-oQ4.sh` to restore it.
 
 Cleaning won't change that. The biggest reclaimable items add up to about 13 GB. The Trash is empty and there are no APFS local snapshots.
 
@@ -586,7 +643,8 @@ work only exists here. Don't delete any of the three to free space.
 
 ## Next work
 
-The checkpoint question is settled. oQ4 is the baseline and is installed. oQ3-MTP is gone from the reference machine.
+The checkpoint question remains open for REAP-288. oQ4 is the recorded quality
+baseline, and oQ3-MTP remains a historical comparison checkpoint.
 
 Current work is tracked in the public issue tracker:
 
