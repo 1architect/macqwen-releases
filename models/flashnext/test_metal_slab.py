@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import unittest
+import os
 import numpy as np
 import mlx.core as mx
 
 from models.flashnext.metal_runtime import MetalMoEExecutor, probe_capabilities
 
 class TestMetalUnifiedSlab(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            raise unittest.SkipTest("Metal JIT integration is unavailable on GitHub Actions")
+
     def test_slab_route_encoding(self):
         slab_idx = 5
         encoded = 0x80000000 | slab_idx

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+import os
 
 import mlx.core as mx
 import numpy as np
@@ -62,6 +63,8 @@ class TestSwiGLUContract(unittest.TestCase):
             )
 
     def test_metal_candidate_exhaustive_contract(self):
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            raise unittest.SkipTest("Metal JIT integration is unavailable on GitHub Actions")
         available, reason = metal_swiglu_available()
         if not available:
             raise unittest.SkipTest(reason)

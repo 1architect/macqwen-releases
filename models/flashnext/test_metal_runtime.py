@@ -157,6 +157,8 @@ class MetalRuntimeCapabilityTests(unittest.TestCase):
 
 class MetalRuntimeFusedUpSwiGLUTests(unittest.TestCase):
     def test_production_shape_fused_up_swiglu_is_bit_exact(self):
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            raise unittest.SkipTest("Metal JIT integration is unavailable on GitHub Actions")
         import mlx.core as mx
 
         caps = probe_capabilities()
@@ -264,6 +266,8 @@ class MetalRuntimeMathTests(unittest.TestCase):
 class NativeMetalSchedulerTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "darwin", "native Metal requires Darwin")
     def test_all_native_strategies_keep_the_dependency_chain_exact(self):
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            raise unittest.SkipTest("native Metal integration is unavailable on GitHub Actions")
         from models.flashnext.metal_native import probe_native, run_dependency_chain
 
         status = probe_native()
@@ -282,6 +286,8 @@ class MLXQ4G32SmokeTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            raise unittest.SkipTest("Metal JIT integration is unavailable on GitHub Actions")
         if sys.platform != "darwin":
             raise unittest.SkipTest("custom Metal requires Darwin")
         try:

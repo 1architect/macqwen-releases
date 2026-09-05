@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+import os
 
 import numpy as np
 
@@ -62,6 +63,8 @@ class NativeSchedulerStatsTests(unittest.TestCase):
 
 class NativeMoEExecutionTests(unittest.TestCase):
     def test_native_moe_strategies_match_and_record_gpu_time(self):
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            raise unittest.SkipTest("native Metal integration is unavailable on GitHub Actions")
         try:
             import mlx.core as mx
         except ImportError:
@@ -112,4 +115,3 @@ class NativeMoEExecutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
