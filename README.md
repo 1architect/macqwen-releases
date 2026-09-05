@@ -54,10 +54,16 @@ down-projection with router scores and writes the output without the separate
 intermediate routed tensor. It also removes 48 `astype` launches per token.
 
 The isolated production-shape kernel is bit-identical to the MLX reference and
-measures about 3.5% to 4.4% faster across controlled miss levels. The complete
-model comparison measured 2.91 tok/s for the custom path versus 2.89 tok/s for
-stock MLX, inside a 7.8% resolution band. The full-model gain remains
-unresolved.
+measures about 3.5% to 4.4% faster across controlled miss levels. The current
+60-slot Frontier 8A profile with Up-QMV/SwiGLU measures 3.08 tok/s generation,
+3.00 tok/s tail, and 279.7 MB/token with the custom path active. The corrected
+16-worker control measures 3.13 tok/s generation, 3.04 tok/s tail, and
+262.0 MB/token. Both controls preserve token digests.
+
+The direct 16-arm stock-versus-custom comparison measured 2.91 tok/s for the
+custom path versus 2.89 tok/s for stock MLX. Its +0.7% median difference stayed
+inside a 7.8% resolution band. This comparison does not limit the newer
+profile's measured rate.
 
 The slab path uses page-aligned, file-backed storage and direct expert-major
 Metal addressing. The 60-slot setting remains the engineering control. Frontier
