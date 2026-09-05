@@ -97,7 +97,7 @@ The 256 GB reference Mac normally holds only one Flash-Next checkpoint.
 
 | Checkpoint | Size | Guidance |
 |---|---:|---|
-| REAP-288 | 131 indexed shards | Current research checkpoint; quality and speed gates remain open |
+| REAP-288 | 73.5 GB | Current research checkpoint; quality and speed gates remain open |
 | oQ4 | 111.7 GB | Quality baseline; recommended for code and accurate API names |
 | oQ3-MTP | 86.2 GiB | Public quick start; faster and smaller |
 
