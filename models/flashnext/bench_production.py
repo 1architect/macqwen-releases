@@ -131,6 +131,20 @@ COMPARISONS = {
         "stock": {"FLASHNEXT_METAL_RUNTIME": "0", "FLASHNEXT_SLAB": "0"},
         "custom": {"FLASHNEXT_METAL_RUNTIME": "1", "FLASHNEXT_SLAB": "0"},
     },
+    "g64-kernel": {
+        "g64-reference": {
+            "FLASHNEXT_METAL_RUNTIME": "1",
+            "FLASHNEXT_METAL_G64": "0",
+            "FLASHNEXT_SLAB_G64": "0",
+            "FLASHNEXT_SLAB_PACK": "1",
+        },
+        "g64-metal": {
+            "FLASHNEXT_METAL_RUNTIME": "1",
+            "FLASHNEXT_METAL_G64": "1",
+            "FLASHNEXT_SLAB_G64": "0",
+            "FLASHNEXT_SLAB_PACK": "1",
+        },
+    },
     "slab-global": {
         "baseline": {"FLASHNEXT_METAL_RUNTIME": "1", "FLASHNEXT_SLAB_GLOBAL": "0"},
         "global48": {"FLASHNEXT_METAL_RUNTIME": "1", "FLASHNEXT_SLAB_GLOBAL": "48"},
@@ -372,7 +386,100 @@ LOAD_TIME_SETTINGS = {
     "FLASHNEXT_SLAB_LAYERS",
     "FLASHNEXT_SLAB_GLOBAL",
     "FLASHNEXT_SLAB_MIN_SLOTS",
+    "FLASHNEXT_METAL_G64",
+    "FLASHNEXT_SLAB_G64",
+    "FLASHNEXT_SLAB_PACK",
 }
+
+
+def g64_kernel_status() -> str:
+    """Return the executor verification state without compiling a kernel."""
+    from models.flashnext import metal_runtime
+
+    return "ready" if getattr(metal_runtime, "G64_RUNTIME_READY", False) else "verification"
+
+
+def inspect_g64_runtime(backend, enabled: bool, phase: str = "after") -> dict:
+    """Inspect every loaded layer before accepting a G64 benchmark arm."""
+    capable_layers = 0
+    switch_layers = 0
+    paths = set()
+    executor_count = 0
+    executor_layers = set()
+    slab_objects = 0
+    group_sizes = set()
+    for layer_index, layer in enumerate(backend.language.model.layers):
+        switch = getattr(getattr(layer, "mlp", None), "switch_mlp", None)
+        if switch is None:
+            continue
+        switch_layers += 1
+        if getattr(switch, "metal_runtime_capable", False):
+            capable_layers += 1
+        for projection in (
+            getattr(switch, "gate_proj", None),
+            getattr(switch, "up_proj", None),
+            getattr(switch, "down_proj", None),
+        ):
+            if projection is not None and hasattr(projection, "group_size"):
+                group_sizes.add(int(projection.group_size))
+        for projection in (
+            getattr(switch, "gate_proj", None),
+            getattr(switch, "up_proj", None),
+            getattr(switch, "down_proj", None),
+        ):
+            if getattr(projection, "slab", None) is not None:
+                slab_objects += 1
+        if getattr(switch, "slab_pack", None) is not None:
+            slab_objects += 1
+        executors = getattr(switch, "_metal_executors", {})
+        executor_count += len(executors)
+        if executors:
+            executor_layers.add(layer_index)
+        paths.update(
+            getattr(executor, "last_path", "unknown")
+            for executor in executors.values()
+        )
+    state = {
+        "enabled": bool(enabled),
+        "switch_layers": switch_layers,
+        "capable_layers": capable_layers,
+        "group_sizes": sorted(group_sizes),
+        "executor_count": executor_count,
+        "executor_layers": sorted(executor_layers),
+        "paths": sorted(paths),
+        "slab_objects": slab_objects,
+    }
+    expected_paths = {"custom-metal"} if enabled and phase != "before" else set()
+    expected_capable = 48 if enabled else 0
+    if state["switch_layers"] != 48:
+        raise SystemExit(f"invalid FlashNext layer count: {state}")
+    if state["capable_layers"] != expected_capable:
+        raise SystemExit(f"invalid G64 capability state: {state}")
+    if state["group_sizes"] != [64]:
+        raise SystemExit(f"invalid G64 projection metadata: {state}")
+    if phase == "before" and state["executor_count"]:
+        raise SystemExit(f"G64 executors started before generation: {state}")
+    expected_executor_layers = set(range(1, 48)) if enabled and phase != "before" else set()
+    if set(state["executor_layers"]) != expected_executor_layers:
+        raise SystemExit(f"incomplete G64 executor coverage: {state}")
+    if set(state["paths"]) != expected_paths:
+        raise SystemExit(f"invalid G64 executor paths: {state}")
+    if state["slab_objects"]:
+        raise SystemExit(f"G64 benchmark arm created slab state: {state}")
+    return state
+
+
+def check_g64_kernel_checkpoint(checkpoint: str) -> dict:
+    """Validate a Q4/G64 checkpoint before creating a model backend."""
+    from models.flashnext.bench_chat_parity import checkpoint_runtime_capability
+
+    capability = checkpoint_runtime_capability(checkpoint)
+    if capability.get("group_size") != 64:
+        raise SystemExit(
+            "g64-kernel requires a Q4/G64 checkpoint; refusing to load "
+            f"{checkpoint}"
+        )
+    return {"status": g64_kernel_status(), "capability": capability}
 
 
 def apply_condition(backend, env: dict) -> None:
@@ -411,6 +518,10 @@ def arm(backend, tokens, meter, run_began, condition=None):
         # RoutingProfile.reset restores defaults. Apply the live condition at
         # the point where this arm starts, then validate its effective value.
         apply_condition(backend, condition)
+        if "FLASHNEXT_METAL_G64" in condition:
+            inspect_g64_runtime(
+                backend, condition["FLASHNEXT_METAL_G64"] == "1", phase="before"
+            )
     backend.append_text(PROMPT)
     meter.reset()
     prefilled = False
@@ -439,6 +550,17 @@ def arm(backend, tokens, meter, run_began, condition=None):
         raise RuntimeError("physical read telemetry is unavailable")
     ids = tuple(backend.tape[-stats.tokens:]) if stats.tokens else ()
     tail = stats.tail_tokens / stats.tail_seconds if stats.tail_seconds else 0.0
+    state = None
+    if condition and "FLASHNEXT_METAL_G64" in condition:
+        state = inspect_g64_runtime(
+            backend, condition["FLASHNEXT_METAL_G64"] == "1"
+        )
+    active_mb = None
+    try:
+        import mlx.core as mx
+        active_mb = float(mx.get_active_memory()) / 1e6
+    except (AttributeError, TypeError):
+        pass
     return {
         "elapsed_s": time.perf_counter() - run_began,
         "gen_tokens": stats.tokens,
@@ -446,6 +568,9 @@ def arm(backend, tokens, meter, run_began, condition=None):
         "tail_rate": tail,
         "mb_per_token": read / stats.tokens / 1e6,
         "pinned_gb": stats.pinned_bytes / 1e9,
+        "active_mb": active_mb,
+        "capable_layers": state["capable_layers"] if state else None,
+        "actual_path": state["paths"] if state else [],
         "free_mb_before": free,
         "wall": wall,
         "ids": ids,
@@ -644,6 +769,17 @@ def main() -> None:
     for env in conditions.values():
         check_load_time(env, args.fresh_arms)
 
+    g64_preflight = None
+    if args.compare == "g64-kernel":
+        from macqwen.checkpoints import resolve_flashnext
+        checkpoint = resolve_flashnext(os.environ.get("MACQWEN_FLASHNEXT_MODEL"))
+        g64_preflight = check_g64_kernel_checkpoint(str(checkpoint))
+        if g64_preflight["status"] != "ready":
+            raise SystemExit(
+                "g64-kernel executor is pending numerical verification; "
+                "refusing to create a benchmark backend"
+            )
+
     from models.flashnext.diskio import ReadMeter
 
     meter = ReadMeter()
@@ -822,6 +958,8 @@ def main() -> None:
                 "comparison": args.compare,
                 "fresh_arms": args.fresh_arms,
                 "routing_altering": routing_altering,
+                "g64_preflight": g64_preflight,
+                "g64_status": g64_kernel_status() if args.compare == "g64-kernel" else None,
                 "conditions": results,
             }, handle, indent=2)
         print(f"\n  wrote {args.json}")

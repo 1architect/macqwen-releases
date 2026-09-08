@@ -3548,3 +3548,201 @@ Our focused QSA and prefill suite passes 12 tests in 0.021 seconds.
 It verifies dispatch for the reported allocation, preserves the small decode path,
 and compares cached-prefix masks exactly with the dense reference, including partial tails.
 We run no model generation or benchmark. Manual agent validation remains pending.
+
+## REAP pin diagnostic summary recovery, 2026-09-08
+
+Our pin-memory diagnostic completes six arms, then summary validation fails with
+`startup mismatch: allocation_digest`. The validator requires a packed 60-slot
+Q4/G32 slab. REAP correctly reports no packed slab: null allocation digest,
+zero allocated slots, and `mlock_ok=false`. That flag describes the packed slab,
+not ordinary expert pins. The everyday workload records 3,945.0 MB of ordinary pins.
+
+We validate reference streaming against checkpoint config, index, and routed tensor
+headers. We preserve strict packed-slab checks for compatible Q4/G32 checkpoints,
+including 512-expert releases. The focused summary suite passes 16 tests.
+No generation reruns during this repair.
+
+We recover the six saved records offline after checking their reversed round order
+and matching recorded source fingerprints. We preserve the original failed JSON.
+The separate recovered artifact records both source fingerprints and the original
+file hash. Capability inference uses the current local checkpoint headers; it is
+not a new runtime observation.
+
+Evidence: `~/.cache/flashnext/reap-baseline-20260905/chat-pin-memory-recovered-20260908-105036.json`.
+
+| Condition | Median gen tok/s | Median tail tok/s | Median physical MB/token |
+|---|---:|---:|---:|
+| Reference | 3.072 | 3.154 | 280.5 |
+| Everyday | 2.539 | 2.541 | 364.9 |
+
+The paired workload effect is -11.26% inside a 21.35% two-SE band.
+We cannot resolve a workload speed difference. Pin profiling adds overhead.
+Swap/pageout counters pass the existing advisory threshold, but substantial
+compression and decompression remain visible. This is diagnostic evidence, not
+our unprofiled production baseline or a checkpoint quality result.
+
+## Q4/G64 kernel and packed-slab implementation, 2026-09-08
+
+We begin opt-in Q4/G64 support with Luna agents for coding.
+We preserve the current REAP reference path and the existing Q4/G32 defaults.
+Kernel selection and packed residency use separate controls so their effects
+can be measured independently. No performance result or default promotion is claimed.
+
+The executor must retain SIMD width 32 while using quantization groups of 64.
+Scale and bias indexing, generated kernel identities, validation, and reference
+arithmetic must all use the selected group size. We require exact output equality
+at the existing BF16 boundaries before complete-runtime evaluation.
+
+A Q4/G64 expert record contains 2,764,800 bytes, or 675 aligned 4 KiB pages.
+The Q4/G32 format retains its 3,072,000-byte record and existing cache identity.
+We version the G64 packed layout and reject cross-layout reuse.
+G64 resident expert selection requires checkpoint-specific history because REAP
+remaps expert IDs. Filtering IDs by range alone does not preserve their meaning.
+
+Focused synthetic correctness tests are within our existing test authorization.
+We do not run full-model generation, production benchmarks, or new model-pack
+extraction during implementation. The retained benchmark must confirm actual
+kernel activation, exact token digests, physical bytes, RAM, and paired timing.
+
+### Implementation and focused validation
+
+We add `group_size=64` to the executor while retaining `group_size=32` as its
+API default. Generated Metal helpers use group-specific metadata strides and
+kernel names. G64 packed kernels use the layout descriptor for all component
+offsets and record addressing. G32 cache files remain compatible.
+
+`FLASHNEXT_METAL_G64=1` enables G64 execution alongside
+`FLASHNEXT_METAL_RUNTIME=1`. `chat.sh` now sets this kernel flag by default for
+the REAP chat path. `FLASHNEXT_SLAB_G64=1` separately permits the packed G64
+path when the normal slab flags and verified checkpoint history are present.
+Packed G64 remains off by default. Set `FLASHNEXT_METAL_G64=0` for a reference
+control. Unsupported G64 streamed records remain rejected.
+Missing or outdated history keeps packed G64 inactive rather than selecting
+legacy resident slabs. Fresh routing observations can record checkpoint provenance
+when G64 execution is enabled. Identity computation occurs during initialization,
+not inside the decode loop.
+
+The first manual numerical probe uses a hand-written SwiGLU expression and
+reports a false down-projection mismatch. We correct its reference to the actual
+compiled MLX activation. The retained tests compare the same activation and
+quantized matmul arithmetic, without tolerance-based acceptance.
+
+The focused tests include G32 regressions, G64 production dimensions, mixed and
+all-resident packed routes, shared output, fused Up-SwiGLU, and batch-two/top-ten
+route ordering. Float32 fused accumulation has small intermediate differences in
+the tested cases; the production BF16 output boundary matches exactly.
+This is a bounded synthetic correctness result, not proof for every input or a
+complete-model token-digest result. We require the latter before promotion.
+
+Our combined focused suite passes 129 tests in 0.617 seconds. No full checkpoint
+pack is extracted. No model generation or performance benchmark runs here.
+
+### Prepared kernel comparison
+
+The terminal case `production-g64-kernel` compares the current G64 reference
+path with opt-in G64 Metal execution. Both arms keep packed residency disabled.
+They retain the standard launch controls, 32-token horizon, and fresh model arms
+in reversed rounds. The harness checks the checkpoint layout before model loading,
+validates startup controls, and confirms execution on every eligible layer.
+It rejects unexpected slab objects, partial kernel activation, and digest changes.
+It records actual execution paths and MLX active memory separately from pinned bytes.
+
+Use Apple Terminal after closing any model process:
+
+```bash
+cd /Users/gioma/Developer/MACQWEN
+./models/flashnext/tests/run.sh
+```
+
+Inside the test terminal:
+
+```text
+/config checkpoint /Users/gioma/Models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit
+/config python /Users/gioma/models/.venv-qwen4exp/bin/python
+/config tokens 32
+/config pairs 6
+/config workers 16
+/config purge off
+/config settle 0
+/show production-g64-kernel
+/run production-g64-kernel
+```
+
+Confirm `yes` in the test terminal. This comparison remains unrun.
+We need its exact digest and paired physical-I/O/rate results before enabling G64
+kernels by default. Packed residency requires a separate comparison after the
+kernel-only result and checkpoint-specific reuse history are available.
+
+## Q4/G64 complete-model equality gate fails, 2026-09-08
+
+With our approval, we start the prepared six-pair kernel comparison in Apple
+Terminal. We use 32 tokens per arm, fresh backends, reversed round ordering,
+canonical launch settings, and no packed G64 residency. No other MACQWEN model
+process is running when the comparison starts.
+
+The reference arm completes. The first G64 Metal arm produces different token
+IDs. The harness stops with `round 1 of g64-metal produced different tokens;
+exact comparison rejected`. Runtime sources remain unchanged during the run.
+This rejects the current kernel candidate before any performance interpretation.
+We do not report a speedup or continue the remaining arms.
+
+Evidence directory: `~/.cache/flashnext/g64-kernel-20260908-130104/`.
+`status.json` records the command, launch environment, return code, and source
+fingerprint. `run.log` preserves the rejection. The harness stops before writing
+its final results JSON; it does not retain the mismatching token arrays.
+
+The synthetic BF16 boundary checks do not establish complete-model equality.
+We mark production readiness false and keep reference execution as the supported
+path. The next coding step must locate the first divergent layer or rounding
+boundary before another performance run. We need retained intermediate/token
+failure evidence in that diagnostic. No second model run occurs today.
+
+## First G64 divergence located and corrected, 2026-09-08
+
+With our approval, we add a single-model diagnostic that compares reference and
+candidate MoE calls on identical inputs. The reference output drives subsequent
+layers. Prefill uses the reference path. Candidate route observations are disabled
+so the extra calls do not double-count the pin profile. Production readiness
+is overridden only inside the diagnostic process and restored afterward.
+
+The first probe fails during BF16-to-NumPy evidence conversion. We fix the recorder
+and retain that failed report separately. The next probe finds the first mismatch
+at zero-based layer 1, the first eligible custom-kernel layer. Layer 0 matches.
+Of 2,560 output values, 1,199 differ; maximum absolute difference is
+0.000244140625. Input, reference output, and candidate output are BF16.
+Runtime sources remain unchanged during the capture.
+
+Evidence: `~/.cache/flashnext/g64-divergence-20260908-131213/` contains the JSON
+report and `first_divergence.npz` with the live input and both outputs.
+
+The fused score-combination path does not reproduce native MLX dtype promotion,
+product rounding, reduction, and shared-output addition for every score dtype.
+Our earlier tests use float32 scores and insert output casts that mirror the
+candidate instead of preserving the generic path. Those tests are insufficient.
+We replace their expected calculation with the actual generic sequence and add
+BF16-score coverage. No tolerance-based acceptance or extra expected-output cast
+remains in this gate.
+
+For G64 only, we keep custom Metal projections but use native MLX weighted
+reduction and shared addition. We also preserve G64 output dtype through packed
+integration. G32 behavior remains unchanged. This gives up the G64 fused-down
+score epilogue until an exact implementation is available.
+
+The corrected live diagnostic matches all 1,536 MoE comparisons across its
+32-token reference trajectory. Evidence:
+`~/.cache/flashnext/g64-divergence-fixed-20260908-131505/`.
+An independent pair of fresh backends then generates identical 32-token arrays.
+All 47 eligible candidate layers report custom Metal execution. Evidence:
+`~/.cache/flashnext/g64-token-gate-20260908-131625/result.json`.
+Both runs retain unchanged source fingerprints. The independent pair is a
+correctness check, not a performance comparison.
+
+## G64 enabled for chat evaluation, 2026-09-08
+
+We set `FLASHNEXT_METAL_G64=1` in the normal `chat.sh` environment.
+`FLASHNEXT_SLAB_G64` remains `0`, so chat uses G64 kernels with streamed expert
+weights and no packed G64 residency. Set `FLASHNEXT_METAL_G64=0` when we need a
+reference control turn.
+
+The focused suite passes 295 tests after registering the new startup settings.
+This change enables user evaluation. It does not publish a speed result.

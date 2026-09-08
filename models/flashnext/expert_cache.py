@@ -374,6 +374,15 @@ def set_metal_runtime(enabled: bool) -> None:
 def metal_runtime() -> bool:
     return os.environ.get("FLASHNEXT_METAL_RUNTIME") == "1"
 
+
+def set_metal_g64(enabled: bool) -> None:
+    """Enable the opt-in Q4/G64 custom executor variant."""
+    os.environ["FLASHNEXT_METAL_G64"] = "1" if enabled else "0"
+
+
+def metal_g64() -> bool:
+    return os.environ.get("FLASHNEXT_METAL_G64") == "1"
+
 # Rows per read. A gather's throughput collapses once its output buffer gets
 # large: measured at 16 workers, 1027 MB/s for 10 rows, 1205 MB/s for 96, and
 # 484 MB/s for 290 (a 237 MB buffer). Decode routes 10 and is unaffected;
@@ -983,6 +992,42 @@ def _load_pin_profile() -> dict | None:
     return normalized
 
 
+def _g64_pin_profile_compatible(store, profile: dict | None) -> tuple[bool, str | None]:
+    """Require checkpoint-specific, Q4/G64 history before packed selection.
+
+    Older pin files contain expert IDs only. Those IDs can describe a different
+    checkpoint and must not select residents for a remapped G64 layout.
+    """
+    if profile is None:
+        return False, "Q4/G64 slab pack needs checkpoint-specific pin history"
+    group_size = profile.get("group_size", profile.get("quantization_group_size"))
+    try:
+        if int(group_size) != 64:
+            return False, "pin history does not declare Q4/G64"
+    except (TypeError, ValueError):
+        return False, "pin history has no Q4/G64 provenance"
+    recorded = profile.get("checkpoint_identity", profile.get("model_identity"))
+    if not recorded:
+        return False, "pin history has no checkpoint identity"
+    model_dir = getattr(store, "dir", None)
+    if not model_dir:
+        return False, "cannot verify Q4/G64 checkpoint identity"
+    try:
+        current = getattr(store, "_flashnext_checkpoint_identity", None)
+        if current is None:
+            from .slab_pack import checkpoint_identity
+            current = checkpoint_identity(model_dir)
+            try:
+                store._flashnext_checkpoint_identity = current
+            except AttributeError:
+                pass
+    except (OSError, ValueError, TypeError):
+        return False, "cannot verify Q4/G64 checkpoint identity"
+    if str(recorded) != str(current):
+        return False, "Q4/G64 pin history belongs to another checkpoint"
+    return True, None
+
+
 def _pin_profile_signature() -> tuple:
     """Return a cheap cache key that changes when the pin profile changes."""
     path = _pin_profile_path()
@@ -1276,14 +1321,42 @@ class StreamingSwitchGLU(nn.Module):
         global_budget = int(os.environ.get("FLASHNEXT_SLAB_GLOBAL", 0))
         min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", 4))
         use_slab_pack = os.environ.get("FLASHNEXT_SLAB_PACK") == "1"
+        self._slab_pack_disabled_reason = None
+        g64 = group_size == 64
+        slab_g64 = os.environ.get("FLASHNEXT_SLAB_G64") == "1"
+        if g64 and metal_g64():
+            from .metal_runtime import G64_RUNTIME_READY
+
+            if not G64_RUNTIME_READY:
+                raise RuntimeError(
+                    "Q4/G64 custom runtime is not ready; full-model digest gate failed"
+                )
+        if g64 and slab_g64 and stream_pack_enabled():
+            raise ValueError(
+                "Q4/G64 slab streaming packs are unavailable until their layout is supported"
+            )
+        pack_format_enabled = not g64 or slab_g64
         self.slab_pack = None
         self.slab_expert_to_slot = {}
-        # Packed slabs require the fixed Q4/G32 layout. Defer pack creation
-        # until the projections expose their actual shapes, so incompatible
-        # checkpoints remain on reference streaming.
-        requested_slab_pack = use_slab_pack and global_budget > 0
+        # Packed slabs require a fixed Q4 layout descriptor. Defer pack
+        # creation until the projections expose their actual shapes.
+        pack_requested = use_slab_pack and global_budget > 0
+        requested_slab_pack = pack_requested and pack_format_enabled
+        if use_slab_pack and global_budget > 0 and g64 and not slab_g64:
+            self._slab_pack_disabled_reason = "Q4/G64 slab pack requires FLASHNEXT_SLAB_G64=1"
+        if pack_requested and g64 and slab_g64:
+            history_ok, reason = _g64_pin_profile_compatible(
+                store, _load_pin_profile()
+            )
+            if not history_ok:
+                requested_slab_pack = False
+                self._slab_pack_disabled_reason = reason
         make_slab = None
-        if not requested_slab_pack and global_budget > 0:
+        if (
+            not requested_slab_pack
+            and global_budget > 0
+            and not (pack_requested and g64)
+        ):
             min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", 4))
             policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
             if policy == "uniform":
@@ -1304,7 +1377,7 @@ class StreamingSwitchGLU(nn.Module):
             slab_size = len(hot)
             has_slab = slab_size > 0
             make_slab = lambda name: ResidentSlab(store, f"{prefix}.{name}", slab_size, initial_experts=hot) if has_slab else None
-        elif not requested_slab_pack:
+        elif not requested_slab_pack and not (pack_requested and g64):
             slab_size = int(os.environ.get("FLASHNEXT_SLAB", 0))
             max_slab_layer = int(os.environ.get("FLASHNEXT_SLAB_LAYERS", -1))
             has_slab = slab_size > 0 and (max_slab_layer < 0 or (0 <= layer_id < max_slab_layer))
@@ -1324,7 +1397,7 @@ class StreamingSwitchGLU(nn.Module):
         self._metal_executors = {}
         self._metal_runtime_capable = self._compute_metal_runtime_capable()
         self._slab_pack_capable = self._metal_runtime_capable and validate_slab_allocation(
-            store, {layer_id: ()}
+            store, {layer_id: ()}, layout=group_size
         )
 
         if requested_slab_pack and self._slab_pack_capable:
@@ -1350,10 +1423,10 @@ class StreamingSwitchGLU(nn.Module):
                 store._slab_alloc = alloc
             # Missing history is expected on first launch. Keep reference
             # streaming active until a valid allocation becomes available.
-            if alloc and validate_slab_allocation(store, alloc):
+            if alloc and validate_slab_allocation(store, alloc, layout=group_size):
                 pack = getattr(store, "_slab_pack", None)
                 if pack is None:
-                    pack = get_or_create_slab_pack(store, alloc)
+                    pack = get_or_create_slab_pack(store, alloc, layout=group_size)
                     store._slab_pack = pack
                 self.slab_pack = pack
                 hot = alloc.get(layer_id, [])
@@ -1364,6 +1437,7 @@ class StreamingSwitchGLU(nn.Module):
                 }
             elif alloc:
                 store._slab_pack_disabled = True
+                self._slab_pack_disabled_reason = "slab allocation does not match checkpoint layout"
 
     @property
     def metal_combines_scores(self) -> bool:
@@ -1382,8 +1456,16 @@ class StreamingSwitchGLU(nn.Module):
     def _compute_metal_runtime_capable(self) -> bool:
         """Check the generic custom executor contract once during setup."""
         projections = (self.gate_proj, self.up_proj, self.down_proj)
+        group_sizes = {projection.group_size for projection in projections}
+        if len(group_sizes) != 1:
+            return False
+        supported_group = next(iter(group_sizes))
+        if supported_group == 64 and not metal_g64():
+            return False
+        if supported_group not in (32, 64):
+            return False
         if any(
-            projection.group_size != 32
+            projection.group_size != supported_group
             or projection.bits != 4
             or projection.mode != "affine"
             for projection in projections
@@ -1418,14 +1500,16 @@ class StreamingSwitchGLU(nn.Module):
             for projection, shape in (
                 (gate, gate_shape), (up, up_shape), (down, down_shape)
             ):
-                metadata_shape = (shape[0], shape[1], shape[2] * 8 // 32)
+                metadata_shape = (
+                    shape[0], shape[1], shape[2] * 8 // supported_group
+                )
                 for part in ("scales", "biases"):
                     try:
                         if tuple(store.shape(f"{projection.cache.prefix}.{part}")) != metadata_shape:
                             return False
                     except (IndexError, KeyError, TypeError):
                         return False
-        return hidden % 32 == 0 and inter % 32 == 0
+        return hidden % supported_group == 0 and inter % supported_group == 0
 
     def prefetch(self, wanted) -> None:
         """Issue this layer's expert reads before the next host sync.
@@ -1497,15 +1581,17 @@ class StreamingSwitchGLU(nn.Module):
     def _get_dummy_streamed_weights(self, hidden_size: int):
         dummy = getattr(self, "_cached_dummy_weights", None)
         if dummy is None:
-            gw = mx.zeros((1, 640, hidden_size // 8), dtype=mx.uint32)
-            gs = mx.zeros((1, 640, hidden_size // 32), dtype=mx.bfloat16)
-            gb = mx.zeros((1, 640, hidden_size // 32), dtype=mx.bfloat16)
-            uw = mx.zeros((1, 640, hidden_size // 8), dtype=mx.uint32)
-            us = mx.zeros((1, 640, hidden_size // 32), dtype=mx.bfloat16)
-            ub = mx.zeros((1, 640, hidden_size // 32), dtype=mx.bfloat16)
-            dw = mx.zeros((1, hidden_size, 640 // 8), dtype=mx.uint32)
-            ds = mx.zeros((1, hidden_size, 640 // 32), dtype=mx.bfloat16)
-            db = mx.zeros((1, hidden_size, 640 // 32), dtype=mx.bfloat16)
+            group_size = self.gate_proj.group_size
+            inter = self.gate_proj.output_dims
+            gw = mx.zeros((1, inter, hidden_size // 8), dtype=mx.uint32)
+            gs = mx.zeros((1, inter, hidden_size // group_size), dtype=mx.bfloat16)
+            gb = mx.zeros((1, inter, hidden_size // group_size), dtype=mx.bfloat16)
+            uw = mx.zeros((1, inter, hidden_size // 8), dtype=mx.uint32)
+            us = mx.zeros((1, inter, hidden_size // group_size), dtype=mx.bfloat16)
+            ub = mx.zeros((1, inter, hidden_size // group_size), dtype=mx.bfloat16)
+            dw = mx.zeros((1, hidden_size, inter // 8), dtype=mx.uint32)
+            ds = mx.zeros((1, hidden_size, inter // group_size), dtype=mx.bfloat16)
+            db = mx.zeros((1, hidden_size, inter // group_size), dtype=mx.bfloat16)
             dummy = [
                 (gw, gs, gb),
                 (uw, us, ub),
@@ -1651,7 +1737,10 @@ class StreamingSwitchGLU(nn.Module):
                 executor = self._metal_executors.get(key)
                 if executor is None:
                     total_exp = max(len(expert_to_slot) + len(wanted), slots)
-                    executor = MetalMoEExecutor(total_exp, flat_input.shape[-1], slots)
+                    executor = MetalMoEExecutor(
+                        total_exp, flat_input.shape[-1], slots,
+                        group_size=self.gate_proj.group_size,
+                    )
                     self._metal_executors[key] = executor
 
                 streamed_packs = {
@@ -1670,7 +1759,8 @@ class StreamingSwitchGLU(nn.Module):
                 )
                 if has_shared:
                     self._last_fused_shared = True
-                return output.reshape(*indices.shape[:-1], output.shape[-1]).astype(mx.bfloat16)
+                output = output.reshape(*indices.shape[:-1], output.shape[-1])
+                return output if self.gate_proj.group_size == 64 else output.astype(mx.bfloat16)
 
             hit = [e for e in routed if e in slabs[0].slot]
             miss = [e for e in routed if e not in slabs[0].slot]
@@ -1718,7 +1808,10 @@ class StreamingSwitchGLU(nn.Module):
             executor = self._metal_executors.get(key)
             if executor is None:
                 total_exp = max(slabs[0].capacity + len(wanted), slots)
-                executor = MetalMoEExecutor(total_exp, flat_input.shape[-1], slots)
+                executor = MetalMoEExecutor(
+                    total_exp, flat_input.shape[-1], slots,
+                    group_size=self.gate_proj.group_size,
+                )
                 self._metal_executors[key] = executor
 
             streamed_packs = {
@@ -1741,7 +1834,8 @@ class StreamingSwitchGLU(nn.Module):
             )
             if has_shared:
                 self._last_fused_shared = True
-            return output.reshape(*indices.shape[:-1], output.shape[-1]).astype(mx.bfloat16)
+            output = output.reshape(*indices.shape[:-1], output.shape[-1])
+            return output if self.gate_proj.group_size == 64 else output.astype(mx.bfloat16)
 
         if not use_slab:
             return self._one_pass(
@@ -1776,7 +1870,7 @@ class StreamingSwitchGLU(nn.Module):
         ).astype(
             mx.float32
         )
-        return out.astype(mx.bfloat16)
+        return out if self.gate_proj.group_size == 64 else out.astype(mx.bfloat16)
 
     def _one_pass(
         self, x, indices, routed, slabs, mask=None, allow_sort=True,
@@ -1863,7 +1957,8 @@ class StreamingSwitchGLU(nn.Module):
                 executor = self._metal_executors.get(key)
                 if executor is None:
                     executor = MetalMoEExecutor(
-                        expert_count, flat_input.shape[-1], slots
+                        expert_count, flat_input.shape[-1], slots,
+                        group_size=self.gate_proj.group_size,
                     )
                     self._metal_executors[key] = executor
                 projection_packs = {

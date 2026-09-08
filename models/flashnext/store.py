@@ -115,7 +115,8 @@ class SafeTensorStore:
         self._flashnext_env = {
             key: os.environ[key]
             for key in (
-                "FLASHNEXT_METAL_RUNTIME", "FLASHNEXT_SLAB_GLOBAL",
+                "FLASHNEXT_METAL_RUNTIME", "FLASHNEXT_METAL_G64",
+                "FLASHNEXT_SLAB_G64", "FLASHNEXT_SLAB_GLOBAL",
                 "FLASHNEXT_SLAB_PACK", "FLASHNEXT_SLAB_POLICY",
                 "FLASHNEXT_FUSED_SHARED", "FLASHNEXT_FUSED_SHARED_PARTS",
                 "FLASHNEXT_FUSED_UP_SWIGLU", "FLASHNEXT_STREAM_PACK",

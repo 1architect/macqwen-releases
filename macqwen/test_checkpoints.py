@@ -22,6 +22,17 @@ def flashnext(root: Path, name: str, model_type: str = "qwen4_exp") -> Path:
 
 
 class CheckpointTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._environment = patch.dict(os.environ, {}, clear=False)
+        self._environment.start()
+        for name in (
+            "MACQWEN_FLASHNEXT_MODEL",
+            "MACQWEN_QWEN27B_MODEL",
+            "MACQWEN_MODEL_ROOT",
+        ):
+            os.environ.pop(name, None)
+        self.addCleanup(self._environment.stop)
+
     def test_auto_selects_the_only_complete_compatible_checkpoint(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

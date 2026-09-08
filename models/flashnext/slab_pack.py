@@ -36,12 +36,14 @@ import os
 from pathlib import Path
 import struct
 import tempfile
+from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 import numpy as np
 
 HEADER_MAGIC = 0x4D4F4553  # "MOES"
 HEADER_VERSION = 1
+HEADER_VERSION_G64 = 2
 HEADER_SIZE = 4096
 RECORD_STRIDE = 3072000
 DIRECTORY_OFFSET = 32
@@ -64,6 +66,110 @@ DOWN_BIASES_OFFSET = 2969600
 
 _PARTS = ("weight", "scales", "biases")
 _PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
+
+
+@dataclass(frozen=True)
+class SlabLayout:
+    """Immutable on-disk layout contract for one quantization group size."""
+
+    name: str
+    group_size: int
+    record_stride: int
+    header_version: int
+    layout_id: int
+    shapes: Tuple[Tuple[str, Tuple[int, int]], ...]
+    offsets: Tuple[Tuple[str, int], ...]
+
+    def shape(self, projection: str, part: str) -> Tuple[int, int]:
+        return dict(self.shapes)[f"{projection}.{part}"]
+
+    def offset(self, projection: str, part: str) -> int:
+        return dict(self.offsets)[f"{projection}.{part}"]
+
+
+def _make_layout(group_size: int) -> SlabLayout:
+    if group_size == 32:
+        metadata = 102400
+        version, layout_id, name = HEADER_VERSION, 32, "q4-g32"
+    elif group_size == 64:
+        metadata = 51200
+        version, layout_id, name = HEADER_VERSION_G64, 64, "q4-g64"
+    else:
+        raise ValueError(f"Unsupported slab quantization group size: {group_size}")
+    gate_weight = 0
+    gate_scales = 819200
+    gate_biases = gate_scales + metadata
+    up_weight = gate_biases + metadata
+    up_scales = up_weight + 819200
+    up_biases = up_scales + metadata
+    down_weight = up_biases + metadata
+    down_scales = down_weight + 819200
+    down_biases = down_scales + metadata
+    stride = down_biases + metadata
+    if stride % 4096:
+        raise AssertionError("Slab record stride must be page aligned")
+    shapes = tuple(
+        (f"{projection}.{part}", (rows, cols))
+        for projection, rows, cols in (
+            ("gate_proj", 640, 320),
+            ("up_proj", 640, 320),
+            ("down_proj", 2560, 80),
+        )
+        for part in _PARTS
+    )
+    # Weight columns are fixed. Metadata columns depend on group size.
+    metadata_shapes = tuple(
+        (f"{projection}.{part}", (rows, cols // group_size))
+        for projection, rows, cols in (
+            ("gate_proj", 640, 2560),
+            ("up_proj", 640, 2560),
+            ("down_proj", 2560, 640),
+        )
+        for part in ("scales", "biases")
+    )
+    shape_map = dict(shapes)
+    shape_map.update(dict(metadata_shapes))
+    offsets = (
+        ("gate_proj.weight", gate_weight), ("gate_proj.scales", gate_scales),
+        ("gate_proj.biases", gate_biases), ("up_proj.weight", up_weight),
+        ("up_proj.scales", up_scales), ("up_proj.biases", up_biases),
+        ("down_proj.weight", down_weight), ("down_proj.scales", down_scales),
+        ("down_proj.biases", down_biases),
+    )
+    return SlabLayout(
+        name=name, group_size=group_size, record_stride=stride,
+        header_version=version, layout_id=layout_id,
+        shapes=tuple(shape_map.items()), offsets=offsets,
+    )
+
+
+Q4G32_LAYOUT = _make_layout(32)
+Q4G64_LAYOUT = _make_layout(64)
+
+
+def get_slab_layout(layout: SlabLayout | str | int | None = None) -> SlabLayout:
+    """Resolve a slab layout without changing the Q4/G32 default."""
+    if layout is None:
+        return Q4G32_LAYOUT
+    if isinstance(layout, SlabLayout):
+        if layout not in (Q4G32_LAYOUT, Q4G64_LAYOUT):
+            raise ValueError(f"Unsupported slab layout descriptor: {layout.name}")
+        return Q4G32_LAYOUT if layout == Q4G32_LAYOUT else Q4G64_LAYOUT
+    if isinstance(layout, int):
+        group_size = layout
+    else:
+        value = str(layout).lower().replace("_", "-")
+        if value in {"g32", "q4g32", "q4-g32", "q4/g32"}:
+            group_size = 32
+        elif value in {"g64", "q4g64", "q4-g64", "q4/g64"}:
+            group_size = 64
+        else:
+            raise ValueError(f"Unknown slab layout: {layout}")
+    if group_size == 32:
+        return Q4G32_LAYOUT
+    if group_size == 64:
+        return Q4G64_LAYOUT
+    raise ValueError(f"Unsupported slab quantization group size: {group_size}")
 
 _LIBC = None
 _MLOCK = None
@@ -130,11 +236,13 @@ def build_slab_pack(
     allocation: Mapping[int, Sequence[int]],
     output_path: str | Path,
     model_hash: bytes = b"\x00" * 8,
+    layout: SlabLayout | str | int | None = None,
 ) -> int:
     """Extract expert weights from store and write a page-aligned slab pack.
 
     Returns the total file size in bytes.
     """
+    slab_layout = get_slab_layout(layout)
     out_path = Path(output_path).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -153,9 +261,11 @@ def build_slab_pack(
             f"but the {HEADER_SIZE}-byte header supports only "
             f"{MAX_DIRECTORY_ENTRIES}"
         )
-    if hasattr(store, "shape") and not validate_slab_allocation(store, allocation):
+    if hasattr(store, "shape") and not validate_slab_allocation(
+        store, allocation, layout=slab_layout
+    ):
         raise ValueError("slab pack allocation contains an incompatible layer layout")
-    total_size = HEADER_SIZE + expert_count * RECORD_STRIDE
+    total_size = HEADER_SIZE + expert_count * slab_layout.record_stride
     temp_fd, temp_name = tempfile.mkstemp(
         prefix=f".{out_path.name}.", suffix=".tmp", dir=out_path.parent
     )
@@ -170,12 +280,12 @@ def build_slab_pack(
             hdr,
             0,
             HEADER_MAGIC,
-            HEADER_VERSION,
+            slab_layout.header_version,
             expert_count,
-            RECORD_STRIDE,
+            slab_layout.record_stride,
             HEADER_SIZE,
             model_hash[:8].ljust(8, b"\x00"),
-            0,  # reserved
+            0 if slab_layout is Q4G32_LAYOUT else slab_layout.layout_id,
         )
 
         # Directory table starting at offset 32: (layer_id: u16, expert_id: u16, slot: u32)
@@ -189,7 +299,7 @@ def build_slab_pack(
         # 2. Write Expert Records
         for layer_id, expert_id, slot in ordered_experts:
             prefix = f"language_model.model.layers.{layer_id}.mlp.switch_mlp"
-            record_bytes = bytearray(RECORD_STRIDE)
+            record_bytes = bytearray(slab_layout.record_stride)
             rec_offset = 0
 
             for proj in _PROJECTIONS:
@@ -197,14 +307,31 @@ def build_slab_pack(
                     name = f"{prefix}.{proj}.{part}"
                     # Read single row as numpy array
                     row = store.rows_np(name, [expert_id])
+                    expected_dtype = np.dtype(np.uint32 if part == "weight" else np.uint16)
+                    if np.dtype(row.dtype) != expected_dtype:
+                        raise ValueError(
+                            f"Row dtype mismatch for {name}: got {row.dtype}, "
+                            f"expected {expected_dtype}"
+                        )
                     row_bytes = row.tobytes()
-                    record_bytes[rec_offset : rec_offset + len(row_bytes)] = row_bytes
+                    expected_bytes = (
+                        slab_layout.shape(proj, part)[0]
+                        * slab_layout.shape(proj, part)[1]
+                        * row.dtype.itemsize
+                    )
+                    if len(row_bytes) != expected_bytes:
+                        raise ValueError(
+                            f"Row size mismatch for {name}: got {len(row_bytes)} bytes, "
+                            f"expected {expected_bytes}"
+                        )
+                    part_offset = slab_layout.offset(proj, part)
+                    record_bytes[part_offset : part_offset + len(row_bytes)] = row_bytes
                     rec_offset += len(row_bytes)
 
-            if rec_offset != RECORD_STRIDE:
+            if rec_offset != slab_layout.record_stride:
                 raise ValueError(
                     f"Record size mismatch for layer {layer_id} expert {expert_id}: "
-                    f"got {rec_offset} bytes, expected {RECORD_STRIDE}"
+                    f"got {rec_offset} bytes, expected {slab_layout.record_stride}"
                 )
             f.write(record_bytes)
 
@@ -244,18 +371,19 @@ def checkpoint_identity(model_dir: str | Path) -> str:
     return digest.hexdigest()
 
 
-def validate_slab_allocation(store: Any, allocation: Mapping[int, Sequence[int]]) -> bool:
-    """Check every allocated layer against the fixed packed-record layout."""
+def validate_slab_allocation(
+    store: Any,
+    allocation: Mapping[int, Sequence[int]],
+    layout: SlabLayout | str | int | None = None,
+) -> bool:
+    """Check allocated layers against the selected packed-record contract."""
+    slab_layout = get_slab_layout(layout)
     expected = {
-        "gate_proj": {
-            "weight": (640, 320), "scales": (640, 80), "biases": (640, 80),
-        },
-        "up_proj": {
-            "weight": (640, 320), "scales": (640, 80), "biases": (640, 80),
-        },
-        "down_proj": {
-            "weight": (2560, 80), "scales": (2560, 20), "biases": (2560, 20),
-        },
+        projection: {
+            part: slab_layout.shape(projection, part)
+            for part in _PARTS
+        }
+        for projection in _PROJECTIONS
     }
     try:
         expert_count = None
@@ -275,9 +403,15 @@ def validate_slab_allocation(store: Any, allocation: Mapping[int, Sequence[int]]
                     elif shape[0] != expert_count:
                         return False
                     ref = getattr(store, "refs", {}).get(name)
-                    if ref is not None:
-                        dtype = "BF16" if part != "weight" else "U32"
-                        if ref.dtype != dtype:
+                    dtype = "BF16" if part != "weight" else "U32"
+                    if ref is not None and ref.dtype != dtype:
+                        return False
+                    dtype_fn = getattr(store, "dtype", None)
+                    if callable(dtype_fn):
+                        actual_dtype = str(dtype_fn(name)).upper()
+                        if dtype not in actual_dtype and not (
+                            dtype == "U32" and "UINT32" in actual_dtype
+                        ):
                             return False
         if expert_count is not None and any(
             int(expert) >= expert_count
@@ -299,6 +433,8 @@ class SlabPack:
         "fd",
         "_mm",
         "size",
+        "layout",
+        "expected_layout",
         "model_hash",
         "expected_model_hash",
         "expert_count",
@@ -314,12 +450,15 @@ class SlabPack:
         path: str | Path,
         lock_memory: bool = True,
         expected_model_hash: bytes | None = None,
+        expected_layout: SlabLayout | str | int | None = None,
     ):
         self.path = Path(path).expanduser()
         self.lock_memory = lock_memory
         self.fd: int | None = None
         self._mm: mmap.mmap | None = None
         self.size = 0
+        self.expected_layout = expected_layout
+        self.layout = get_slab_layout(expected_layout)
         self.model_hash = b"\x00" * 8
         self.expected_model_hash = expected_model_hash
         self.expert_count = 0
@@ -352,12 +491,23 @@ class SlabPack:
             raise ValueError(
                 f"Could not read the complete slab pack header in {self.path}"
             )
-        magic, version, expert_count, stride, hdr_size, model_hash, _ = struct.unpack_from(
+        magic, version, expert_count, stride, hdr_size, model_hash, reserved = struct.unpack_from(
             "<IIIII8sI", hdr, 0
         )
-        if magic != HEADER_MAGIC or version != HEADER_VERSION:
+        if magic != HEADER_MAGIC:
             raise ValueError(f"Invalid slab pack header in {self.path}")
-        if stride != RECORD_STRIDE:
+        if self.expected_layout is None and version == HEADER_VERSION_G64:
+            self.layout = Q4G64_LAYOUT
+        if version != self.layout.header_version:
+            raise ValueError(
+                f"Slab pack layout version {version} does not match "
+                f"expected {self.layout.header_version} in {self.path}"
+            )
+        if version == HEADER_VERSION and reserved != 0:
+            raise ValueError(f"Invalid Q4/G32 layout identity in {self.path}")
+        if version == HEADER_VERSION_G64 and reserved != Q4G64_LAYOUT.layout_id:
+            raise ValueError(f"Invalid Q4/G64 layout identity in {self.path}")
+        if stride != self.layout.record_stride:
             raise ValueError(f"Unsupported record stride {stride} in {self.path}")
         if hdr_size != HEADER_SIZE:
             raise ValueError(
@@ -378,7 +528,7 @@ class SlabPack:
                 f"{MAX_DIRECTORY_ENTRIES}"
             )
 
-        expected_size = HEADER_SIZE + expert_count * stride
+        expected_size = HEADER_SIZE + expert_count * self.layout.record_stride
         if self.size != expected_size:
             raise ValueError(
                 f"Invalid slab pack size in {self.path}: got {self.size} bytes, "
@@ -430,7 +580,7 @@ class SlabPack:
     def allocation_digest(self) -> str:
         """Return a deterministic short digest of the validated directory."""
         digest = hashlib.sha256()
-        digest.update(struct.pack("<II", self.expert_count, RECORD_STRIDE))
+        digest.update(struct.pack("<II", self.expert_count, self.layout.record_stride))
         for (layer_id, expert_id), slot in sorted(
             self.layer_expert_to_slot.items()
         ):
@@ -472,6 +622,7 @@ def get_slab_pack_cache_path(
     allocation: Mapping[int, Sequence[int]],
     cache_dir: str | Path | None = None,
     model_identity: str | None = None,
+    layout: SlabLayout | str | int | None = None,
 ) -> Path:
     """Compute deterministic cache path for a given model and slab allocation."""
     if cache_dir is None:
@@ -479,6 +630,7 @@ def get_slab_pack_cache_path(
     else:
         cache_dir = Path(cache_dir).expanduser()
 
+    slab_layout = get_slab_layout(layout)
     if model_identity is None:
         model_identity = checkpoint_identity(model_dir)
     # Hash model identity + allocation structure. The path remains part of the
@@ -487,9 +639,12 @@ def get_slab_pack_cache_path(
         f"{l}:" + "-".join(map(str, allocation[l]))
         for l in sorted(allocation.keys())
     )
-    key = (
-        f"{str(model_dir)}|{model_identity}|{alloc_str}|v{HEADER_VERSION}"
-    ).encode("utf-8")
+    # Keep the historical G32 key byte-for-byte stable. G64 gets an explicit
+    # layout suffix so caches can never cross the two record formats.
+    layout_key = "" if slab_layout is Q4G32_LAYOUT else f"|layout={slab_layout.name}"
+    key = f"{str(model_dir)}|{model_identity}|{alloc_str}|v{slab_layout.header_version}{layout_key}".encode(
+        "utf-8"
+    )
     digest = hashlib.sha256(key).hexdigest()[:16]
     total_slots = sum(len(v) for v in allocation.values())
     return cache_dir / f"slab-pack-slots{total_slots}-{digest}.bin"
@@ -500,15 +655,18 @@ def get_or_create_slab_pack(
     allocation: Mapping[int, Sequence[int]],
     cache_dir: str | Path | None = None,
     lock_memory: bool = True,
+    layout: SlabLayout | str | int | None = None,
 ) -> SlabPack:
     """Retrieve existing cached slab pack or build it once, then map and lock."""
     if not allocation:
         raise ValueError("Cannot create slab pack with empty allocation")
 
+    slab_layout = get_slab_layout(layout)
     model_identity = checkpoint_identity(store.dir)
     model_hash = bytes.fromhex(model_identity)[:8]
     cache_path = get_slab_pack_cache_path(
-        store.dir, allocation, cache_dir, model_identity=model_identity
+        store.dir, allocation, cache_dir, model_identity=model_identity,
+        layout=slab_layout,
     )
     expected_path = os.environ.get("FLASHNEXT_SLAB_PACK_EXPECTED_PATH")
     if expected_path:
@@ -525,6 +683,7 @@ def get_or_create_slab_pack(
                 cache_path,
                 lock_memory=lock_memory,
                 expected_model_hash=model_hash,
+                expected_layout=slab_layout,
             )
         except (OSError, ValueError) as error:
             if require_existing:
@@ -537,10 +696,13 @@ def get_or_create_slab_pack(
             "Run bench_slab_production.py --capacity-sweep --prepare-only, "
             "then use the benchmark file-cache purge and quiescence gate."
         )
-    build_slab_pack(store, allocation, cache_path, model_hash=model_hash)
+    build_slab_pack(
+        store, allocation, cache_path, model_hash=model_hash, layout=slab_layout
+    )
 
     return SlabPack(
         cache_path,
         lock_memory=lock_memory,
         expected_model_hash=model_hash,
+        expected_layout=slab_layout,
     )

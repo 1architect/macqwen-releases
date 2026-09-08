@@ -30,6 +30,7 @@ FlashNext MoE layers. The launcher enables these current settings:
 
 ```text
 FLASHNEXT_METAL_RUNTIME=1
+FLASHNEXT_METAL_G64=1
 FLASHNEXT_SLAB_GLOBAL=60
 FLASHNEXT_SLAB_PACK=1
 FLASHNEXT_SLAB_POLICY=skew
@@ -66,8 +67,10 @@ inside a 7.8% resolution band. This comparison does not limit the newer
 profile's measured rate.
 
 The slab path uses page-aligned, file-backed storage and direct expert-major
-Metal addressing. The 60-slot setting remains the engineering control. Frontier
-8B and streamed expert-major records remain disabled.
+Metal addressing for compatible Q4/G32 models. REAP uses streamed Q4/G64
+execution without packed G64 residency. Its corrected 32-token equality gate
+passes, but no REAP speed result is published. Frontier 8B and streamed
+expert-major records remain disabled.
 
 ## Current support
 
@@ -103,8 +106,8 @@ The 256 GB reference Mac normally holds only one Flash-Next checkpoint.
 
 The current REAP checkpoint is `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
 It uses Q4/G64 expert weights and Q4/G32 n-gram weights. Its expert path
-uses reference streaming. The custom Q4/G32 Metal executor and packed slabs
-remain inactive until compatible support is measured.
+uses streamed expert weights with the G64 Metal executor enabled by the normal
+chat launcher. Packed G64 slabs remain disabled.
 
 oQ4 passed a recorded API coding test that oQ3-MTP failed.
 Use oQ3-MTP for prose, general chat, and the smallest supported installation.

@@ -7,7 +7,15 @@ rules.
 
 ## Where things stand
 
-Last worked on 2026-09-05.
+Last worked on 2026-09-08.
+
+Q4/G64 kernels and packed layouts are implemented. The combined focused suite
+passes 295 tests.
+`chat.sh` now enables `FLASHNEXT_METAL_G64=1` for REAP by default. Packed G64
+residency remains disabled. Set `FLASHNEXT_METAL_G64=0` to use reference
+streaming for a control turn. The first production comparison failed before
+the score-rounding fix. The corrected diagnostic and independent 32-token gate
+now pass. A new speed comparison remains pending.
 
 The latest fix addresses cached tool-result prefill. A 1,978-token input can
 exceed the Metal buffer limit when QSA includes the earlier conversation.
@@ -31,9 +39,10 @@ behavior. Explicit `norm_convention` metadata or `FLASHNEXT_NORM_CONVENTION`
 (`one` or `zero`) can select a different convention. We keep this setting on
 each model instance and do not rewrite checkpoint weights.
 
-Q4/G64 uses reference streaming because
-our custom Metal executor and packed slabs require Q4/G32. We preserve that
-optimized path for compatible checkpoints. We also recover automatic discovery
+REAP chat enables streamed Q4/G64 kernel execution. Set
+`FLASHNEXT_METAL_G64=0` for a reference control. Packed G64 slabs remain
+disabled until their checkpoint-specific history and runtime gate pass. We
+preserve the Q4/G32 optimized path for compatible checkpoints. We also recover automatic discovery
 when the saved checkpoint directory is missing and one complete model remains.
 
 Our first manual generation exposed a mixed Conv1d layout: the PLE tensor

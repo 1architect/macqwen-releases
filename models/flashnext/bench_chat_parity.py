@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import pty
 import statistics
+import struct
 import subprocess
 import sys
 import tempfile
@@ -108,6 +109,107 @@ def vm_warnings(records: list[dict]) -> list[dict]:
                 "limit_pages": limit, "excess_pages": excess, "missing_counters": missing,
             })
     return warnings
+
+
+def checkpoint_runtime_capability(checkpoint: str | Path) -> dict[str, object]:
+    """Infer the slab capability from checkpoint metadata without loading MLX."""
+    path = Path(checkpoint).expanduser()
+    try:
+        config = json.loads((path / "config.json").read_text())
+        index = json.loads((path / "model.safetensors.index.json").read_text())
+    except (OSError, TypeError, ValueError) as error:
+        raise ValueError(f"cannot inspect checkpoint metadata: {path}") from error
+    model_type = config.get("model_type")
+    quantization = config.get("quantization")
+    if model_type not in {"qwen4_exp", "qwen4_exp_text"} or not isinstance(quantization, dict):
+        raise ValueError(f"unsupported Flash-Next checkpoint metadata: {path}")
+    weight_map = index.get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map:
+        raise ValueError(f"checkpoint index has no weights: {path}")
+    shards = set(weight_map.values())
+    if not all((path / str(shard)).is_file() for shard in shards):
+        raise ValueError(f"checkpoint is incomplete: {path}")
+    try:
+        bits = int(quantization["bits"])
+        group_size = int(quantization["group_size"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"checkpoint has malformed quantization metadata: {path}") from error
+    if bits != 4 or group_size not in {32, 64} or quantization.get("mode", "affine") != "affine":
+        raise ValueError(f"unsupported Flash-Next quantization layout: bits={bits}, group_size={group_size}")
+    # Confirm every routed projection's header shape. This catches mixed layouts
+    # that a top-level quantization setting cannot describe.
+    routed = {
+        name: shard for name, shard in weight_map.items()
+        if ".mlp.switch_mlp." in name
+    }
+    nested = config.get("text_config") or config.get("llm_config") or config
+    try:
+        layer_count = int(nested["num_hidden_layers"])
+        expert_count = int(nested["num_experts"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"checkpoint lacks routed model dimensions: {path}") from error
+    if layer_count != 48 or expert_count <= 0 or int(nested.get("hidden_size", 0)) != 2560 \
+            or int(nested.get("moe_intermediate_size", 0)) != 640:
+        raise ValueError(f"unsupported routed model dimensions: layers={layer_count}, experts={expert_count}")
+    required = {
+        f"language_model.model.layers.{layer}.mlp.switch_mlp.{projection}.{part}"
+        for layer in range(layer_count)
+        for projection in ("gate_proj", "up_proj", "down_proj")
+        for part in ("weight", "scales", "biases")
+    }
+    if set(routed) != required:
+        raise ValueError("checkpoint has incomplete routed projection headers")
+    headers: dict[str, dict] = {}
+    for name, shard in routed.items():
+        shard_path = path / str(shard)
+        if str(shard) not in headers:
+            with shard_path.open("rb") as handle:
+                raw_size = handle.read(8)
+                if len(raw_size) != 8:
+                    raise ValueError(f"checkpoint shard has no safetensors header: {shard_path}")
+                header_size = struct.unpack("<Q", raw_size)[0]
+                if header_size > 16 * 1024 * 1024:
+                    raise ValueError(f"safetensors header is too large: {shard_path}")
+                raw_header = handle.read(header_size)
+            try:
+                headers[str(shard)] = json.loads(raw_header)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"checkpoint shard has malformed safetensors header: {shard_path}") from error
+        tensor = headers[str(shard)].get(name)
+        if not isinstance(tensor, dict) or not isinstance(tensor.get("shape"), list):
+            raise ValueError(f"checkpoint lacks routed tensor header: {name}")
+        projection, part = name.rsplit(".", 2)[-2:]
+        gate_groups = 80 * 32 // group_size
+        down_groups = 20 * 32 // group_size
+        expected = {
+            "gate_proj": {"weight": (expert_count, 640, 320), "scales": (expert_count, 640, gate_groups), "biases": (expert_count, 640, gate_groups)},
+            "up_proj": {"weight": (expert_count, 640, 320), "scales": (expert_count, 640, gate_groups), "biases": (expert_count, 640, gate_groups)},
+            "down_proj": {"weight": (expert_count, 2560, 80), "scales": (expert_count, 2560, down_groups), "biases": (expert_count, 2560, down_groups)},
+        }
+        shape = tuple(tensor["shape"])
+        expected_dtype = "U32" if part == "weight" else "BF16"
+        if (projection not in expected or shape != expected[projection][part]
+                or tensor.get("dtype") != expected_dtype):
+            raise ValueError(f"checkpoint has mixed routed layout: {name}")
+    if (bits, group_size) == (4, 32):
+        return {"group_size": 32, "slab_mode": "packed", "allocated_slots": 60, "mlock_ok": True}
+    if (bits, group_size) == (4, 64):
+        return {"group_size": 64, "slab_mode": "reference", "allocated_slots": 0, "mlock_ok": False}
+    raise ValueError(f"unsupported Flash-Next quantization layout: bits={bits}, group_size={group_size}")
+
+
+def _runtime_capability(records: list[dict], expected_runtime) -> dict[str, object] | None:
+    """Resolve an explicitly requested capability for offline evidence recovery."""
+    if expected_runtime is None:
+        return None
+    if expected_runtime == "checkpoint":
+        checkpoints = {row.get("checkpoint") for row in records}
+        if len(checkpoints) != 1 or not next(iter(checkpoints), None):
+            raise ValueError("checkpoint capability inference requires one checkpoint")
+        return checkpoint_runtime_capability(next(iter(checkpoints)))
+    if isinstance(expected_runtime, (str, Path)):
+        return checkpoint_runtime_capability(expected_runtime)
+    raise ValueError("invalid expected runtime capability")
 
 
 def run_chat_child(session, condition: str, prompt: str) -> None:
@@ -265,7 +367,7 @@ def run_chat_child(session, condition: str, prompt: str) -> None:
     print(json.dumps(result), flush=True)
 
 
-def summarize(records: list[dict], mode: str = "parity") -> dict:
+def summarize(records: list[dict], mode: str = "parity", expected_runtime=None) -> dict:
     if mode not in {"parity", "settings", "workload", "pins"}:
         raise ValueError("unknown comparison mode")
     conditions = {"parity": CONDITIONS, "settings": SETTINGS_CONDITIONS,
@@ -288,12 +390,28 @@ def summarize(records: list[dict], mode: str = "parity") -> dict:
         for field in ("prompt_digest", "digest"):
             if len({row[field] for row in rows}) != 1 or not rows[0][field]:
                 raise ValueError(f"{name} changed {field} across rounds")
-    for field in ("python", "checkpoint", "allocation_digest", "effort"):
+    for field in ("python", "checkpoint", "effort"):
         if len({row[field] for row in records}) != 1 or not records[0][field]:
             raise ValueError(f"startup mismatch: {field}")
-    if any(row["io_workers"] != 16 or row["profile_io"]
-           or row["allocated_slots"] != 60 or not row["mlock_ok"] for row in records):
+    capability = _runtime_capability(records, expected_runtime)
+    allocation_values = {row.get("allocation_digest") for row in records}
+    if len(allocation_values) != 1:
+        raise ValueError("startup mismatch: allocation_digest")
+    if any(row["io_workers"] != 16 or row["profile_io"] for row in records):
         raise ValueError("runtime controls do not match the current preset")
+    if capability is None:
+        if any(row["allocated_slots"] != 60 or not row["mlock_ok"]
+               or not row.get("allocation_digest") for row in records):
+            raise ValueError("runtime controls do not match the current preset")
+    elif capability["slab_mode"] == "packed":
+        if any(not row.get("allocation_digest") or row["allocated_slots"] != 60
+               or not row["mlock_ok"] for row in records):
+            raise ValueError("runtime controls do not match the packed slab preset")
+    else:
+        if any("allocation_digest" not in row or row["allocation_digest"] is not None
+               or "allocated_slots" not in row or row["allocated_slots"] != 0
+               or "mlock_ok" not in row or row["mlock_ok"] for row in records):
+            raise ValueError("reference-streaming evidence has mixed slab state")
     rendered_rows = [row for row in records
                      if row["condition"] in SETTINGS_CONDITIONS + WORKLOAD_CONDITIONS + PIN_CONDITIONS]
     if any(not row["render_tty"] for row in rendered_rows):
@@ -307,6 +425,13 @@ def summarize(records: list[dict], mode: str = "parity") -> dict:
         },
         "scope": "Raw versus formatted changes workload. No optimization promotion.",
     }
+    if capability is not None:
+        result["runtime_validation"] = {
+            "source": "checkpoint config, index, and safetensors headers",
+            "slab_mode": capability["slab_mode"],
+            "allocated_slots": capability["allocated_slots"],
+            "mlock_ok": capability["mlock_ok"],
+        }
     warnings = vm_warnings(records)
     result["vm_warnings"] = warnings
     result["attribution_status"] = (
@@ -523,7 +648,7 @@ def main() -> int:
                     print(json.dumps(row), flush=True)
                     write_evidence(args.json, payload)
         require_unchanged_source(fingerprint)
-        summary = summarize(records, args.mode)
+        summary = summarize(records, args.mode, expected_runtime="checkpoint")
     except BaseException as error:
         payload["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
         payload["failure"] = {"type": type(error).__name__, "message": str(error)}

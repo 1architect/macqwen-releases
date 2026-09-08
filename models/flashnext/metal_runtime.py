@@ -27,6 +27,10 @@ MAX_EXPERTS = 512
 MAX_TOP_K = 10
 MAX_WIDTH = 16_384
 GROUP_SIZE = 32
+SUPPORTED_GROUP_SIZES = (32, 64)
+# Full-model digest gate passed after the MLX score-combine correction on
+# 20260908. The path remains opt-in through FLASHNEXT_METAL_G64.
+G64_RUNTIME_READY = True
 BITS = 4
 
 
@@ -104,22 +108,31 @@ def _shape(value: Any) -> tuple[int, ...]:
     return tuple(int(item) for item in value.shape)
 
 
+def _slab_layout_constants(group_size: int) -> tuple[int, int]:
+    from .slab_pack import get_slab_layout, HEADER_SIZE
+
+    return HEADER_SIZE, get_slab_layout(group_size).record_stride
+
+
 def _validate_projection(
     projection: Q4G32Projection,
     expert_count: int | None,
     input_width: int,
     output_width: int,
+    group_size: int = GROUP_SIZE,
 ) -> None:
     weight_shape = _shape(projection.weight)
     scale_shape = _shape(projection.scales)
     bias_shape = _shape(projection.biases)
     count = weight_shape[0] if expert_count is None else expert_count
     expected_weight = (count, output_width, input_width // 8)
-    expected_meta = (count, output_width, input_width // GROUP_SIZE)
+    expected_meta = (count, output_width, input_width // group_size)
     if weight_shape != expected_weight:
         raise ValueError(f"weight shape {weight_shape} != {expected_weight}")
     if scale_shape != expected_meta or bias_shape != expected_meta:
-        raise ValueError("Q4/G32 scales and biases have an invalid shape")
+        raise ValueError(
+            f"Q4/G{group_size} scales and biases have an invalid shape"
+        )
     dtype = getattr(projection.weight, "dtype", None)
     if str(dtype) not in ("mlx.core.uint32", "uint32", "<class 'numpy.uint32'>"):
         # MLX prints ``mlx.core.uint32``; NumPy prints ``uint32``.
@@ -193,37 +206,37 @@ bool in_slab = ((raw_expert & 0x80000000u) != 0);
 uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
 #if STREAM_PACK_ENABLED
 const device char* record_base = in_slab
-    ? ((const device char*)slab_pack) + 4096u + expert * 3072000u
-    : ((const device char*)stream_pack) + expert * 3072000u;
+    ? ((const device char*)slab_pack) + SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE
+    : ((const device char*)stream_pack) + expert * SLAB_RECORD_STRIDE;
 decltype(weight) w_ptr = (decltype(weight))(record_base + PROJ_W_OFFSET);
 decltype(scales) s_ptr = (decltype(scales))(record_base + PROJ_S_OFFSET);
 decltype(biases) b_ptr = (decltype(biases))(record_base + PROJ_B_OFFSET);
 #else
-uint expert_offset = 4096u + expert * 3072000u;
+uint expert_offset = SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE;
 decltype(weight) w_ptr = in_slab
     ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + PROJ_W_OFFSET)
     : (weight + expert * OUT_WIDTH * (IN_WIDTH / 8));
 decltype(scales) s_ptr = in_slab
     ? (decltype(scales))(((const device char*)slab_pack) + expert_offset + PROJ_S_OFFSET)
-    : (scales + expert * OUT_WIDTH * (IN_WIDTH / 32));
+    : (scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
 decltype(biases) b_ptr = in_slab
     ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + PROJ_B_OFFSET)
-    : (biases + expert * OUT_WIDTH * (IN_WIDTH / 32));
+    : (biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
 #endif
 #elif SLAB_ENABLED
 bool in_slab = ((raw_expert & 0x80000000u) != 0);
 uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
 decltype(weight) w_ptr = (in_slab ? slab_weight : weight) + expert * OUT_WIDTH * (IN_WIDTH / 8);
-decltype(scales) s_ptr = (in_slab ? slab_scales : scales) + expert * OUT_WIDTH * (IN_WIDTH / 32);
-decltype(biases) b_ptr = (in_slab ? slab_biases : biases) + expert * OUT_WIDTH * (IN_WIDTH / 32);
+decltype(scales) s_ptr = (in_slab ? slab_scales : scales) + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
+decltype(biases) b_ptr = (in_slab ? slab_biases : biases) + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
 #else
 uint expert = raw_expert;
 decltype(weight) w_ptr = weight + expert * OUT_WIDTH * (IN_WIDTH / 8);
-decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / 32);
-decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / 32);
+decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
+decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
 #endif
 
-QMV_MIXED_IMPL<T, 32, 4>(
+    QMV_MIXED_IMPL<T, GROUP_SIZE, 4>(
     w_ptr, s_ptr, b_ptr,
     input, output, in_size, out_size, tid,
     simdgroup_index_in_threadgroup, thread_index_in_simdgroup);
@@ -247,37 +260,37 @@ bool in_slab = ((raw_expert & 0x80000000u) != 0);
 uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
 #if STREAM_PACK_ENABLED
 const device char* record_base = in_slab
-    ? ((const device char*)slab_pack) + 4096u + expert * 3072000u
-    : ((const device char*)stream_pack) + expert * 3072000u;
+    ? ((const device char*)slab_pack) + SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE
+    : ((const device char*)stream_pack) + expert * SLAB_RECORD_STRIDE;
 decltype(weight) w_ptr = (decltype(weight))(record_base + PROJ_W_OFFSET);
 decltype(scales) s_ptr = (decltype(scales))(record_base + PROJ_S_OFFSET);
 decltype(biases) b_ptr = (decltype(biases))(record_base + PROJ_B_OFFSET);
 #else
-uint expert_offset = 4096u + expert * 3072000u;
+uint expert_offset = SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE;
 decltype(weight) w_ptr = in_slab
     ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + PROJ_W_OFFSET)
     : (weight + expert * OUT_WIDTH * (IN_WIDTH / 8));
 decltype(scales) s_ptr = in_slab
     ? (decltype(scales))(((const device char*)slab_pack) + expert_offset + PROJ_S_OFFSET)
-    : (scales + expert * OUT_WIDTH * (IN_WIDTH / 32));
+    : (scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
 decltype(biases) b_ptr = in_slab
     ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + PROJ_B_OFFSET)
-    : (biases + expert * OUT_WIDTH * (IN_WIDTH / 32));
+    : (biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
 #endif
 #elif SLAB_ENABLED
 bool in_slab = ((raw_expert & 0x80000000u) != 0);
 uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
 decltype(weight) w_ptr = (in_slab ? slab_weight : weight) + expert * OUT_WIDTH * (IN_WIDTH / 8);
-decltype(scales) s_ptr = (in_slab ? slab_scales : scales) + expert * OUT_WIDTH * (IN_WIDTH / 32);
-decltype(biases) b_ptr = (in_slab ? slab_biases : biases) + expert * OUT_WIDTH * (IN_WIDTH / 32);
+decltype(scales) s_ptr = (in_slab ? slab_scales : scales) + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
+decltype(biases) b_ptr = (in_slab ? slab_biases : biases) + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
 #else
 uint expert = raw_expert;
 decltype(weight) w_ptr = weight + expert * OUT_WIDTH * (IN_WIDTH / 8);
-decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / 32);
-decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / 32);
+decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
+decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
 #endif
 
-QMV_MIXED_IMPL<T, 32, 4>(
+    QMV_MIXED_IMPL<T, GROUP_SIZE, 4>(
     w_ptr, s_ptr, b_ptr,
     input, output, in_size, out_size, tid,
     simdgroup_index_in_threadgroup, thread_index_in_simdgroup);
@@ -397,37 +410,37 @@ for (uint slot = 0; slot < SLOTS; ++slot) {
     uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
 #if STREAM_PACK_ENABLED
     const device char* record_base = in_slab
-        ? ((const device char*)slab_pack) + 4096u + expert * 3072000u
-        : ((const device char*)stream_pack) + expert * 3072000u;
+        ? ((const device char*)slab_pack) + SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE
+        : ((const device char*)stream_pack) + expert * SLAB_RECORD_STRIDE;
     decltype(weight) w_ptr = (decltype(weight))(record_base + 2048000u);
     decltype(scales) s_ptr = (decltype(scales))(record_base + 2867200u);
     decltype(biases) b_ptr = (decltype(biases))(record_base + 2969600u);
 #else
-    uint expert_offset = 4096u + expert * 3072000u;
+    uint expert_offset = SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE;
     decltype(weight) w_ptr = in_slab
-        ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + 2048000u)
+        ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + DOWN_W_OFFSET)
         : (weight + expert * OUT_WIDTH * (IN_WIDTH / 8));
     decltype(scales) s_ptr = in_slab
-        ? (decltype(scales))(((const device char*)slab_pack) + expert_offset + 2867200u)
-        : (scales + expert * OUT_WIDTH * (IN_WIDTH / 32));
+        ? (decltype(scales))(((const device char*)slab_pack) + expert_offset + DOWN_S_OFFSET)
+        : (scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
     decltype(biases) b_ptr = in_slab
-        ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + 2969600u)
-        : (biases + expert * OUT_WIDTH * (IN_WIDTH / 32));
+        ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + DOWN_B_OFFSET)
+        : (biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
 #endif
 #elif SLAB_ENABLED
     bool in_slab = ((raw_expert & 0x80000000u) != 0);
     uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
     decltype(weight) w_ptr = (in_slab ? slab_weight : weight) + expert * OUT_WIDTH * (IN_WIDTH / 8);
-    decltype(scales) s_ptr = (in_slab ? slab_scales : scales) + expert * OUT_WIDTH * (IN_WIDTH / 32);
-    decltype(biases) b_ptr = (in_slab ? slab_biases : biases) + expert * OUT_WIDTH * (IN_WIDTH / 32);
+    decltype(scales) s_ptr = (in_slab ? slab_scales : scales) + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
+    decltype(biases) b_ptr = (in_slab ? slab_biases : biases) + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
 #else
     uint expert = raw_expert;
     decltype(weight) w_ptr = weight + expert * OUT_WIDTH * (IN_WIDTH / 8);
-    decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / 32);
-    decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / 32);
+    decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
+    decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
 #endif
 
-    QMV_ACCUMULATE_IMPL<T, 32, 4>(
+    QMV_ACCUMULATE_IMPL<T, GROUP_SIZE, 4>(
         w_ptr, s_ptr, b_ptr,
         x + (token * SLOTS + slot) * IN_WIDTH,
         combined, slot_score, in_size, out_size, tid,
@@ -473,6 +486,7 @@ class MetalMoEExecutor:
         profile_boundaries: bool | None = None,
         profile_boundary: str | None = None,
         fused_up_swiglu: bool | None = None,
+        group_size: int = GROUP_SIZE,
     ) -> None:
         if not 1 <= expert_count <= MAX_EXPERTS:
             raise ValueError(f"expert_count must be in 1..{MAX_EXPERTS}")
@@ -486,11 +500,16 @@ class MetalMoEExecutor:
             raise ValueError(f"max_tokens must be in 1..{MAX_TOKENS}")
         if not 1 <= max_width <= MAX_WIDTH:
             raise ValueError(f"max_width must be in 1..{MAX_WIDTH}")
+        if group_size not in SUPPORTED_GROUP_SIZES:
+            raise ValueError(
+                f"group_size must be one of {SUPPORTED_GROUP_SIZES}"
+            )
         self.expert_count = int(expert_count)
         self.hidden_size = int(hidden_size)
         self.top_k = int(top_k)
         self.max_tokens = int(max_tokens)
         self.max_width = int(max_width)
+        self.group_size = int(group_size)
         self.backend = backend
         self.capabilities = probe_capabilities(backend)
         self.last_path = "reference"
@@ -546,7 +565,7 @@ class MetalMoEExecutor:
             maker = mx.fast.metal_kernel
         dtype = getattr(x, "dtype", None)
         key = (
-            str(dtype), tokens, slots, input_width, output_width, slot_input,
+            self.group_size, str(dtype), tokens, slots, input_width, output_width, slot_input,
             has_slab, has_slab_pack, has_stream_pack, proj_name,
         )
         kernel = self._kernels.get(key)
@@ -555,8 +574,17 @@ class MetalMoEExecutor:
             body = body.replace("SLOTS", str(slots))
             body = body.replace("IN_WIDTH", str(input_width))
             body = body.replace("OUT_WIDTH", str(output_width))
-            body = body.replace("GROUPS", str(input_width // GROUP_SIZE))
-            body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
+            body = body.replace("GROUPS", str(input_width // self.group_size))
+            body = body.replace("GROUP_SIZE", str(self.group_size))
+            if has_slab_pack:
+                header_size, record_stride = _slab_layout_constants(self.group_size)
+                body = body.replace("SLAB_HEADER_SIZE", f"{header_size}u")
+                body = body.replace("SLAB_RECORD_STRIDE", f"{record_stride}u")
+                from .slab_pack import get_slab_layout
+                layout = get_slab_layout(self.group_size)
+                body = body.replace("DOWN_W_OFFSET", f"{layout.offset('down_proj', 'weight')}u")
+                body = body.replace("DOWN_S_OFFSET", f"{layout.offset('down_proj', 'scales')}u")
+                body = body.replace("DOWN_B_OFFSET", f"{layout.offset('down_proj', 'biases')}u")
             body = body.replace("SLOT_INPUT", "1" if slot_input else "0")
             body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
             body = body.replace(
@@ -564,14 +592,11 @@ class MetalMoEExecutor:
             )
             body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
             if has_slab_pack:
-                if proj_name == "gate_proj":
-                    w_off, s_off, b_off = 0, 819200, 921600
-                elif proj_name == "up_proj":
-                    w_off, s_off, b_off = 1024000, 1843200, 1945600
-                elif proj_name == "down_proj":
-                    w_off, s_off, b_off = 2048000, 2867200, 2969600
-                else:
-                    w_off, s_off, b_off = 0, 819200, 921600
+                from .slab_pack import get_slab_layout
+                layout = get_slab_layout(self.group_size)
+                w_off = layout.offset(proj_name, "weight")
+                s_off = layout.offset(proj_name, "scales")
+                b_off = layout.offset(proj_name, "biases")
                 body = body.replace("PROJ_W_OFFSET", f"{w_off}u")
                 body = body.replace("PROJ_S_OFFSET", f"{s_off}u")
                 body = body.replace("PROJ_B_OFFSET", f"{b_off}u")
@@ -587,10 +612,13 @@ class MetalMoEExecutor:
             elif has_slab:
                 input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
             kernel_name = (
-                f"flashnext_level1_q4g32_{proj_name}_pack"
+                f"flashnext_level1_q4g{self.group_size}_{proj_name}_pack"
                 + ("_stream" if has_stream_pack else "")
                 if has_slab_pack
-                else ("flashnext_level1_q4g32_slab" if has_slab else "flashnext_level1_q4g32")
+                else (
+                    f"flashnext_level1_q4g{self.group_size}_slab"
+                    if has_slab else f"flashnext_level1_q4g{self.group_size}"
+                )
             )
             if self._boundary_profiler.enabled and proj_name and self._boundary_profiler.selected_for(
                 proj_name.replace("_proj", "_qmv")
@@ -628,7 +656,7 @@ class MetalMoEExecutor:
             maker = mx.fast.metal_kernel
         dtype = getattr(x, "dtype", None)
         key = (
-            "fused-up-swiglu", str(dtype), tokens, slots, input_width,
+            "fused-up-swiglu", self.group_size, str(dtype), tokens, slots, input_width,
             output_width, has_slab, has_slab_pack, has_stream_pack, proj_name,
         )
         kernel = self._kernels.get(key)
@@ -640,18 +668,23 @@ class MetalMoEExecutor:
         body = body.replace("SLOTS", str(slots))
         body = body.replace("IN_WIDTH", str(input_width))
         body = body.replace("OUT_WIDTH", str(output_width))
-        body = body.replace("GROUPS", str(input_width // GROUP_SIZE))
-        body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
+        body = body.replace("GROUPS", str(input_width // self.group_size))
+        body = body.replace("GROUP_SIZE", str(self.group_size))
+        if has_slab_pack:
+            header_size, record_stride = _slab_layout_constants(self.group_size)
+            body = body.replace("SLAB_HEADER_SIZE", f"{header_size}u")
+            body = body.replace("SLAB_RECORD_STRIDE", f"{record_stride}u")
         body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
         body = body.replace(
             "STREAM_PACK_ENABLED", "1" if has_stream_pack else "0"
         )
         body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
         if has_slab_pack:
-            if proj_name == "up_proj":
-                w_off, s_off, b_off = 1024000, 1843200, 1945600
-            else:
-                w_off, s_off, b_off = 0, 819200, 921600
+            from .slab_pack import get_slab_layout
+            layout = get_slab_layout(self.group_size)
+            w_off = layout.offset(proj_name, "weight")
+            s_off = layout.offset(proj_name, "scales")
+            b_off = layout.offset(proj_name, "biases")
             body = body.replace("PROJ_W_OFFSET", f"{w_off}u")
             body = body.replace("PROJ_S_OFFSET", f"{s_off}u")
             body = body.replace("PROJ_B_OFFSET", f"{b_off}u")
@@ -669,11 +702,11 @@ class MetalMoEExecutor:
         input_names.append("gate_out")
         kernel = maker(
             name=(
-                "flashnext_level1_q4g32_up_swiglu_pack"
+                f"flashnext_level1_q4g{self.group_size}_up_swiglu_pack"
                 if has_slab_pack
                 else (
-                    "flashnext_level1_q4g32_up_swiglu_slab"
-                    if has_slab else "flashnext_level1_q4g32_up_swiglu"
+                    f"flashnext_level1_q4g{self.group_size}_up_swiglu_slab"
+                    if has_slab else f"flashnext_level1_q4g{self.group_size}_up_swiglu"
                 )
             ),
             input_names=input_names,
@@ -697,7 +730,7 @@ class MetalMoEExecutor:
         maker = getattr(self.backend, "metal_kernel", None)
         if maker is None:
             maker = mx.fast.metal_kernel
-        key = ("fused-down", str(getattr(x, "dtype", None)), tokens, slots,
+        key = ("fused-down", self.group_size, str(getattr(x, "dtype", None)), tokens, slots,
                input_width, output_width, has_slab, has_slab_pack,
                has_stream_pack, has_shared_y, has_shared_parts)
         kernel = self._kernels.get(key)
@@ -706,14 +739,24 @@ class MetalMoEExecutor:
             body = body.replace("SLOTS", str(slots))
             body = body.replace("IN_WIDTH", str(input_width))
             body = body.replace("OUT_WIDTH", str(output_width))
-            body = body.replace("GROUPS", str(input_width // GROUP_SIZE))
-            body = body.replace("GROUP_SIZE", str(GROUP_SIZE))
+            body = body.replace("GROUPS", str(input_width // self.group_size))
+            body = body.replace("GROUP_SIZE", str(self.group_size))
+            if has_slab_pack:
+                header_size, record_stride = _slab_layout_constants(self.group_size)
+                body = body.replace("SLAB_HEADER_SIZE", f"{header_size}u")
+                body = body.replace("SLAB_RECORD_STRIDE", f"{record_stride}u")
             body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
             body = body.replace(
                 "STREAM_PACK_ENABLED", "1" if has_stream_pack else "0"
             )
             body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
             body = body.replace("HAS_SHARED_Y", "1" if has_shared_y else "0")
+            if has_slab_pack:
+                from .slab_pack import get_slab_layout
+                layout = get_slab_layout(self.group_size)
+                body = body.replace("DOWN_W_OFFSET", f"{layout.offset('down_proj', 'weight')}u")
+                body = body.replace("DOWN_S_OFFSET", f"{layout.offset('down_proj', 'scales')}u")
+                body = body.replace("DOWN_B_OFFSET", f"{layout.offset('down_proj', 'biases')}u")
             body = body.replace(
                 "HAS_SHARED_PARTS", "1" if has_shared_parts else "0"
             )
@@ -743,7 +786,7 @@ class MetalMoEExecutor:
                 suffix += "_shared"
             elif has_shared_parts:
                 suffix += "_shared_parts"
-            kernel_name = f"flashnext_level1_q4g32_down_combine{suffix}"
+            kernel_name = f"flashnext_level1_q4g{self.group_size}_down_combine{suffix}"
             if self._boundary_profiler.selected_for("fused_down"):
                 kernel_name += "_boundary_fused_down"
             kernel = maker(
@@ -976,7 +1019,10 @@ class MetalMoEExecutor:
         # Keep a NumPy reference for tests and non-MLX callers.  Its unpacking
         # mirrors the Metal kernel and uses float32 accumulators.
         if isinstance(x, np.ndarray):
-            return _numpy_projection(x, np.asarray(routes), projection, output_width, slot_input)
+            return _numpy_projection(
+                x, np.asarray(routes), projection, output_width, slot_input,
+                self.group_size,
+            )
         import mlx.core as mx
 
         # MLX's dequantize uses the same affine Q4/G32 representation.  This
@@ -985,7 +1031,7 @@ class MetalMoEExecutor:
             projection.weight,
             projection.scales,
             projection.biases,
-            group_size=GROUP_SIZE,
+            group_size=self.group_size,
             bits=BITS,
             mode="affine",
         )
@@ -1048,6 +1094,8 @@ class MetalMoEExecutor:
             raise ValueError("provide shared_y or shared parts, not both")
         if stream_pack is not None and slab_pack is None:
             raise ValueError("stream pack requires a resident slab pack")
+        if self.group_size == 64 and stream_pack is not None:
+            raise ValueError("Q4/G64 streamed records are not supported")
         tokens = x_shape[0]
         if route_shape[0] != tokens:
             raise ValueError("x and routes must have the same token count")
@@ -1081,15 +1129,35 @@ class MetalMoEExecutor:
         inter_width = _shape(up.weight)[1]
         if gate_width != inter_width or gate_width > self.max_width:
             raise ValueError("gate and up projection widths must match the bound")
-        _validate_projection(gate, None, self.hidden_size, gate_width)
-        _validate_projection(up, None, self.hidden_size, inter_width)
-        if self.hidden_size % GROUP_SIZE or inter_width % GROUP_SIZE:
-            raise ValueError("Q4/G32 projection inputs must be group aligned")
-        _validate_projection(down, None, inter_width, self.hidden_size)
+        _validate_projection(
+            gate, None, self.hidden_size, gate_width, self.group_size
+        )
+        _validate_projection(
+            up, None, self.hidden_size, inter_width, self.group_size
+        )
+        if self.hidden_size % self.group_size or inter_width % self.group_size:
+            raise ValueError(
+                f"Q4/G{self.group_size} projection inputs must be group aligned"
+            )
+        _validate_projection(
+            down, None, inter_width, self.hidden_size, self.group_size
+        )
+        if slab_pack is not None and (
+            self.hidden_size != 2560 or gate_width != 640 or inter_width != 640
+        ):
+            raise ValueError(
+                "packed slab execution requires hidden=2560 and intermediate=640"
+            )
         if slab_gate is not None:
-            _validate_projection(slab_gate, None, self.hidden_size, gate_width)
-            _validate_projection(slab_up, None, self.hidden_size, inter_width)
-            _validate_projection(slab_down, None, inter_width, self.hidden_size)
+            _validate_projection(
+                slab_gate, None, self.hidden_size, gate_width, self.group_size
+            )
+            _validate_projection(
+                slab_up, None, self.hidden_size, inter_width, self.group_size
+            )
+            _validate_projection(
+                slab_down, None, inter_width, self.hidden_size, self.group_size
+            )
 
         use_metal = self.available
         if stream_pack is not None and not use_metal:
@@ -1131,13 +1199,29 @@ class MetalMoEExecutor:
                 else:
                     activation = swiglu(gate_out, up_out)
             if scores is not None and not return_all:
-                down_out = self._metal_fused_down_combine(
-                    activation, routes, scores, down, self.hidden_size,
-                    slab_down=slab_down, slab_pack=slab_pack,
-                    stream_pack=stream_pack,
-                    shared_y=shared_y,
-                    shared=shared, shared_gate=shared_gate,
-                )
+                if self.group_size == 64:
+                    # Keep the G64 reduction in MLX.  The generic path uses
+                    # the score dtype for the product and sum, while the
+                    # fused kernel accumulates in float32 before its final
+                    # output cast.  These orders differ for BF16 scores.
+                    down_out = self._metal_projection(
+                        activation, routes, down, self.hidden_size, True,
+                        slab_projection=slab_down, slab_pack=slab_pack,
+                        stream_pack=stream_pack, proj_name="down_proj",
+                    )
+                    down_out = weighted_combine(down_out, routes, scores)
+                    if shared_y is not None:
+                        down_out = down_out + shared_y
+                    elif shared is not None:
+                        down_out = down_out + shared_gate * shared
+                else:
+                    down_out = self._metal_fused_down_combine(
+                        activation, routes, scores, down, self.hidden_size,
+                        slab_down=slab_down, slab_pack=slab_pack,
+                        stream_pack=stream_pack,
+                        shared_y=shared_y,
+                        shared=shared, shared_gate=shared_gate,
+                    )
             else:
                 down_out = self._metal_projection(
                     activation, routes, down, self.hidden_size, True,
@@ -1155,6 +1239,8 @@ class MetalMoEExecutor:
                     down_out = down_out + shared_y
                 elif shared is not None:
                     down_out = down_out + shared_gate * shared
+            self.last_path = "reference"
+            self.fallback_reason = self.capabilities["reason"]
         if use_metal and not return_all:
             return down_out
         return (gate_out, up_out, down_out) if return_all else down_out
@@ -1186,6 +1272,7 @@ def _numpy_projection(
     projection: Q4G32Projection,
     output_width: int,
     slot_input: bool,
+    group_size: int = GROUP_SIZE,
 ) -> np.ndarray:
     packed = np.asarray(projection.weight)
     scales = np.asarray(projection.scales)
@@ -1199,11 +1286,11 @@ def _numpy_projection(
             source = x[token, slot] if slot_input else x[token]
             for row in range(output_width):
                 result = 0.0
-                for group in range(input_width // GROUP_SIZE):
+                for group in range(input_width // group_size):
                     qsum = 0.0
                     xsum = 0.0
-                    for i in range(GROUP_SIZE):
-                        k = group * GROUP_SIZE + i
+                    for i in range(group_size):
+                        k = group * group_size + i
                         q = (int(packed[expert, row, k // 8]) >> ((k & 7) * 4)) & 15
                         value = float(source[k])
                         qsum += value * q
@@ -1225,6 +1312,7 @@ __all__ = [
     "MetalCapabilities",
     "MetalMoEExecutor",
     "Q4G32Projection",
+    "SUPPORTED_GROUP_SIZES",
     "probe_capabilities",
     "weighted_combine",
 ]

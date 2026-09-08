@@ -336,6 +336,8 @@ def _norm_one_centered(config: dict, store: SafeTensorStore) -> bool:
     whose metadata predates the convention field.
     """
     override = os.environ.get("FLASHNEXT_NORM_CONVENTION", "").strip().lower()
+    if override == "auto":
+        override = ""
     if override in {"one", "one-centered", "one_centered"}:
         return True
     if override in {"zero", "zero-centered", "zero_centered"}:

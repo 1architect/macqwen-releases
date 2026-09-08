@@ -109,6 +109,13 @@ class RoutingProfile:
         self.pinned_signature = ""
         self._saved_signature = ""
         self._prefixes: dict = {}
+        self._checkpoint_identity = None
+        if os.environ.get("FLASHNEXT_METAL_G64") == "1":
+            try:
+                from .slab_pack import checkpoint_identity
+                self._checkpoint_identity = checkpoint_identity(self.store.dir)
+            except (AttributeError, OSError, TypeError, ValueError):
+                self._checkpoint_identity = None
         saved_read_mode = getattr(
             self.store, "_flashnext_requested_read_mode", None
         )
@@ -377,6 +384,19 @@ class RoutingProfile:
                 "ranked_scores": ranked_scores,
                 "ranked_counts": ranked_counts,
             }
+            # Pin IDs are only reusable when their checkpoint and quantization
+            # layout are known. Add provenance to newly collected profiles.
+            try:
+                prefix = "language_model.model.layers.0.mlp.switch_mlp.gate_proj"
+                weight_shape = self.store.shape(f"{prefix}.weight")
+                scale_shape = self.store.shape(f"{prefix}.scales")
+                group_size = int(weight_shape[-1] * 8 // scale_shape[-1])
+                identity = self._checkpoint_identity
+                if group_size in (32, 64) and identity:
+                    payload["group_size"] = group_size
+                    payload["checkpoint_identity"] = identity
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError, OSError):
+                pass
             with open(cache_file, "w") as handle:
                 json.dump(payload, handle)
             self._saved_signature = self.pinned_signature

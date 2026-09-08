@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import unittest
 import json
+import struct
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
@@ -10,7 +11,8 @@ from unittest.mock import patch
 from models.flashnext import bench_chat_parity as bench
 
 from models.flashnext.bench_chat_parity import (
-    CONDITIONS, SETTINGS_CONDITIONS, condition_settings, summarize, token_digest, vm_warnings,
+    CONDITIONS, SETTINGS_CONDITIONS, checkpoint_runtime_capability, condition_settings,
+    summarize, token_digest, vm_warnings,
 )
 
 
@@ -81,6 +83,82 @@ class ChatParityTests(unittest.TestCase):
         self.assertEqual(result["rendering_mean_percent"], 0.0)
         self.assertEqual(result["conditions"]["raw"]["gen_rate"], 3.0)
         self.assertEqual(result["conditions"]["rendered"]["gen_rate"], 2.0)
+
+    @staticmethod
+    def checkpoint(directory: Path, group_size: int, expert_count: int = 288) -> Path:
+        directory.mkdir()
+        (directory / "config.json").write_text(json.dumps({
+            "model_type": "qwen4_exp",
+            "text_config": {"num_hidden_layers": 48, "num_experts": expert_count,
+                            "hidden_size": 2560, "moe_intermediate_size": 640},
+            "quantization": {"bits": 4, "group_size": group_size},
+        }))
+        prefix = "language_model.model.layers.{}.mlp.switch_mlp"
+        names = {
+            f"{prefix.format(layer)}.{projection}.{part}": "part.safetensors"
+            for layer in range(48)
+            for projection in ("gate_proj", "up_proj", "down_proj")
+            for part in ("weight", "scales", "biases")
+        }
+        (directory / "model.safetensors.index.json").write_text(json.dumps({
+            "weight_map": {"language_model.model.embed_tokens.weight": "part.safetensors", **names},
+        }))
+        tensors = {}
+        for layer in range(48):
+          layer_prefix = prefix.format(layer)
+          for projection, width, groups, packed in (
+                ("gate_proj", 640, 80, 320), ("up_proj", 640, 80, 320),
+                ("down_proj", 2560, 20, 80)):
+            for part in ("weight", "scales", "biases"):
+                tensors[f"{layer_prefix}.{projection}.{part}"] = {
+                    "dtype": "U32" if part == "weight" else "BF16",
+                    "shape": [expert_count, width, packed if part == "weight" else groups * 32 // group_size],
+                    "data_offsets": [0, 0],
+                }
+        header = json.dumps(tensors).encode()
+        (directory / "part.safetensors").write_bytes(struct.pack("<Q", len(header)) + header)
+        return directory
+
+    def test_q4g64_reference_fallback_is_validated_from_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = self.checkpoint(Path(directory) / "reap", 64)
+            records = self.records()
+            for row in records:
+                row.update(checkpoint=str(checkpoint), allocation_digest=None,
+                           allocated_slots=0, mlock_ok=False)
+            self.assertEqual(checkpoint_runtime_capability(checkpoint)["slab_mode"], "reference")
+            self.assertEqual(summarize(records, expected_runtime="checkpoint")["conditions"]["raw"]["gen_rate"], 3.0)
+
+    def test_q4g32_missing_slab_is_rejected_even_with_checkpoint_inference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = self.checkpoint(Path(directory) / "oq4", 32, 512)
+            records = self.records()
+            for row in records:
+                row.update(checkpoint=str(checkpoint), allocation_digest=None,
+                           allocated_slots=0, mlock_ok=False)
+            with self.assertRaises(ValueError):
+                summarize(records, expected_runtime="checkpoint")
+
+    def test_q4g32_512_expert_checkpoint_accepts_real_slab_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = self.checkpoint(Path(directory) / "oq4", 32, 512)
+            records = self.records()
+            for row in records:
+                row.update(checkpoint=str(checkpoint), allocation_digest="pack",
+                           allocated_slots=60, mlock_ok=True)
+            result = summarize(records, expected_runtime="checkpoint")
+            self.assertEqual(result["runtime_validation"]["slab_mode"], "packed")
+
+    def test_reference_fallback_rejects_mixed_slab_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = self.checkpoint(Path(directory) / "reap", 64)
+            records = self.records()
+            for row in records:
+                row.update(checkpoint=str(checkpoint), allocation_digest=None,
+                           allocated_slots=0, mlock_ok=False)
+            records[0]["allocated_slots"] = 60
+            with self.assertRaises(ValueError):
+                summarize(records, expected_runtime="checkpoint")
 
     def test_rendered_pair_requires_identical_prompt_and_output(self):
         for field in ("prompt_digest", "digest"):

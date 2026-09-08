@@ -22,6 +22,30 @@ def integer(raw):
     return int(raw)
 
 
+def positive_integer(raw):
+    value = int(raw)
+    if value <= 0:
+        raise ValueError("value must be positive")
+    return value
+
+
+def choice(options, name):
+    def parse(raw):
+        if raw not in options:
+            raise ValueError(f"{name} must be one of: {', '.join(options)}")
+        return raw
+    return parse
+
+
+def norm_convention(raw):
+    value = str(raw).strip().lower()
+    if value in {"", "auto"}:
+        return ""
+    if value in {"one", "zero"}:
+        return value
+    raise ValueError("norm-convention must be auto, one, or zero")
+
+
 def research(name, key, default="0", lifecycle="startup", parser=text):
     return Setting(
         name, (key,), default, parser, lifecycle, "research", "research-only", "flashnext",
@@ -59,4 +83,33 @@ SETTINGS = (
     research("physical-miss-profile", "FLASHNEXT_PHYSICAL_MISS_PROFILE", "~/.cache/flashnext/physical-misses.json", "startup"),
     research("physical-miss-min-samples", "FLASHNEXT_PHYSICAL_MISS_MIN_SAMPLES", "1", "startup", integer),
     research("io-task-topology", "FLASHNEXT_IO_TASK_TOPOLOGY", "projection", "startup"),
+    Setting(
+        "metal-g64", ("FLASHNEXT_METAL_G64",), "0", choice(("0", "1"), "metal-g64"),
+        "startup", "runtime", "research-only", "flashnext",
+        env("FLASHNEXT_METAL_G64", "0"), None,
+        flag("FLASHNEXT_METAL_G64"), None, "FLASHNEXT_METAL_G64", __file__,
+    ),
+    Setting(
+        "slab-g64", ("FLASHNEXT_SLAB_G64",), "0", choice(("0", "1"), "slab-g64"),
+        "startup", "storage", "research-only", "flashnext",
+        env("FLASHNEXT_SLAB_G64", "0"), None,
+        flag("FLASHNEXT_SLAB_G64"), None, "FLASHNEXT_SLAB_G64", __file__,
+    ),
+    Setting(
+        "norm-convention", ("FLASHNEXT_NORM_CONVENTION",), "", norm_convention,
+        "startup", "runtime", "research-only", "flashnext",
+        env("FLASHNEXT_NORM_CONVENTION", ""), None,
+        lambda _backend: bool(os.environ.get("FLASHNEXT_NORM_CONVENTION")),
+        None, "FLASHNEXT_NORM_CONVENTION", __file__,
+    ),
+    Setting(
+        "qsa-dense-mask-max-bytes", ("FLASHNEXT_QSA_DENSE_MASK_MAX_BYTES",),
+        512 * 1024 * 1024, positive_integer, "startup", "runtime", "research-only",
+        "flashnext",
+        lambda _backend: positive_integer(os.environ.get(
+            "FLASHNEXT_QSA_DENSE_MASK_MAX_BYTES", str(512 * 1024 * 1024)
+        )),
+        None, lambda _backend: "FLASHNEXT_QSA_DENSE_MASK_MAX_BYTES" in os.environ,
+        None, "FLASHNEXT_QSA_DENSE_MASK_MAX_BYTES", __file__,
+    ),
 )
