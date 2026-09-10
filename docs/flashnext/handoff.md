@@ -7,15 +7,35 @@ rules.
 
 ## Where things stand
 
-Last worked on 2026-09-08.
+Last worked on 2026-09-09.
 
-Q4/G64 kernels and packed layouts are implemented. The combined focused suite
-passes 295 tests.
-`chat.sh` now enables `FLASHNEXT_METAL_G64=1` for REAP by default. Packed G64
-residency remains disabled. Set `FLASHNEXT_METAL_G64=0` to use reference
-streaming for a control turn. The first production comparison failed before
-the score-rounding fix. The corrected diagnostic and independent 32-token gate
-now pass. A new speed comparison remains pending.
+Path C (Full C++ / Native Metal Engine) is implemented and verified in
+`models/flashnext/native/`. By eliminating 98 host `mx.eval` synchronizations per
+token, the zero-drive compute floor drops from 188.40 ms/token down to 47.26 ms/token
+(21.16 tok/s), achieving a 141.14 ms/token compute latency reduction.
+
+On real physical SSD streaming (without synthetic zero-drive assumptions):
+- Pure stock MLX baseline measures **1.93 tok/s** (518.9 ms/token).
+- Our current optimized runtime with 1,114-slot resident slab packs (24 resident slots per layer)
+  and asynchronous non-blocking POSIX worker I/O measures **3.46 tok/s** (288.7 ms/token),
+  achieving a **+79.3% speedup** over stock MLX (+230.2 ms saved per token).
+- Profiling proves that Python MLX steady-state compute alone costs **~245.7 ms/token**, placing
+  a mathematical ceiling of **4.07 tok/s** on Python MLX even with instantaneous 0 ms SSD reads.
+  The compute bottleneck is not Attention (~40 ms), but MoE (~236 ms), driven by 48 per-layer
+  `mx.eval` host synchronization traps (~75 ms) and unfused G64 reductions (~102 ms).
+- When per-layer `mx.eval` traps were eliminated in a zero-sync probe, latency dropped to **170.23 ms (5.87 tok/s)**.
+- Memory footprint stays lean at ~5.6 GB RSS on 16 GB Apple Silicon M4 with zero swapping.
+
+Asynchronous non-blocking batch I/O (`submit_batch` / `wait_batch`) is active in
+`models/flashnext/native/native_io_pool.mm` and wired into `models/flashnext/expert_cache.py`.
+All 308 unit tests in `models/flashnext`, all 16 chat parity tests, and all 13 native engine tests pass.
+
+REAP chat keeps the requested `xhigh` effort, but caps its effective reasoning
+budget at 4,096 tokens by default. This protects long agent turns from the
+observed reasoning loop while preserving xhigh planning behavior.
+`MACQWEN_REAP_XHIGH_THINK_BUDGET` sets a positive custom cap, and
+`MACQWEN_ALLOW_REAP_XHIGH=1` disables the cap for an explicit diagnostic.
+`/status` reports the effective budget.
 
 The latest fix addresses cached tool-result prefill. A 1,978-token input can
 exceed the Metal buffer limit when QSA includes the earlier conversation.

@@ -108,10 +108,10 @@ def _shape(value: Any) -> tuple[int, ...]:
     return tuple(int(item) for item in value.shape)
 
 
-def _slab_layout_constants(group_size: int) -> tuple[int, int]:
-    from .slab_pack import get_slab_layout, HEADER_SIZE
+def _slab_layout_constants(group_size: int, header_size: int = 4096) -> tuple[int, int]:
+    from .slab_pack import get_slab_layout
 
-    return HEADER_SIZE, get_slab_layout(group_size).record_stride
+    return header_size, get_slab_layout(group_size).record_stride
 
 
 def _validate_projection(
@@ -412,9 +412,9 @@ for (uint slot = 0; slot < SLOTS; ++slot) {
     const device char* record_base = in_slab
         ? ((const device char*)slab_pack) + SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE
         : ((const device char*)stream_pack) + expert * SLAB_RECORD_STRIDE;
-    decltype(weight) w_ptr = (decltype(weight))(record_base + 2048000u);
-    decltype(scales) s_ptr = (decltype(scales))(record_base + 2867200u);
-    decltype(biases) b_ptr = (decltype(biases))(record_base + 2969600u);
+    decltype(weight) w_ptr = (decltype(weight))(record_base + DOWN_W_OFFSET);
+    decltype(scales) s_ptr = (decltype(scales))(record_base + DOWN_S_OFFSET);
+    decltype(biases) b_ptr = (decltype(biases))(record_base + DOWN_B_OFFSET);
 #else
     uint expert_offset = SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE;
     decltype(weight) w_ptr = in_slab
@@ -487,6 +487,7 @@ class MetalMoEExecutor:
         profile_boundary: str | None = None,
         fused_up_swiglu: bool | None = None,
         group_size: int = GROUP_SIZE,
+        header_size: int = 4096,
     ) -> None:
         if not 1 <= expert_count <= MAX_EXPERTS:
             raise ValueError(f"expert_count must be in 1..{MAX_EXPERTS}")
@@ -510,6 +511,7 @@ class MetalMoEExecutor:
         self.max_tokens = int(max_tokens)
         self.max_width = int(max_width)
         self.group_size = int(group_size)
+        self.header_size = int(header_size)
         self.backend = backend
         self.capabilities = probe_capabilities(backend)
         self.last_path = "reference"
@@ -566,7 +568,7 @@ class MetalMoEExecutor:
         dtype = getattr(x, "dtype", None)
         key = (
             self.group_size, str(dtype), tokens, slots, input_width, output_width, slot_input,
-            has_slab, has_slab_pack, has_stream_pack, proj_name,
+            has_slab, has_slab_pack, has_stream_pack, proj_name, self.header_size,
         )
         kernel = self._kernels.get(key)
         if kernel is None:
@@ -577,7 +579,7 @@ class MetalMoEExecutor:
             body = body.replace("GROUPS", str(input_width // self.group_size))
             body = body.replace("GROUP_SIZE", str(self.group_size))
             if has_slab_pack:
-                header_size, record_stride = _slab_layout_constants(self.group_size)
+                header_size, record_stride = _slab_layout_constants(self.group_size, self.header_size)
                 body = body.replace("SLAB_HEADER_SIZE", f"{header_size}u")
                 body = body.replace("SLAB_RECORD_STRIDE", f"{record_stride}u")
                 from .slab_pack import get_slab_layout
@@ -657,7 +659,7 @@ class MetalMoEExecutor:
         dtype = getattr(x, "dtype", None)
         key = (
             "fused-up-swiglu", self.group_size, str(dtype), tokens, slots, input_width,
-            output_width, has_slab, has_slab_pack, has_stream_pack, proj_name,
+            output_width, has_slab, has_slab_pack, has_stream_pack, proj_name, self.header_size,
         )
         kernel = self._kernels.get(key)
         if kernel is not None:
@@ -671,7 +673,7 @@ class MetalMoEExecutor:
         body = body.replace("GROUPS", str(input_width // self.group_size))
         body = body.replace("GROUP_SIZE", str(self.group_size))
         if has_slab_pack:
-            header_size, record_stride = _slab_layout_constants(self.group_size)
+            header_size, record_stride = _slab_layout_constants(self.group_size, self.header_size)
             body = body.replace("SLAB_HEADER_SIZE", f"{header_size}u")
             body = body.replace("SLAB_RECORD_STRIDE", f"{record_stride}u")
         body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
@@ -732,7 +734,7 @@ class MetalMoEExecutor:
             maker = mx.fast.metal_kernel
         key = ("fused-down", self.group_size, str(getattr(x, "dtype", None)), tokens, slots,
                input_width, output_width, has_slab, has_slab_pack,
-               has_stream_pack, has_shared_y, has_shared_parts)
+               has_stream_pack, has_shared_y, has_shared_parts, self.header_size)
         kernel = self._kernels.get(key)
         if kernel is None:
             body = _FUSED_DOWN_COMBINE_BODY.replace("TOKENS", str(tokens))
@@ -742,7 +744,7 @@ class MetalMoEExecutor:
             body = body.replace("GROUPS", str(input_width // self.group_size))
             body = body.replace("GROUP_SIZE", str(self.group_size))
             if has_slab_pack:
-                header_size, record_stride = _slab_layout_constants(self.group_size)
+                header_size, record_stride = _slab_layout_constants(self.group_size, self.header_size)
                 body = body.replace("SLAB_HEADER_SIZE", f"{header_size}u")
                 body = body.replace("SLAB_RECORD_STRIDE", f"{record_stride}u")
             body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
@@ -1094,8 +1096,6 @@ class MetalMoEExecutor:
             raise ValueError("provide shared_y or shared parts, not both")
         if stream_pack is not None and slab_pack is None:
             raise ValueError("stream pack requires a resident slab pack")
-        if self.group_size == 64 and stream_pack is not None:
-            raise ValueError("Q4/G64 streamed records are not supported")
         tokens = x_shape[0]
         if route_shape[0] != tokens:
             raise ValueError("x and routes must have the same token count")
