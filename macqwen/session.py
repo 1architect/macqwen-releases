@@ -33,6 +33,12 @@ from macqwen.api_keys import (
 )
 from macqwen.agent import Limits, run_agent
 from macqwen.profiles import system_prompt, tools_for
+from macqwen.reasoning_policy import (
+    effective_reasoning_effort,
+    effective_think_budget,
+    reasoning_effort_status,
+    think_budget_status,
+)
 from macqwen.sampling import Sampling
 from macqwen.tools.repo import Repo
 from macqwen.tools.toolbox import Toolbox
@@ -226,16 +232,14 @@ class Session:
             text = argument.strip()
             if not text or text == "all":
                 prefs = self.preferences
-                default_answer = (
-                    preferences.DEFAULT_PLAIN_ANSWER_TOKENS
-                    if self.profile == "plain" else preferences.DEFAULT_ANSWER_TOKENS
+                answer_budget, _, separate_think, _ = _effective_turn_budgets(
+                    self.backend, prefs, self.profile
                 )
-                separate_think = preferences.separate_think_limit(prefs)
                 budget = (
-                    f"{preferences.answer_limit(prefs, default_answer)} answer + "
+                    f"{answer_budget} answer + "
                     f"{separate_think} reasoning"
                     if prefs["thinking_enabled"] and separate_think is not None
-                    else f"{preferences.answer_limit(prefs, default_answer)} answer (reasoning shares it)"
+                    else f"{answer_budget} answer (reasoning shares it)"
                 )
                 shared = (
                     "Chat settings\n"
@@ -251,11 +255,10 @@ class Session:
 
     def status(self):
         prefs = self.preferences
+        requested_effort = prefs["effort"]
         routing = getattr(self.backend, "routing_profile", None)
-        default_answer = (
-            preferences.DEFAULT_PLAIN_ANSWER_TOKENS
-            if self.profile == "plain"
-            else preferences.DEFAULT_ANSWER_TOKENS
+        answer_budget, requested_think, _, _ = _effective_turn_budgets(
+            self.backend, prefs, self.profile
         )
         lines = [
             f"{C['b']}profile{C['0']}   {self.profile}"
@@ -266,10 +269,10 @@ class Session:
             f"thinking={'on' if prefs['thinking_enabled'] else 'off'}  "
             f"display={'show' if prefs['show_thinking'] else 'hide'}  "
             f"animate={'on' if prefs['animate'] else 'off'}  "
-            f"effort={prefs['effort']}  "
+            f"{reasoning_effort_status(requested_effort, getattr(self.backend, 'model_path', None))}  "
             f"{'greedy' if prefs['temperature'] <= 0 else 'sampled'}  "
-            f"answer-tokens={preferences.answer_limit(prefs, default_answer)}  "
-            f"think-tokens={preferences.think_limit(prefs)}",
+            f"answer-tokens={answer_budget}  "
+            f"{think_budget_status(requested_think, requested_effort, getattr(self.backend, 'model_path', None))}",
             f"{C['b']}context{C['0']}   {len(self.backend.tape)} tokens",
             f"{C['b']}memory{C['0']}    RSS {rss_gb():.2f} GB",
         ]
@@ -284,6 +287,24 @@ class Session:
         return "\n".join(lines)
 
 
+def _effective_turn_budgets(
+    backend, prefs: dict, profile: str,
+) -> tuple[int, int | None, int | None, int]:
+    """Resolve answer, reasoning, and total budgets for one interactive turn."""
+    checkpoint = getattr(backend, "model_path", None)
+    answer = preferences.answer_limit(
+        prefs,
+        preferences.DEFAULT_PLAIN_ANSWER_TOKENS
+        if profile == "plain" else preferences.DEFAULT_ANSWER_TOKENS,
+    )
+    requested_think = preferences.separate_think_limit(prefs)
+    think = effective_think_budget(
+        requested_think, prefs["effort"], checkpoint,
+    )
+    total = answer if think is None else answer + think
+    return answer, requested_think, think, total
+
+
 def mirror_preferences(backend, prefs: dict, profile: str) -> None:
     """Copy preference state a backend needs onto it.
 
@@ -294,13 +315,12 @@ def mirror_preferences(backend, prefs: dict, profile: str) -> None:
     if not hasattr(backend, "sampling"):
         return
     backend.sampling = Sampling.from_preferences(prefs)
-    backend.reasoning_effort = prefs["effort"]
-    backend.think_budget = preferences.think_limit(prefs)
-    backend.answer_budget = preferences.answer_limit(
-        prefs,
-        preferences.DEFAULT_PLAIN_ANSWER_TOKENS if profile == "plain"
-        else preferences.DEFAULT_ANSWER_TOKENS,
+    backend.reasoning_effort = effective_reasoning_effort(
+        prefs["effort"], getattr(backend, "model_path", None)
     )
+    answer, _, think, _ = _effective_turn_budgets(backend, prefs, profile)
+    backend.think_budget = think
+    backend.answer_budget = answer
 
 
 def build_backend(name: str, args, prefs: dict):
@@ -670,7 +690,10 @@ def open_or_continue(session, prompt: str) -> None:
             prompt,
             tools=tools_for(session.profile),
             enable_thinking=session.preferences["thinking_enabled"],
-            reasoning_effort=session.preferences["effort"])
+            reasoning_effort=effective_reasoning_effort(
+                session.preferences["effort"],
+                getattr(session.backend, "model_path", None),
+            ))
         session.opened = True
     else:
         session.backend.append_user(
@@ -680,8 +703,8 @@ def open_or_continue(session, prompt: str) -> None:
 def run_turn_plain(session, prompt: str, glow: IngestGlow) -> None:
     open_or_continue(session, prompt)
     prefs = session.preferences
-    limit = preferences.generation_limit(
-        prefs, preferences.DEFAULT_PLAIN_ANSWER_TOKENS
+    answer_budget, _, think_budget, limit = _effective_turn_budgets(
+        session.backend, prefs, "plain"
     )
     thinking = ThinkingStreamFilter(
         prefs["thinking_enabled"], prefs["show_thinking"]
@@ -698,10 +721,8 @@ def run_turn_plain(session, prompt: str, glow: IngestGlow) -> None:
     budget_state = getattr(session.backend, "_interactive_budgets", None)
     if hasattr(session.backend, "_interactive_budgets"):
         session.backend._interactive_budgets = (
-            preferences.answer_limit(
-                prefs, preferences.DEFAULT_PLAIN_ANSWER_TOKENS
-            ),
-            preferences.separate_think_limit(prefs),
+            answer_budget,
+            think_budget,
         )
     try:
         # the glow belongs to the prefill; decoding prints the answer over it
@@ -1016,6 +1037,9 @@ def token_stats_text(stats_items, context: int, elapsed: float) -> str:
 def run_turn_agent(session, prompt: str) -> None:
     open_or_continue(session, prompt)
     prefs = session.preferences
+    answer_budget, _, think_budget, _ = _effective_turn_budgets(
+        session.backend, prefs, "agent"
+    )
 
     def out(text=""):
         sys.stdout.write(str(text))
@@ -1070,15 +1094,17 @@ def run_turn_agent(session, prompt: str) -> None:
     budget_state = getattr(session.backend, "_interactive_budgets", None)
     if hasattr(session.backend, "_interactive_budgets"):
         session.backend._interactive_budgets = (
-            preferences.answer_limit(prefs),
-            preferences.separate_think_limit(prefs),
+            answer_budget,
+            think_budget,
         )
     try:
         reason = run_agent(
             session.backend, session.tools, out,
             Limits(
-                max_tokens=preferences.answer_limit(prefs),
-                think_tokens=preferences.think_limit(prefs),
+                max_tokens=answer_budget,
+                # ``run_agent`` adds this value to max_tokens, so preserve
+                # the shared-budget sentinel without passing None to it.
+                think_tokens=0 if think_budget is None else think_budget,
             ),
             approve=ask_approval if prefs["approval"] == "ask" else None,
             model_out=model_out,

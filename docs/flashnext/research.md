@@ -12,6 +12,38 @@ This file is the single active research record for Flash-Next. It preserves the 
 - Repacking, prefetch, weight caches, and in-process overlap failed controls.
 - Exact MTP and speculative paths did not improve the complete runtime.
 
+## Current operational correction, 2026-09-12
+
+Our production backend remains MLX-backed. We have not promoted a REAP-288
+throughput or quality result. The custom G64 kernel, G64 slab pack,
+expert-major stream-pack path, and C++/Native Metal pipeline are disabled for
+normal chat. REAP Q4/G64 currently uses the generic MLX path. Q4/G32 with
+60-slot residency is a historical control for compatible checkpoints, not the
+current REAP runtime. Historical isolated-kernel results below do not change
+this state.
+
+The only accepted performance records are the controlled 60-slot profiles
+with their recorded token digests and physical-read accounting. We keep the
+REAP question open for a future checkpoint-specific quality and speed gate.
+
+### Native prototype audit note
+
+We removed the native prototype because it did not implement a model-equivalent
+backend. We discard all associated claims; they are not evidence and must not
+be reused.
+
+We retain the local `DOWN_W_OFFSET`, `DOWN_S_OFFSET`, and `DOWN_B_OFFSET`
+correction in `models/flashnext/metal_runtime.py`. It remains a local bug fix
+and does not promote G64 or expert-major stream-pack execution.
+
+### Clean verification, 2026-09-12
+
+We recorded a terminal sanity check with 3 consecutive arms and a 32-token
+horizon. The median generation rate was 3.74 tok/s (range 3.23–3.78), tail
+rate was 3.45 tok/s, physical reads were 193.3 MB/token, and every arm produced
+digest `1a9abb4b5fdc523a`. This is a sanity check, not a statistical promotion;
+it does not promote G64 or change the MLX control.
+
 ## Current status, 2026-09-04
 
 The current FlashNext runtime uses 60 skew-selected slots, file-backed slab storage, the SIMD Q4/G32 Metal MoE path, scratch-free fused-down accumulation, shared-output fusion, Up-QMV/SwiGLU, chunk 2, and 16 I/O workers.
@@ -3756,109 +3788,3 @@ effective budget. Set `MACQWEN_REAP_XHIGH_THINK_BUDGET` to a positive value to
 tune the cap, or set `MACQWEN_ALLOW_REAP_XHIGH=1` for an explicit diagnostic
 comparison without the cap. Lower budgets and non-REAP checkpoints remain
 unchanged.
-
-## Path C: Full C++ / Native Metal Engine implementation and benchmark, 2026-09-09
-
-To break through the 5.0 tok/s barrier on Apple Silicon M4 (16 GB), we designed, implemented, and verified Path C: a full C++ / Objective-C++ Native Metal Engine (`models/flashnext/native/`).
-
-### Root cause analysis of the compute floor
-Our profiling proved that the ~188–235 ms zero-drive compute floor in stock MLX was not constrained by the M4 GPU hardware, but by 98 host `mx.eval` synchronizations per token. Each `mx.eval` flushes a separate command buffer and forces thread synchronization via `iokit_user_client_trap` and `__psynch_cvwait` to signal `IOSurfaceSharedEvent`.
-
-### Engine implementation
-1. **Dense backbone and pre-recorded dispatch (`native_engine.mm`, `native_engine.h`)**:
-   - Bit-exact RMSNorm supporting zero-centered and one-centered conventions (`atol < 1e-4`, cosine similarity `> 0.99999`).
-   - In-place hyper-connections (`x += beta * y`).
-   - SIMD-cooperative Quantized Matrix-Vector (QMV) GEMV for Q4/G32 and Q4/G64 with register accumulation.
-   - Fused bfloat16 SwiGLU activations.
-   - 48-layer static execution pipeline encoded in a single `MTLCommandBuffer` per token.
-2. **Native GPU router (`native_router.metal`, `native_router.h`)**:
-   - Single-threadgroup GEMV gate projection (288 experts x 2560 hidden dim).
-   - Fused float32 softmax with SIMD maximum and sum reductions.
-   - Stable SIMD tournament argmax for top-k expert selection.
-   - On-GPU adaptive mass thresholding ($\tau = 0.85$) and renormalization.
-   - Direct output to `MTLResourceStorageModeShared` buffer, running in 1.76 ms (vs 12.3 ms host-dispatched).
-3. **Native I/O pool and slab pack mapper (`native_io_pool.h`, `native_io_pool.mm`)**:
-   - Direct memory-mapped and `mlock`ed integration with 60-slot skew slab packs (`.bin`).
-   - Native POSIX worker pool issuing `preadv` directly into page-aligned device memory (`newBufferWithBytesNoCopy`).
-   - Eliminates DLPack wrappers and intermediate NumPy buffer copies.
-
-### Empirical verification
-1. **Test Suite**: All 11 unit tests in `models/flashnext/test_native_engine.py` pass cleanly in 0.389s.
-2. **Zero-Drive Compute Floor**:
-   - Stock MLX Full Zero-Drive Floor: 188.40 ms/token (5.31 tok/s)
-   - Native Engine Full Zero-Drive Pipeline: **47.26 ms/token** (**21.16 tok/s**, GPU busy: 43.90 ms)
-   - Latency Reduction: **141.14 ms saved per token** (3.99x faster compute, target < 85 ms achieved).
-3. **Multi-Arm Interleaved Production Benchmark (12 arms, 32 tokens)**:
-   - Arm A (Stock MLX Baseline): 313.08 ± 0.22 ms/token (3.19 tok/s)
-   - Arm B (Native Metal Engine): **49.89 ± 7.95 ms/token** (**20.04 tok/s**)
-   - Total latency reduction: **263.19 ms saved per token** (+84.1%, **6.28x speedup**), meeting and exceeding the >= 5.0 tok/s goal.
-
-## Real disk-streaming decode optimization and analysis, 2026-09-09
-
-To address real streaming decode latency in `./chat.sh` (`FlashNextBackend.generate()`) on Apple Silicon M4 (16 GB) without relying on zero-drive micro-benchmarks, we instrumented and optimized the complete end-to-end execution path.
-
-### 1. Empirical breakdown of real disk streaming (~376 ms / token, 2.65 tok/s)
-Summed across all 48 layers for each decoded token:
-- **GPU Compute & Serialization (`gate_eval`)**: ~192.3 ms
-  - Custom Metal MoE kernel (`MetalMoEExecutor`): 101.7 ms (2.12 ms/layer).
-  - Attention / Gated DeltaNet: ~40.0 ms (0.83 ms/layer).
-  - Gate GEMM + Softmax + Argsort: ~16.0 ms (0.33 ms/layer).
-  - MLX command buffer dispatch & event wait: ~34.6 ms.
-- **Physical SSD I/O (`batch_read`)**: ~132.1 ms
-  - 768-slot resident slab pack achieves a 64.7% hit rate (5.0 hits / layer).
-  - 1.94 cold expert misses per layer stream ~372.8 MB/token via the lock-free Native I/O Pool at an effective 3.94 GB/s throughput.
-- **Host Python & Logic Overhead**: ~51.9 ms
-  - Router Python processing & keep calculation: ~10.8 ms.
-  - Final RMSNorm + 248k LM Head GEMV: ~10.8 ms.
-  - Layer coordination & dispatch: ~30.3 ms.
-
-### 2. Elimination of the 3.59s post-warmup memory cliff
-We identified a critical defect in `models/flashnext/routing.py`: at token 9 (`warmup + 1`), `after_token()` invoked `_pin_candidates()`, which called `store.pin_rows` attempting to lock up to 6.0 GB of dynamic pages via `libc_mlock`.
-On a 16 GB machine where the 768-slot slab pack (2.12 GB) and model backbone already reside in memory, this triggered a 3,592 ms execution freeze and forced macOS `vm_compressor` and page swapping. Furthermore, `use_slab_pack` never referenced `_pinned_rows`.
-We updated `after_token` to bypass dynamic page pinning when `FLASHNEXT_SLAB_PACK=1` is active. This eliminates the 3.59s freeze, maintaining consistent ~370–400 ms token latency across multi-turn sessions.
-
-### 3. Stream pack descriptor caching
-In `models/flashnext/expert_cache.py`, we eliminated per-call string formatting (`f"{prefix}.{proj}.{part}"`) and `store.refs` dictionary lookups inside `_submit_stream_pack` by caching the 9 static `(fd, ref_start, row_bytes, offset)` projection descriptors on the layer instance.
-
-### 4. Non-blocking asynchronous I/O pool & 1,114-slot slab pack upgrade (3.46 tok/s)
-We evaluated physical NVMe decode throughput against the pure stock MLX baseline:
-- **Measured Stock MLX Baseline**: 1.93 tok/s (518.9 ms/token) on real cold SSD reads.
-- **Root-Cause of Historical 3.19 tok/s Reference**: Traced to an artificial simulation in `bench_native_engine.py` (`wall_ms = mlx_dense + 300.0`), which never represented actual physical disk streaming.
-- **Asynchronous Batch I/O Architecture**:
-  In `models/flashnext/native/native_io_pool.mm` and `native_io_pool.h`, we implemented `flashnext_io_pool_submit_batch` and `flashnext_io_pool_wait_batch`. Non-blocking batch submissions queue into a lock-free `BatchJob` ticket queue, letting 16 POSIX worker threads stream cold experts concurrently while the host executes `shared_expert` and prepares routing tensors.
-- **1,114-Slot Resident Slab Pack**:
-  We promoted 1,114 slots (24 slots per layer, 2.87 GB `.bin` file) to the default preset in `models/flashnext/settings/launch.py`.
-  - Resident hit rate increased from 64.7% to ~76.2%.
-  - Cold data read per token dropped from ~372 MB down to ~250 MB.
-  - Measured decode rate reached **3.46 tok/s** (**288.7 ms/token**), delivering a **+79.3% speedup** over real stock MLX (+230.2 ms saved per token) with zero memory swapping on Apple Silicon M4 (16 GB).
-- **Cache Storage Reclamation**:
-  Pruned 32.95 GB of obsolete exploratory `.bin` slab packs in `~/.cache/flashnext`, leaving the active verified 1,114-slot and 768-slot slab packs.
-
-## Decode compute ceiling and MoE host-synchronization analysis, 2026-09-09
-
-Following our promotion of the 1,114-slot slab pack, real physical SSD streaming reached 3.46 tok/s (288.7 ms/token). To determine what prevents achieving $\ge 5.0\text{ tok/s}$ ($\le 200\text{ ms/token}$), we isolated and instrumented every component of the generation loop.
-
-### 1. The Python MLX compute ceiling
-We measured the exact compute time of `self.language(token[None], cache=self.cache)` during decode.
-Across 48 layers:
-- **Total Attention (36 Gated DeltaNet + 12 QSA)**: ~40.0 ms GPU compute (1.92 ms Python setup). Attention is completely resident, requires zero SSD reads, and is not the bottleneck.
-- **LM Head & Embeddings**: ~12.0 ms.
-- **Physical SSD I/O (1,114 slots)**: ~43.0 ms (~250 MB at 5.8 GB/s).
-- **MoE Routing & Execution in Python MLX**: **~236.0 ms** (81.7% of token latency).
-  - 48 per-layer `mx.eval(scores, inds)` calls: ~75.0 ms. These roundtrips force the CPU and GPU to serialize 48 times per token, idling the GPU while Python converts tensors to lists for thresholding.
-  - Custom Metal MoE execution + unfused G64 combine in MLX: ~102.0 ms.
-  - Python coordination and tensor allocations: ~59.0 ms.
-
-Even if SSD I/O were 0 ms, the Python MLX compute floor alone costs:
-$$\text{Python MLX Floor} = 40.0 + 12.0 + 193.7 = \mathbf{245.7\text{ ms/token}} \implies \mathbf{4.07\text{ tok/s}}$$
-Therefore, generation within Python MLX cannot mathematically reach 5.0 tok/s.
-
-### 2. Zero-sync probe verification
-We constructed a zero-sync probe bypassing the 48 per-layer `mx.eval` calls.
-- Minimum step latency dropped to **170.23 ms** (**5.87 tok/s**), confirming that eliminating per-layer host traps immediately breaches the $\le 200\text{ ms}$ ($\ge 5.0\text{ tok/s}$) barrier.
-
-### 3. Stream pack down projection offset defect
-In `models/flashnext/metal_runtime.py` (`_FUSED_DOWN_COMBINE_BODY`), we identified that lines 415-417 hardcoded G32 down projection offsets (`2048000u`, `2867200u`, `2969600u`) instead of `DOWN_W_OFFSET`, `DOWN_S_OFFSET`, `DOWN_B_OFFSET`. This caused memory divergence for G64 in stream pack execution. We replaced them with the dynamic layout offsets, maintaining bit-exact test suite integrity across all 308 unit tests.
-
-### 4. Next steps to deliver $\ge 5.0\text{ tok/s}$ in `./chat.sh`
-To bypass the 245.7 ms Python MLX compute ceiling, we will wire the compiled C++ / Metal Native Engine (`models/flashnext/native/`), which achieves a 47.26 ms compute floor, into `FlashNextBackend.generate()`. Prompt prefill remains on MLX (40–60 tok/s), while steady-state single-token decode executes directly via `NativePipeline.decode_step()`.

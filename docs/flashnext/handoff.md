@@ -1,819 +1,187 @@
-# Flash-Next reference
+# Flash-Next operational handoff
 
 Read this file, [`research.md`](research.md), and
-[`AGENT_INVARIANTS.md`](AGENT_INVARIANTS.md) before code changes or a new
-experiment. [`CONTRIBUTING.md`](../../CONTRIBUTING.md) defines the project
-rules.
+[`AGENT_INVARIANTS.md`](AGENT_INVARIANTS.md) before changing code or starting
+an experiment. [`CONTRIBUTING.md`](../../CONTRIBUTING.md) defines the project
+rules. The current worktree changes are uncommitted and require review before
+we create a commit.
 
-## Where things stand
+## Decision and current state
 
-Last worked on 2026-09-09.
+Our canonical backend is the MLX-backed `FlashNextBackend`.
 
-Path C (Full C++ / Native Metal Engine) is implemented and verified in
-`models/flashnext/native/`. By eliminating 98 host `mx.eval` synchronizations per
-token, the zero-drive compute floor drops from 188.40 ms/token down to 47.26 ms/token
-(21.16 tok/s), achieving a 141.14 ms/token compute latency reduction.
-
-On real physical SSD streaming (without synthetic zero-drive assumptions):
-- Pure stock MLX baseline measures **1.93 tok/s** (518.9 ms/token).
-- Our current optimized runtime with 1,114-slot resident slab packs (24 resident slots per layer)
-  and asynchronous non-blocking POSIX worker I/O measures **3.46 tok/s** (288.7 ms/token),
-  achieving a **+79.3% speedup** over stock MLX (+230.2 ms saved per token).
-- Profiling proves that Python MLX steady-state compute alone costs **~245.7 ms/token**, placing
-  a mathematical ceiling of **4.07 tok/s** on Python MLX even with instantaneous 0 ms SSD reads.
-  The compute bottleneck is not Attention (~40 ms), but MoE (~236 ms), driven by 48 per-layer
-  `mx.eval` host synchronization traps (~75 ms) and unfused G64 reductions (~102 ms).
-- When per-layer `mx.eval` traps were eliminated in a zero-sync probe, latency dropped to **170.23 ms (5.87 tok/s)**.
-- Memory footprint stays lean at ~5.6 GB RSS on 16 GB Apple Silicon M4 with zero swapping.
-
-Asynchronous non-blocking batch I/O (`submit_batch` / `wait_batch`) is active in
-`models/flashnext/native/native_io_pool.mm` and wired into `models/flashnext/expert_cache.py`.
-All 308 unit tests in `models/flashnext`, all 16 chat parity tests, and all 13 native engine tests pass.
-
-REAP chat keeps the requested `xhigh` effort, but caps its effective reasoning
-budget at 4,096 tokens by default. This protects long agent turns from the
-observed reasoning loop while preserving xhigh planning behavior.
-`MACQWEN_REAP_XHIGH_THINK_BUDGET` sets a positive custom cap, and
-`MACQWEN_ALLOW_REAP_XHIGH=1` disables the cap for an explicit diagnostic.
-`/status` reports the effective budget.
-
-The latest fix addresses cached tool-result prefill. A 1,978-token input can
-exceed the Metal buffer limit when QSA includes the earlier conversation.
-We now select the existing bounded QSA mask path when the projected upstream
-mask exceeds 512 MiB. The estimate includes cached tokens and batch size.
-The focused QSA and prefill suite passes 12 tests. Manual agent validation
-remains pending. See the final `research.md` section for allocation evidence.
-
-### REAP branch preparation
-
-The current checkpoint is `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
-We removed the local oQ4 checkpoint with our approval and downloaded REAP-288.
-All 131 indexed shard files are present. oQ4 remains our recorded quality
-baseline, but it is no longer installed. The installation statements below
-describe the earlier control environment.
-
-We add compatibility changes for both n-gram naming conventions and
-checkpoint-specific RMSNorm behavior. We recognize the verified sh0wie norm
-tensor by its content fingerprint. Unknown checkpoints keep our legacy norm
-behavior. Explicit `norm_convention` metadata or `FLASHNEXT_NORM_CONVENTION`
-(`one` or `zero`) can select a different convention. We keep this setting on
-each model instance and do not rewrite checkpoint weights.
-
-REAP chat enables streamed Q4/G64 kernel execution. Set
-`FLASHNEXT_METAL_G64=0` for a reference control. Packed G64 slabs remain
-disabled until their checkpoint-specific history and runtime gate pass. We
-preserve the Q4/G32 optimized path for compatible checkpoints. We also recover automatic discovery
-when the saved checkpoint directory is missing and one complete model remains.
-
-Our first manual generation exposed a mixed Conv1d layout: the PLE tensor
-uses `(10240, 1, 4)`, while 36 other convolution tensors already use MLX layout.
-We now compare each resident Conv1d tensor with its target module shape and
-transpose only when the result matches. Compatible tensors remain unchanged.
-
-With our approval, the focused compatibility suite passes 21 tests in 0.063
-seconds using `~/models/.venv-qwen4exp/bin/python`. The suite covers checkpoint
-discovery, loader conventions, norm arithmetic, runtime fallback, and a numerical
-mixed-layout convolution regression. We perform
-generation manually. We have not established REAP quality or speed on this machine.
-
-Our next manual turn exposed descriptor exhaustion while pinning experts.
-We remove redundant mapping descriptors, serialize map creation, and calculate
-pin sizes without mapping files. Store cleanup now clears closed descriptors.
-The expanded focused suite passes 60 tests in 0.166 seconds. Its subprocess
-regression holds 96 mappings and 131 positioned-read descriptors simultaneously,
-plus 16 reserved descriptors, under a 256-descriptor limit. No model generation
-runs as part of this validation.
-
-Our manual chat now works. We observe about 3.0–3.5 tok/s, approximately 40%
-GPU use, similar apparent disk activity, and no obvious RAM reduction.
-These observations are not controlled measurements. The final REAP section in
-`research.md` records our changes and agreed next steps. We stop for today;
-the quality gate and performance comparisons remain open.
-
-The runtime streams a 176B sparse MoE model from SSD on a 16 GB M4 Mac.
-REAP-288 is the current research checkpoint. oQ4 remains the recorded quality
-baseline. `exact-quality` is the default routing profile for compatible models.
-REAP quality and speed remain unverified.
-
-Recent decisions, with the evidence in `research.md`:
-
-- oQ3-MTP was tried and dropped. It ran about 21% faster and produced a broken
-  SketchUp extension at both `low` and `xhigh` effort, where oQ4 produced one
-  that worked. It is deleted from the machine.
-- `cache-aware` routing measures 2.91 gen and 2.92 tail on the harness at
-  360.4 MB/token, a 6.5% gain against a 0.6% band, ahead in 6 of 6 paired arms.
-  It is opt-in, not the default, because it failed the trajectory gate.
-- `swap-epsilon` stays at 0.02. Both 0.05 and 0.10 remove the same 1.4% of
-  bytes and neither clears its band.
-- Speculative decoding is closed at any block length. A batch of two reads
-  808 MB/token against decode's 390.
-- The weight-preserving cache-aware swap is rejected for `exact-quality`.
-  Four of seven replies changed, and its speed result was unresolved.
-- An external [oQ4-MTP report](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ4/discussions/2) describes repetition loops that reach `max_tokens` and truncate tool calls during long tool-use turns. The same settings did not reproduce the issue on oQ3-MTP. The report uses oMLX on an M5 Max. The maintainer is investigating. This supports keeping MTP disabled in production, but it does not measure our standard oQ4 path.
-
-What changed in the code recently:
-
-- Sampling. The runtime decoded with `argmax` everywhere, against Qwen's
-  guidance. `macqwen/sampling.py` now holds the sampler, the chat uses Qwen's
-  recommended thinking-mode values, and the benchmarks force greedy so token
-  IDs stay comparable.
-- `/effort high`, a level between `medium` and `xhigh`. The chat template maps
-  effort to one sentence of system text and `medium` is empty, so there was
-  nothing in between.
-- The cache-aware swap no longer runs on prefill batches, and the route
-  observer no longer receives the whole prefill batch.
-- `/config model` now shows sampling, effort, thinking and the token budget
-  alongside the routing settings. The compatibility `/settings` command
-  remains accepted.
-- The 2026-09-01 performance sweep closed host-only bookkeeping, routed
-  `gather_qmm`, and the original complete-runtime compile estimate. The closed
-  results recover about 4.16 ms, measure 13 to 16 ms of expert gather, and
-  measure about 1 ms of compile savings. Issue #23 is open again for the
-  corrected zero-drive RMSNorm gate.
-- A 12-arm comparison gives `buffer-chunk2` a resolved 6.3% generation gain
-  over the current concatenate path. Token IDs match and physical bytes fall.
-  The run started after a clean boot. Issue #26 is closed and the default is
-  active for the pread family.
-- An earlier whole-layer control costs 255.93 ms/token with expert pages hot,
-  while its separately timed component parts total 41.00 ms. The latest
-  dependency-correct split measures 262 ms/token for whole hot layers and
-  176.07 ms/token for chained parts. Metal System Trace closed issue #27 for
-  device-level attribution, but the afternoon clean-boot result shows GPU
-  busy varies from 86.1 ms/token at zero drive to 182.5 ms/token in production.
-- The 2026-09-02 continuation measures 236.7 ms/token blocked in `mx.eval`.
-  A one-sync experiment halves eval count but slows generation by 11.4%.
-  Metal trace shows that IOKit undercounts short kernels by about 3.2x.
-- `MLX_MAX_OPS_PER_BUFFER=120` reduces buffers by 38% and latency per buffer by
-  52%, but makes generation slower. It is rejected.
-- A 60-token context sweep shows a warm-up transient near 2.9 to 3.2 tok/s,
-  then a steady unpinned rate near 1.9 tok/s at every tested context.
-- `FLASHNEXT_BUFFER_ARENA` is bit-exact but unresolved. It measures 2.91 gen
-  against 2.94 with fresh buffers and 397.4 against 397.9 MB/token.
-- A miss-fraction sweep shows GPU busy rising to 171.7 ms/token near 25% miss,
-  then falling to 125.7 ms/token at full miss. Token time stays close to
-  linear in physical bytes. The peak needs three arms per cell.
-- VM counters show about 33 page-ins per MB, with reclaim, compression, and
-  swap flat during decode. The corrected read-ahead comparison remains inside
-  the resolution band. No current runtime setting exposes read-ahead control.
-- The default Metal per-set cap is 750 MB, but the total wired budget is zero.
-  Raising it to 3,750 MB changes neither token time nor VM counters because no
-  allocation is wired by default.
-- A standalone 2 GB wired-limit sweep looked 13.5% faster. The live harness
-  measured -0.4% inside a 7.6% band because it applied the limit after loading.
-  Issue #43 tracks the controlled comparison.
-- A GPU capture measured 5,778 dispatches in 86.99 ms without drive traffic.
-  The Compute Shader Launch Limiter stayed near 100%, with low occupancy and
-  ALU use. The zero-drive GPU is launch-bound.
-- A controlled RMSNorm compile is bit-exact and 1.7% faster at zero drive, but
-  remains unresolved in production. Keep it disabled by default.
-- The remaining cost is still scheduling and graph execution, not a named
-  removable stage.
-- The current runtime integrates a specialized SIMD Q4/G32 Metal MoE
-  executor (`FLASHNEXT_METAL_RUNTIME=1`) fusing down-projection and router score
-  combination directly to bfloat16. It eliminates intermediate `(tokens, slots, hidden)`
-  tensor allocations and removes 48 `astype` kernel launches per token.
-- Controlled production evaluation (`bench_production.py --compare metal-runtime`)
-  in a 16-arm interleaved reversed-pair test verified 100% bit-identical greedy token
-  digests (`29d04075ed7021b3`), with rate difference at +0.7% to +2.0% (unresolved
-  inside the 7.8% resolution band).
-- Issue #45 has a native DMA probe with raw GPU and process read metrics, but its
-  latch only marks a completed read and its post-GPU flag only marks a later read
-  completion. It does not prove continuous physical DMA, zero barrier penalty,
-  or full overlap. Issue #43 found no resolved pre-load wired-memory benefit over
-  dynamic residency sets, but its public issue remains open.
-- Concentrated global slab allocation (`FLASHNEXT_SLAB_GLOBAL=48, FLASHNEXT_SLAB_MIN_SLOTS=4`)
-  concentrates resident expert slots into the top-utility layers ([5, 11, 20, 23, 29, 32, 35, 39, 40, 44, 46, 47]),
-  boosting decode hit rate from 14.1% to 23.5% (+67% relative gain) for the exact same 149 MB
-  active RAM, achieving 2.86–2.91 tok/s generation and 2.79–2.92 tok/s tail rate with 100%
-  bit-identical digest (`29d04075ed7021b3`).
-- Adaptive top-k where fast-path eliminates up to 144 redundant elementwise kernel dispatches
-  per token during decode when all routed slots are active, reaching peak arm rate of 2.96 tok/s
-  and winning 4 of 4 pairs over baseline in controlled production A/B testing with bit-identical digest.
-- File-backed mlocked slab pack (`FLASHNEXT_SLAB_PACK=1`, `models/flashnext/slab_pack.py`) implements
-  Frontier 2 & 3: a single 4K page-aligned 140.63 MB `.bin` file mapped via `mmap` + `mlock` into a
-  single zero-copy `MTLBuffer` with direct expert-major addressing in Metal. Controlled 8-arm A/B testing
-  reaches **3.10 tok/s generation rate** and **3.07 tok/s tail rate**
-  (+8.3% mean paired speedup, median +9.3%) at 29.4% decode hit rate and 100% bit-identical digest (`29d04075ed7021b3`).
-- Skew-aware slab pack 56 (`FLASHNEXT_SLAB_POLICY=skew, FLASHNEXT_SLAB_GLOBAL=56, FLASHNEXT_SLAB_PACK=1`, `models/flashnext/expert_cache.py`)
-  implements the Frontier 1 & 2 extension: concentrates 56 slots into the top 12 hot layers with depth 4–6 based on marginal hit gain (164.07 MiB pack),
-  boosting decode hit rate to **39.7%–40.7%** (+35% relative gain vs 29.4% on `slabpack48` and avoiding cold-layer dilution in `slabpack56_uniform`),
-  reaching **3.08 tok/s generation rate** and **3.02 tok/s tail rate** (median 2.94 tok/s) with 100% bit-identical digest (`29d04075ed7021b3`)
-  and only +24.5 MB MLX active memory overhead.
-- The controlled 56/60/64-slot capacity sweep selects **60 slots** as the engineering
-  default. Median generation was 2.83, 2.89, and 2.88 tok/s. Median physical reads
-  were 538.2, 537.3, and 536.9 MB/token. The differences remain inside the 17.0%
-  resolution band, so the sweep does not resolve a meaningful rate difference. The
-  3.15–3.20 tok/s projection for 64 slots is rejected. Higher logical hit rate did
-  not produce a resolved physical-I/O benefit.
-- Frontier 8B-safe preserves the required rounding boundaries and exact token digest.
-  Its 12-arm comparison measured +1.7% median and +4.7% mean. This result remains
-  inside the 28.6% resolution band. Keep 8B disabled. The standard 60-slot profile
-  uses Frontier 8A. Enable 8B only with `FLASHNEXT_FUSED_SHARED_PARTS=1`.
-- Frontier 5 instrumentation splits main-thread I/O wait into submission-to-worker-start
-  delay, time inside `pread` or `preadv`, worker overhead, and completion overhead.
-  Three standard 60-slot 8A runs measured 304.76 ms/token median I/O wait. The
-  submission-to-start delay was 211.79 ms/token (69.5%). Positioned reads used
-  89.71 ms/token (29.4%). A later audit found that these counters also included
-  prompt prefill. Treat every absolute value here as historical and unverified
-  for decode. The measurement also does not identify the delay's cause.
-- Frontier 5 now has an opt-in expert-major streamed record path. It coalesces cold
-  reads into one slab-compatible destination and reduces nine Metal buffer groups to
-  one. The full-record A/B measured +2.8% median inside a 32.4% band. Chunk sizes 2
-  and 3 measured +0.5% and -1.5% inside an 8.4% band. All token digests match.
-  These runs changed destination layout and worker grouping, not source reads or
-  requested bytes. They do not establish a queue-contention cause or a large gain.
-  Keep `FLASHNEXT_STREAM_PACK=0`. The path adds 37.9 MB of active memory.
-- Frontier 10 now has single-boundary diagnostics for Gate QMV, Up QMV, SwiGLU,
-  and fused-down completion. Separate 16-token probes measured 68.70, 61.23,
-  57.29, and 90.69 ms/token. These same-boot values include different physical
-  read states, so use them as dependency-debt evidence, not a ranked cost table.
-- Score-sync attribution confirms the threshold path runs in all 48 layers.
-  Steady tokens blocked for 102.71 to 143.46 ms with no queued or running reads
-  and almost no physical I/O. Score sync pays deferred Metal graph work and
-  completion latency. The probe does not isolate GPU execution.
-- The opt-in Up-QMV to SwiGLU fusion matches the MLX Metal-header arithmetic for
-  all 65,536 bfloat16 gate patterns at two Up values. Its 12-arm comparison
-  measured +2.0% median and +3.3% mean, inside the 14.8% resolution band.
-  This result remains the historical off/on comparison. We later enabled
-  the bit-exact fusion in the current chat preset.
-- The corrected uninstrumented 32-token retest measured 3.45 against 3.41
-  tok/s. Paired mean was +0.2% inside a 1.5% two-SE band. Physical reduction
-  was 0.7 MB/token. The fusion result is unresolved. We decide its
-  runtime status.
-- A later terminal JSON measured 3.39 against 3.31 tok/s, +5.6% paired mean
-  and +2.8% paired median inside a 6.2% band. Physical reads fell by 4.9
-  MB/token. We decided to retain the fusion in the runtime.
-- The current chat preset uses 60 skew slots, Frontier 8A, and Up-QMV/SwiGLU
-  enabled. The historical comparison keeps the same stack with Up fusion off.
-- A 256-token physical-miss full replacement lost 8.4% and lost all eight
-  windows. It is historical only. The guarded hybrid preserves the canonical
-  48-slot core and can change only 12 extensions after a 20 MB/token premise
-  gate.
-- Commit `59503a2` recorded 187 passing tests. The audit changes below remain
-  untested until we approve a test run.
-
-Session results from the approved test run on 2026-09-04:
-
-- The focused FlashNext suite passed 220 tests in 1.063 seconds.
-- The corrected decode-only Section 17 control measured 79.8 ms/token queue
-  residence and 160.9 ms/token total I/O wait at 16 workers.
-- The worker diagnostic favored 8 workers at 3.19 tok/s versus 3.14 at 16,
-  but profiling was enabled. Keep 16 until an unprofiled 8-versus-16 pair
-  resolves the result.
-- One-task-per-expert grouping reduced queue residence but lost 15.5% of
-  generation rate. Reject it.
-- Frontier 8B with Up-QMV/SwiGLU measured -3.5% paired median and stays off.
-- One long answer run favored 60 slots over 48: 2.86 versus 2.53 tok/s, with
-  328.8 versus 365.2 MB/token. Keep 60 slots.
-- The physical-miss calibration and offline topology gate predicted at most
-  13.59 MB/token savings, below the 20 MB/token premise. Do not run the hybrid
-  model comparison.
-- Chunk 4 measured -2.3% paired median against chunk 2 inside a 7.9% band.
-  Keep chunk 2.
-- The interrupted long fusion-baseline run produced no answer tokens and is
-  discarded. Cache-aware is outside the active workstream.
-
-The cache-aware quality comparison remains open under Next work. Its gate result
-was measured under greedy decoding, which causes repetition on its own, so it
-says more about greedy than about routing. That comparison decides whether
-cache-aware can become the default and whether the 2.91 against 2.73 result
-holds with the recommended sampler.
-
-## Environment
-
-The release launcher uses the local environment created by `./chat.sh setup`:
+The current research checkpoint is:
 
 ```text
-Python       .venv/bin/python
-Checkpoint   one complete compatible Flash-Next directory
+sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit
 ```
 
-Override the interpreter with `MACQWEN_FLASHNEXT_PYTHON`. Select the checkpoint with `--checkpoint`, `--model-path`, or
-`MACQWEN_FLASHNEXT_MODEL`. The launcher saves an explicit selection. Set `MACQWEN_MODEL_ROOT` to change the automatic search directory.
+It uses generic MLX Q4/G64 expert weights and Q4/G32 n-gram weights. We keep
+the generic MLX Q4/G64 reference path for REAP. The custom G64 kernel, G64
+slab pack, and expert-major stream-pack path are off for normal chat. The
+native prototype was rejected and removed because it did not implement the
+complete model; MLX is canonical and no native runtime flag is needed.
 
-## Current performance status
+The 60-slot Frontier 8A and corrected decode-only Q4/G32 controls are
+historical compatibility evidence. They are not the current REAP runtime and
+must not be presented as REAP results.
 
-Issue #43 remains open after the corrected pre-load wired-limit comparison found
-no resolved gain. Issue #45 remains open because its native probe did not prove
-continuous physical SSD DMA or a complete GPU/read overlap interval.
+REAP quality and throughput remain open. A short equality or sanity check does
+not clear the long-turn quality gate. We do not promote an optimization until
+the same checkpoint, prompt, sampling policy, token digest, and physical-I/O
+accounting support it.
 
-The current controlled 60-slot Frontier 8A profile with Up-QMV/SwiGLU measures
-3.08 tok/s generation, 3.00 tok/s tail, and 279.7 MB/token. The corrected
-decode-only 16-worker control measures 3.13 tok/s generation, 3.04 tok/s tail,
-and 262.0 MB/token. These are current measurements, not minimum guarantees.
+## Safe configuration
 
-The branch includes a SIMD Q4/G32 Metal MoE executor, file-backed skew slabs,
-scratch-free fused-down accumulation, shared-output fusion, and Up-QMV/SwiGLU.
-The isolated kernel is bit-identical and faster. The complete-model gain remains
-inside its resolution band.
-
-Next work uses the SSD, memory, and Metal frontier in this order:
-
-1. Keep 60 slots, Frontier 8A, chunk 2, and 16 workers as controls.
-2. Run the corrected physical-DMA probe for #45.
-3. Complete the pre-load wired-limit record for #43.
-4. Measure Q4/G64, Q4/G128, and REAP-288 through #24 and #25.
-
-## Download
-
-oQ4 is the recorded quality baseline.
-
-```bash
-hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ4 \
-  --local-dir "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ4"
-```
-
-oQ4 contains 22 safetensors shards and 111.7 GB of model weights.
-
-The current REAP research checkpoint is:
-
-```bash
-hf download sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit \
-  --local-dir "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
-```
-
-It contains 131 indexed shard files. It uses Q4/G64 expert weights and Q4/G32
-n-gram weights. Its expert path uses reference streaming while compatibility
-work continues.
-
-oQ3-MTP is supported and is not installed. It contains 19 shards, 86.2 GiB, and MTP weights the production backend does not load. It failed
-the trajectory gate, so it was removed:
-
-```bash
-hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP \
-  --local-dir "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ3-MTP"
-```
-
-Use `--checkpoint oq4` or `--checkpoint oq3` when both exist. MACQWEN selects a sole compatible local checkpoint automatically. The
-reference machine has room for one.
-
-## Run
-
-```bash
-./chat.sh --model flashnext --profile plain --exact-quality
-./chat.sh --model flashnext --profile agent --exact-quality
-./chat.sh --model flashnext --standard
-./chat.sh --model flashnext --threshold 1.0
-./chat.sh --model flashnext --fast
-./chat.sh --model flashnext --fast-quality
-./chat.sh --model flashnext --cache-aware
-./chat.sh --model flashnext --fused-quality
-```
-
-`fused-quality` is experimental. It failed the retained reasoning gate. `cache-aware` is optional. It improves speed but changed the
-preferred answer in a long-context comparison. `exact-quality` remains the default.
-
-Use the live configurator before a turn:
+For the current REAP reference path, keep these settings off:
 
 ```text
-/config model
-/config model routing exact-quality
-/config model routing cache-aware
-/config model routing fused-quality
-/config model swap-epsilon 0.02
-/config model threshold 1.0
-/config model resident-experts 32
-/config model pinned-experts 32
-/config model pin-budget-gb 6
-/config model tail-experts 6
-/config model tail-warmup 8
-/config model fusion-block 23
-/config model fusion-min-margin 1.0
-/config model fusion-min-block 20
-/config model fusion-margin-tokens 8
-/config model fusion-max-prompt 512
-/config model fusion-model <path to a draft model>
-/config model defaults
+FLASHNEXT_METAL_G64=0
+FLASHNEXT_SLAB_G64=0
+FLASHNEXT_STREAM_PACK=0
 ```
 
-`pinned-experts` aliases `resident-experts`. `pin-budget-gb` caps the pinned storage. `/config model` reports the current pinned layer-expert
-count and bytes.
+`FLASHNEXT_NATIVE_PIPELINE` is obsolete because the native integration was
+removed. Do not add it to a launcher or use it as a control.
 
-Settings apply to the current process only. A new `./chat.sh` launch returns to `exact-quality`, threshold `0.85`, 32 resident experts,
-warmup `8`, and swap epsilon `0.02`.
+For compatible Q4/G32 checkpoints, the historical engineering control is
+`exact-quality` with threshold `0.85`, 32 resident experts, warmup 8, swap
+epsilon `0.02`, chunk 2, and 16 I/O workers. Do not copy that profile onto
+REAP and call it a REAP measurement.
 
-Use `/new` before enabling the one-shot fused draft for a new conversation.
+The normal routing profile is `exact-quality`. Research-only profiles include
+`cache-aware`, `speculative-fast`, and MTP variants. They require their own
+quality and trajectory gates and are not normal defaults.
 
-`speculative-fast` and MTP stay research-only. Both need a different load path, and both lost their complete-runtime controls.
+REAP `xhigh` keeps its requested reasoning mode but caps the effective
+reasoning budget at 4,096 tokens by default. We can set a positive
+`MACQWEN_REAP_XHIGH_THINK_BUDGET` for an explicit cap or set
+`MACQWEN_ALLOW_REAP_XHIGH=1` for an explicit diagnostic without the cap.
+`/status` reports requested effort and effective budget.
 
-## Main files
+The QSA guard selects the existing bounded-mask path when the projected
+upstream mask exceeds 512 MiB. Its estimate includes cached tokens and batch
+size. Manual validation of the cached tool-result prefill path remains a
+follow-up item.
 
-| Path | Responsibility |
+## Legitimate validation on record
+
+The following are the validation records we may use while resuming work:
+
+- Recorded test coverage: 247 `macqwen` tests and 295 FlashNext tests.
+- The focused 48-test check covers reasoning policy, session behavior, the
+  FlashNext settings registry, and the G64 safety guard.
+- Our terminal sanity check on 2026-09-12 used 3 arms and 32 tokens. The baseline
+  median was 3.74 tok/s, range 3.23–3.78, tail 3.45 tok/s, and 193.3 MB/token;
+  the token digest was `1a9abb4b5fdc523a`. This is a quick sanity check, not a
+  statistical promotion of REAP throughput.
+- oQ4 is the recorded quality baseline only. It is historical and is not the
+  installed REAP checkpoint.
+
+We do not use any removed native-engine, zero-drive, synthetic fixed-route, or
+uncommitted scratch result as a production claim. Research history and rejected
+experiments belong in `research.md`, not in this operational summary.
+
+## Required benchmark protocol
+
+Use `models/flashnext/bench_production.py` for published decode numbers and
+`models/flashnext/bench_slab_production.py` for selective slab comparisons.
+Before any run, we must record:
+
+- checkpoint identity and complete source/configuration fingerprints;
+- prompt, chat template, sampling settings, token limit, and seed policy;
+- arm definitions, environment variables, worker count, and resident policy;
+- exact generated token arrays or a reproducible digest;
+- wall time, generation and tail rates, physical MB/token, RSS, swap, and I/O
+  counters.
+
+Use multi-arm interleaving with reverse ordering on alternate rounds. Pair the
+same prompt and controls, report paired means/medians and the resolution band,
+and do not infer a gain from a single run or from logical hit rate. Preserve a
+32-token exact-digest arm. On a fanless machine, avoid unnecessary warmup
+loops that can thermally throttle the device.
+
+Do not insert `mx.eval`, warmup, cache flushes, or artificial sleeps into a
+timed path unless that operation is the measured variable. Do not use a
+zero-drive estimate as a production result. A synthetic route or uninitialized
+weight buffer is a diagnostic, never a model benchmark. Reject any arm that
+does not load the same real checkpoint and produce the same required outputs.
+
+For G64 or REAP experiments, first pass a short exact-quality gate, then the
+long-turn quality gate with the same agent prompt. A short matching digest is
+necessary but not sufficient. Keep the G64 kernel, G64 slab pack, and
+stream-pack disabled unless both quality and controlled performance gates are
+clear.
+
+## Essential files and commands
+
+| Path | Role |
 |---|---|
-| `macqwen/backends/flashnext.py` | Shared chat adapter and generation loop |
-| `models/flashnext/loader.py` | Install streamed modules before loading |
-| `models/flashnext/store.py` | Read tensor rows from checkpoint shards |
-| `models/flashnext/expert_cache.py` | Read routed expert rows |
-| `models/flashnext/ngram.py` | Stream hashed n-gram rows |
-| `models/flashnext/adaptive_topk.py` | Apply adaptive expert thresholds |
-| `models/flashnext/routing.py` | Manage runtime routing profiles |
-| `models/flashnext/sessions.py` | Save and restore exact model state |
-| `models/flashnext/qsa_chunk.py` | Bound QSA query allocation |
-| `models/flashnext/patch_rmsnorm.py` | Correct upstream RMSNorm behavior |
-| `models/flashnext/bench_read_ceiling.py` | Price the drive at zero to find the rate ceiling |
-| `models/flashnext/bench_production.py` | The standard benchmark protocol; use it for every published number |
-| `models/flashnext/bench_slab_sweep.py` | Measure physical MB saved per resident MB added across layer/capacity configurations |
-| `models/flashnext/bench_slab_production.py` | Paired reversed-order production benchmark for selective slabs |
-| `models/flashnext/bench_native_dma_contention.py` | Measure barrier and fence contention under true unbuffered F_NOCACHE SSD DMA |
-| `models/flashnext/bench_wired_limit.py` | Pre-load wired memory limit comparison with fresh instances |
-| `models/flashnext/metal_runtime.py` | SIMD Q4/G32 Metal MoE kernels and fused output paths |
-| `models/flashnext/metal_native.py` | Python bridge for native Metal scheduling probes |
-| `models/flashnext/metal_runtime_native.mm` | Native Objective-C++ command-buffer and synchronization probe |
-| `models/flashnext/slab_pack.py` | File-backed, page-aligned expert slab storage |
-| `models/flashnext/slab_topology.py` | Offline slab allocation and topology analysis |
-| `models/flashnext/swiglu_contract.py` | Exactness checks for fused SwiGLU arithmetic |
-| `models/flashnext/bench_runtime_layer.py` | Fixed-route custom-kernel layer benchmark |
-| `models/flashnext/bench_score_sync.py` | Score-sync boundary timing diagnostic |
-| `models/flashnext/bench_chat_parity.py` | Chat-path versus benchmark-path comparison |
-| `models/flashnext/bench_io_scheduling.py` | Queue, read, and completion timing diagnostic |
-| `models/flashnext/settings/` | FlashNext setting registry, launch defaults, and source reporting |
-| `models/flashnext/tests/` | Interactive research test catalog and runnable cases |
-| `models/flashnext/diskio.py` | Physical bytes read, to tell a cold run from a warm one |
-| `models/flashnext/metal_trace.py` | Export Metal command-buffer spans and nesting depth |
-| `models/flashnext/capture_dispatches.py` | Capture a small `.gputrace` for Xcode dispatch inventory |
-| `models/flashnext/bench_residency.py` | Check the residency gate against `mincore` |
-| `models/flashnext/bench_prefill_scaling.py` | Prefill rate and bytes across prompt lengths |
-| `models/flashnext/bench_route_swap.py` | Count how often a cold expert had a resident near-equal alternative |
-| `models/flashnext/bench_swap_quality.py` | Compare exact and cache-aware answers on checkable prompts |
+| `macqwen/backends/flashnext.py` | Backend adapter and generation loop |
+| `macqwen/session.py` | Session state and chat integration |
+| `models/flashnext/loader.py` | Checkpoint and streamed-module loading |
+| `models/flashnext/store.py` | Tensor-row reads from checkpoint shards |
+| `models/flashnext/expert_cache.py` | Routed expert residency and reads |
+| `models/flashnext/routing.py` | Routing profiles and token transitions |
+| `models/flashnext/adaptive_topk.py` | Adaptive expert thresholding |
+| `models/flashnext/qsa_chunk.py` | Bounded QSA allocation |
+| `models/flashnext/patch_rmsnorm.py` | Checkpoint-specific RMSNorm behavior |
+| `models/flashnext/metal_runtime.py` | Compatible MLX Metal Q4/G32 paths |
+| `models/flashnext/slab_pack.py` | File-backed compatible slab storage |
+| `models/flashnext/settings/` | Settings registry and safe launch defaults |
+| `models/flashnext/tests/` | Interactive research test catalog |
+| `models/flashnext/bench_production.py` | Standard production benchmark |
+| `models/flashnext/bench_slab_production.py` | Paired slab benchmark |
+| `models/flashnext/diskio.py` | Physical-read accounting |
 
-## Supporting material
-
-| Path | Use |
-|---|---|
-| [`../../MLX/`](../../MLX/) | MLX 0.32.2 Metal source notes with file and line references |
-| [`graphics/README.md`](graphics/README.md) | FlashNext trace image guide |
-| [`graphics/Token trace - Xcode.png`](graphics/Token%20trace%20-%20Xcode.png) | Xcode GPU capture view; use for dispatch inventory, not absolute timing |
-| [`graphics/miss-sweep-residual.png`](graphics/miss-sweep-residual.png) | 28-arm untraced miss-sweep residual plot |
-
-## Validation
-
-The interactive research suite lives in `models/flashnext/tests/`:
+Set up the local environment with:
 
 ```bash
-./models/flashnext/tests/run.sh
+./chat.sh setup
+./chat.sh --checkpoint reap
 ```
 
-The terminal automatically discovers each `case_*.py` file. Runnable case
-files provide their explanation, proposal reason, controls, metrics, and
-command script. The terminal owns commands, confirmation, live arm display,
-result storage, and interpretation.
-
-Run the model suite in its environment:
-
-```bash
-~/models/.venv-qwen4exp/bin/python -m unittest discover \
-  -s models/flashnext -p 'test_*.py' -q
-```
-
-Run a live session restore:
-
-```bash
-printf '/session load probe\n/status\n/quit\n' | \
-  ./chat.sh --model flashnext --profile plain --exact-quality
-```
-
-Run the complete JSON benchmark path:
-
-```bash
-./chat.sh --model flashnext --profile plain --exact-quality \
-  --max-tokens 32 --think-budget=-1 --benchmark-json \
-  --benchmark-prompt 'Explain virtual memory.'
-```
-
-In JSON benchmark mode, `--max-tokens` is the total decode ceiling. The
-explicit `--think-budget=-1` also makes the short-run intent clear. Interactive
-turns keep separate answer and thinking budgets.
-
-Standard output must contain one JSON object. Diagnostic text goes to standard error.
-
-## Prefill scaling
-
-The reference machine is an M4 Mac with 16 GB of unified memory and a 256 GB SSD. Prefill throughput increases with prompt length. Large
-batches amortize fixed setup and streamed-read costs across more tokens. A prompt near 5,000 tokens may reach about 40 to 50 tok/s under
-favorable conditions. Do not extrapolate large-prompt throughput from a short interactive prompt. Prompt content, free memory, SSD state,
-and page-cache state can move the result.
-
-## Measured rate
-
-| Condition | Rate |
-|---|---:|
-| exact-quality, clean-boot buffer-chunk2 | **2.83 tok/s**, 457.7 MB/token |
-| the same arms, pinned tail | 2.650 tok/s |
-| cache-aware, harness, four kept arms | **2.91 tok/s**, 2.92 tail, 360.4 MB/token |
-| exact arm in the same harness run | 2.73 tok/s, 2.70 tail, 430.0 MB/token |
-| cache-aware paired effect | **+6.5%**, band 0.6%, six of six pairs faster |
-| cache-aware, earlier hot run, superseded | 2.79 against 2.54, 347.6 against 417.8 MB/token |
-| older harness, ten pinned-tail arms, colder start | 2.42 to 2.73 tok/s, mean 2.59 |
-| terminal `gen`, short chat turns | about 2.0 to 2.5 tok/s |
-| pre-buffer warmup-eight pair, superseded | 2.88 and 2.78 tok/s, mean 2.83 |
-| synthetic fixed routes, every expert read resident | **5.33 tok/s** |
-| synthetic fixed routes, every expert read cold | 1.09 tok/s |
-
-The 2.83 value now comes from the accepted clean-boot buffer-chunk2
-comparison. The older ten-arm 2.59 value and the warmup-eight pair remain
-historical pre-buffer records. Use complete decode for interactive performance.
-
-The synthetic ceiling shows that compute can exceed 3 tok/s when expert reads stay resident. It does not predict a real production reply.
-
-Cache-aware has since gone through the harness. Its exact arm measured 2.73 at 430 MB/token against the 2.713 and 390 MB/token baseline, so
-that run sat at production warmth and its numbers hold. The 16.2% byte reduction there matches the 16.8% from the earlier hot run, so the
-opportunity carries across residency states.
-
-Every rate in this table came from greedy decoding, which the benchmarks use so token IDs stay comparable across arms. The chat samples.
-
-Use `models/flashnext/bench_read_ceiling.py` to reprice the drive at zero:
-
-```bash
-FLASHNEXT_READ=resident FLASHNEXT_PROFILE_IO=1 \
-  python3 models/flashnext/bench_read_ceiling.py --mode ram
-FLASHNEXT_READ=pread FLASHNEXT_PROFILE_IO=1 \
-  python3 models/flashnext/bench_read_ceiling.py --mode disk
-```
-
-`FLASHNEXT_READ` selects the expert read path. `pread` is the default and the only one to use in production. `resident` maps mlocked rows
-instead of copying them; it wins by 25 percent when the drive is idle and loses under load.
-
-The profile decides whether the variable applies:
-
-| Profile | Read path | Pins experts | `FLASHNEXT_READ` applies |
-|---|---|---|---|
-| `standard` | the variable | no | yes, with no gain, nothing is pinned |
-| `exact-quality` | the variable | 32 | yes |
-| `cache-aware` | the variable | 32 | yes |
-| `fused-quality` | the variable | yes | yes |
-| `fast-quality` | `shared_mmap` after warmup | yes | no |
-| `fast` | `shared_mmap` | no | no |
-
-`fast` and `fast-quality` were measured on `shared_mmap` and keep it. Setting `FLASHNEXT_READ` does not change them.
-
-## Measurement rules
-
-- Do not require a reboot. macOS starts background maintenance after boot and
-  can take a long time to reach a stable state.
-- After pack preparation, use `--purge-file-cache` once when a cold file-cache
-  start is required. `purge` does not release anonymous memory or swap.
-- The pre-run quiescence gate is optional and disabled by default. Use it only
-  to investigate machine state. Trusted comparisons rely on long paired arms,
-  reversed ordering, live VM metrics, and measured-arm contamination checks.
-- A measured arm warns when swap or pageout movement exceeds eight pages per
-  token, with a minimum allowance of 256 pages. We decide whether the
-  control and machine state are acceptable.
-- Production rate comparisons keep `FLASHNEXT_PROFILE_IO=0`. Frontier 5
-  attribution uses a separate `--profile-io` diagnostic run because per-read
-  timing changes memory pressure and throughput.
-- Do not stop `dynamic_pager`, delete `/private/var/vm/swapfile*`, or use
-  `memory_pressure` to force reclamation. These actions are unsafe or create
-  the pressure that the benchmark must avoid.
-- Ignore the number and allocated size of dormant swapfiles. Reject a run when
-  swap or compressor counters move during the quiescence or measured windows.
-- Run one model instance unless parallel operation is the experiment.
-- Hold prompt text and generated token limit constant.
-- Compare token IDs before accepting a performance change.
-- Reverse or interleave A/B order. Reversed order is mandatory on this machine.
-- **Use three arms per condition minimum.** The first arm of a run is always
-the slowest, because the page cache warms across arms. Two-arm A/Bs on this machine have produced +12.8% and +10.7% results that were both
-noise.
-- Read the resolution band the harness prints. It is two standard errors of
-the reported effect. `bench_slab_production.py` uses paired percentage
-differences. A reading inside it is unresolved, which is not the same as absent.
-- Stack two changes that are each unresolved and measure the pair. It costs
-one comparison instead of two re-runs, and a real pair clears the band.
-- Interleave the lengths in any sweep over prompt size. Walking them in order
-measures the warm-up: an ascending sweep read fewer bytes at 4 tokens than at 2, and moved the batching crossover from 32 tokens to 8.
-- An isolated reader A/B cannot support a layout claim. The reader is not what
-the model waits on once the page cache, the n-gram stream and the compute share one process.
-- A benchmark must prove its own premise before it reports. Verify the drive
-served the reads, verify the setting took effect, and refuse to report otherwise. Three benchmarks in one day returned plausible numbers
-while measuring nothing. One missed its required read mode. One read pages cached by its own write. One could not change a module constant.
-- Read this file's do-not-retry list and grep the research log before building
-anything. The expert-major repack was rebuilt from scratch while sitting as item three on that list.
-- Record free memory and competing applications.
-- Never predict throughput from the routing coverage curve. Coverage counts
-accesses to the top experts. It does not describe page-cache residency.
-
-## Do not retry without a new mechanism
-
-- Expert result caches and resident weight slabs.
-- Warm read-ahead and in-process prefetch overlap.
-- Repacking the complete checkpoint.
-- Widening `swap-epsilon` past 0.02. Both 0.05 and 0.10 remove the same 1.4%
-of physical bytes and neither clears its band, while 0.10 changed the output in 7 of 7 arms. Expert score gaps look bimodal, so there's
-nothing between 0.02 and 0.10 to harvest.
-- Verifying several tokens in one pass, at any block length and with any draft.
-A batch of two reads 808 MB/token against decode's 390, so the verify block costs 3.9 times one decode. Batching widens the distinct working
-set and defeats the page cache. Read the amortisation curve in `research.md` before proposing a variant.
-- Compressing the checkpoint on disk. On real oQ4 data zlib saves 3.59% at
-43 MB/s while decode needs 1.06 GB/s, and compression removes the byte offsets positioned reads depend on.
-- Stripping the `vision_tower` tensors. They're dead weight for the text
-runtime but only 0.90 GB, interleaved with 93 language tensors inside a 2.05 GB span of shard 1.
-- Two-bit expert requantization.
-- Low-rank expert approximation.
-- Native MTP for this complete runtime.
-- Exact speculative paths already measured in the research log.
-- `MLX_MAX_OPS_PER_BUFFER`. The premise gate passed, but cap 120 was 19.8%
-  slower across the plain arms.
-- Reusing destination buffers as a speed change. The ring is bit-exact, but its
-  production result is unresolved and its shape-only form changed token IDs.
-- Raising `MLX_RESIDENCY_SET_MAX_PCT`. It changes only the per-set cap. The
-  total wired budget remains zero, so a fivefold increase changes neither token
-  time nor VM counters.
-- Enabling `FLASHNEXT_EARLY_SUBMIT` as a production default. The settled test
-  did not reproduce the predicted gain. Keep it off until a new mechanism and
-  a load-controlled comparison support it.
-- Removing host work from the read path. Mapping resident rows instead of
-copying them, dropping the concatenate, and issuing reads earlier were each measured. Every one returns its saving to the GPU wait under
-drive pressure.
-- Pinning more than 32 experts. Tested again with a corrected candidate pool:
-`hot=40` pins 6.12 GB and returns the same rate as `hot=32`.
-- Longer routing warmup. `warmup=40` measured 3.7 percent slower than 8.
-- Sorting a layer's reads by offset, pinning only scales and biases, and
-warming last session's expert set. Each measured inside its resolution band alone, and the last two measured -1.4% together with 8% more
-physical reads, so they do not add.
-- Mapping resident expert rows, at any gate accuracy. A tracker with 97.6
-percent precision, well past its 78.5 percent break-even, measured 5.9 percent slower while reading 3.2 percent fewer bytes, and degraded
-further as more rows became eligible. The harm scales with the mapped fraction.
-
-## Trajectory gate
-
-If a change alters what the model computes, run a code task that names a real external API before adopting it. That applies to checkpoints
-and routing profiles alike. Prose won't catch this kind of failure.
-
-The task: ask for a SketchUp extension that extrudes several selected faces to a height supplied in the prompt. The reply has to be a complete `.rb`
-file. Load it in SketchUp and run it. Record the checkpoint, the effort level, and whether it works.
-
-Performance work does not run an automated quality gate. We evaluate a
-final candidate through `chat.sh` with normal sampling and Qwen's documented
-`xhigh` effort.
-
-oQ4 passes. oQ3-MTP fails at both `low` and `xhigh`, and higher effort moved it further from the right method rather than closer.
-
-Effort and sampling can move the output more than most tested changes. Greedy breaks ties the same way every time and causes repetition on
-its own, so a greedy result applies only to greedy decoding. Repeat the cache-aware gate.
-
-Check these items in the reply:
-
-- `Face#pushpull`. There is no `Face#extrude`; oQ3-MTP invented it.
-- `pushpull` with one argument. The second parameter is `copy`, not a direction
-flag, so passing `true` leaves the original face behind.
-- `next unless face.valid?`. Extruding one face invalidates an adjacent
-coplanar one, which is the hard part of this task.
-- A length parse that can't raise. `Sketchup.parse_length` returns nil;
-`String#to_l` raises.
-
-## Machine constraints
-
-The reference machine holds one checkpoint at a time. The data volume was
-228 GB with about 22 GB free during the earlier oQ4 work. Swapping to oQ3-MTP
-required deleting oQ4 first and re-running `~/models/dl-oQ4.sh` to restore it.
-
-Cleaning won't change that. The biggest reclaimable items add up to about 13 GB. The Trash is empty and there are no APFS local snapshots.
-
-Long sessions can leave dormant swapfiles allocated. Their presence alone does
-not invalidate a run. Close memory-heavy processes, optionally purge the file
-cache, and require stable swap and compressor counters through the quiescence
-gate. Reject any measured pair with swap or compressor activity.
-
-Two directories look like free space and aren't. `macqwen/cli.py` runs Flash-Next from `~/models/.venv-qwen4exp/bin/python` and Qwen3.8-27B
-from `~/mlx-qwen38-kernel-lab/bin/python3`, so deleting either stops the chat. `~/mlx-qwen38-apple` has no git history and no remote, so its
-work only exists here. Don't delete any of the three to free space.
-
-## Next work
-
-The checkpoint question remains open for REAP-288. oQ4 is the recorded quality
-baseline, and oQ3-MTP remains a historical comparison checkpoint.
-
-Current work is tracked in the public issue tracker:
-
-- [#4](https://github.com/1architect/macqwen-releases/issues/4) Re-run the cache-aware quality and trajectory gate with sampling.
-- [#5](https://github.com/1architect/macqwen-releases/issues/5) Measure cache-aware routing at long generation and 5K context.
-- [#6](https://github.com/1architect/macqwen-releases/issues/6) Measure prefill recovery after selective expert residency changes.
-- [#7](https://github.com/1architect/macqwen-releases/issues/7) Confirm draft contention with a warm page cache.
-- [#8](https://github.com/1architect/macqwen-releases/issues/8) Fix missing spaces at streamed chunk joins.
-- [#9](https://github.com/1architect/macqwen-releases/issues/9) Widen the cache-aware quality gate.
-- [#10](https://github.com/1architect/macqwen-releases/issues/10) Weight-preserving cache-aware swap. Measured and rejected in `research.md`.
-
-Open exact-quality performance experiments:
-
-- [#23](https://github.com/1architect/macqwen-releases/issues/23) Recheck the bit-exact RMSNorm compile with the zero-drive gate and production arms.
-- [#24](https://github.com/1architect/macqwen-releases/issues/24) Probe routed-expert Q4 group sizes 64 and 128.
-- [#25](https://github.com/1architect/macqwen-releases/issues/25) Gate and benchmark REAP-288. Use REAP-384 as the fallback.
-
-Open runtime and measurement experiments:
-
-- [#43](https://github.com/1architect/macqwen-releases/issues/43) Resolve FlashNext Metal wired-limit behavior.
-- [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under physical SSD DMA.
-- [#48](https://github.com/1architect/macqwen-releases/issues/48) Isolate SSD DMA and GPU contention outside FlashNext.
-- [#49](https://github.com/1architect/macqwen-releases/issues/49) Prefill FlashNext when opened for plain and agent profiles.
-
-### SSD -> Memory -> Metal Runtime Frontiers (The 10 Next Steps)
-
-The path to breaking through 3.0 tok/s (<333 ms/token) from the current 2.86 tok/s baseline (~345 ms/token) spans 10 architectural frontiers across the storage, unified memory, and Metal boundary:
-
-1. **Correct slab A/B and use hot experts** (Priority: High | Status: **CLOSED / IMPLEMENTED**):
-   - Decoupled resident slab from prefill tokens; fixed test-isolation bugs wiping `pins.json`.
-   - Solved the *layer utility inversion* problem: replaced uniform first-12 layer assignment with concentrated global allocation (`FLASHNEXT_SLAB_GLOBAL=48, min_slots=4`), focusing on the 12 highest-utility layers (`[5, 11, 20, 23, 29, 32, 35, 39, 40, 44, 46, 47]`).
-   - Decode hit rate jumped from 14.1% to **23.5%** (+67.4% relative gain) for **0 extra RAM** (+144 MB active RAM).
-   - Delivered **+8.3% mean / +5.5% median paired speedup** (2.70 -> 2.86 tok/s, tail 2.79 tok/s) with 100% bit-identical digest `29d04075ed7021b3`.
-
-2. **File-backed slab: mlocked mmap and streamed buffer in one kernel** (Priority: Very High | Status: **CLOSED / IMPLEMENTED**):
-   - File-backed mlocked slab pointers now pass directly into the unified Metal MoE kernel, with the bit-31 pointer encoding accepting mixed slab and streamed inputs.
-   - The resident allocation remains bounded to the 48–64-slot class. The 60-slot profile is the selected engineering default.
-
-3. **One expert-major record to the custom kernel** (Priority: High | Status: **MEASURED / OPT-IN**):
-   - The expert-major streamed record path is implemented and measured in Sections 18 and 19.
-   - It changes destination layout and worker grouping. It does not remove source positioned reads or requested bytes.
-   - Its observed gains remain unresolved. Keep it disabled until a controlled topology test supports promotion.
-
-4. **Composite read buffer: 9 wraps/layer -> 1** (Priority: Med/High | Status: **MEASURED & REJECTED**):
-   - Profiling (`FLASHNEXT_PROFILE_IO=1`) proved all 432 DLPack foreign wraps (`to_mx`) take only **2.51 ms/token** across all 48 layers.
-   - Slicing composite buffers in Python/MLX caused non-aligned slicing and graph evaluation stalls, dropping generation rate from 2.94 to 2.30 tok/s.
-   - Independent row buffers per part (`_SharedRead` with `empty_rows`) preserve threadpool concurrency and are retained as optimal.
-
-5. **Fused-down without global scratch or barriers** (Priority: Medium | Status: **CLOSED / IMPLEMENTED**):
-   - Replaced intermediate device scratch tensor write/read with in-register accumulation (`qmv_accumulate_impl`).
-   - Eliminated the 40 KB device memory scratch allocation per call and 768 threadgroup barriers per token across 48 layers. Bit-exact on bfloat16 (`test_scratchless_fused_down_bfloat16`).
-
-6. **Up-QMV + SwiGLU** (Priority: Low/Med | Status: **ENABLED IN CURRENT CHAT PRESET**):
-   - Fusing `activation = up * silu(gate)` in the Up-QMV epilogue eliminates `up_out` tensor allocation and saves 48 MLX elementwise launches per token.
-   - The MLX-header bfloat16 sequence matches all tested encodings and preserves the exact token digest. The current chat preset enables it.
-
-7. **FMA / fast math** (Priority: Low | Status: **ACTIVE IN KERNEL**):
-   - `qmv_fast_impl` currently uses `fma(...)` intrinsics for Q4 dequantization. Fast-math compiler flags can be evaluated provided bfloat16 rounding remains identical.
-
-8. **Shared-output final fusion (Frontier 8A)** (Priority: Medium | Status: **CLOSED / IMPLEMENTED**):
-   - Fused the gated shared-expert output addition (`shared_y = shared_gate * shared`) directly into the store epilogue of the custom Metal `_metal_fused_down_combine` kernel.
-   - Enforces exact two-step rounding semantics for bit-identity:
-     1) `T routed = static_cast<T>(combined[row]);` (intermediate routed rounding)
-     2) `out[idx] = static_cast<T>(float(routed) + float(shared_y[idx]));` (MLX `add` rounding)
-   - Eliminates 48 standalone MLX elementwise addition kernel launches per token and avoids materializing 48 intermediate `y_routed` buffer allocations (~245 KiB/token written to and read from RAM).
-   - In controlled reversed-pair production benchmarks, elevated generation median from 2.63 to **3.08 tok/s** (+17.1%) and tail median from 2.50 to **2.99 tok/s** (+19.6%), while maintaining 100% bit-identical token digest (`29d04075ed7021b3` for 32 tokens, `b8f20bd0dbc71940` for 24 tokens).
-
-9. **Global kernel cache** (Priority: Cleanup | Status: **CLOSED / IMPLEMENTED**):
-   - Metal kernels are compiled once and cached in `_COMPILED_KERNELS`; compilation latency is 0.00 ms from token 2 onward.
-
-10. **Native bridge persistent zero-copy** (Priority: Structural | Status: **FOUNDATION CLOSED**):
-    - The unbuffered DMA probe records raw GPU and process read metrics. Its
-      completion latch does not prove continuous physical SSD DMA, zero barrier
-      penalty, or 100% overlap, so Issue #45 is not closed by that probe.
-    - Single-pass bit-31 pointer encoding is verified and ready for native C++/Obj-C persistent runtime integration.
-
-### Immediate Tactical Next Steps
-
-- **Step A: Keep 16 workers**:
-  The unprofiled six-pair comparison is complete. Generation medians were
-  3.055 tok/s at 16 workers and 3.061 at eight. The +4.45% paired mean stayed
-  inside a 9.15% two-SE band. Digests matched. System-wide decompression was
-  active despite zero swap. Do not repeat the sweep or claim a resolved gain.
-  The chat-versus-benchmark gap remains unisolated. Generation length is a
-  hypothesis. The `chat-parity` case measured 3.155 tok/s raw and 3.138 rendered
-  on photosynthesis. Rendering stayed unresolved at -1.19% inside a 4.78% band.
-  The `chat-workload` comparison measured 2.145 tok/s for photosynthesis and
-  2.127 for SketchUp. Its 25.39% band and swap activity in every arm prevent
-  prompt attribution. The `chat-pin-memory` diagnostic measured 4.65 GB of
-  separate expert pins on SketchUp. A cold pin took 1.68 seconds and coincided
-  with 17,448 swapout pages. The prepared `chat-pin-budget` case compares
-  32 versus 8 pinned experts with the 60-slot slab fixed and both profilers off.
-  It has not run. Keep runtime defaults unchanged.
-- **Step B: Keep chunk 2**:
-  Chunk 4 lost 2.3% at the paired median inside a 7.9% band. Do not repeat it.
-- **Step C: Stop slab selection work**:
-  The long 60-versus-48 answer run favored 60 slots. The physical-miss and
-  depth-topology candidates failed the 20 MB/token offline premise gate.
-- **Step D: Keep Frontier 8A**:
-  Frontier 8B with Up-QMV/SwiGLU lost 3.5% at the paired median. Keep it off.
-- **Step E: Use one long answer validation only**:
-  The 256-token answer run is directional. Do not run another long comparison
-  unless a short 32-token test first resolves a candidate.
-
-Closed exact-quality performance issues:
-
-- [#21](https://github.com/1architect/macqwen-releases/issues/21) Host-only idle windows. Only 4.16 ms/token qualifies after bulk movement is excluded.
-- [#22](https://github.com/1architect/macqwen-releases/issues/22) Routed `gather_qmm`. The measured path runs at 92.2 to 92.4 GB/s.
-- [#26](https://github.com/1architect/macqwen-releases/issues/26) Confirm and retain shared-buffer chunk-2 reads. Closed after the clean-boot result.
-- [#27](https://github.com/1architect/macqwen-releases/issues/27) Attribute the remaining FlashNext GPU layer cost. Closed after Metal trace attribution.
-- [#41](https://github.com/1architect/macqwen-releases/issues/41) Resolve reusable destination-ring performance. Closed with no resolved benefit; diagnostic remains disabled.
-- [#42](https://github.com/1architect/macqwen-releases/issues/42) Characterize the GPU-busy hump across drive miss levels. Closed after the reversed-order sweep.
-- [#45](https://github.com/1architect/macqwen-releases/issues/45) Measure Metal barrier and fence cost under mixed residency. The 2026-09-03 native probe retains its raw GPU and process read results, but its latch marked completed reads and did not prove continuous physical DMA. Its post-GPU flag only marked a read completing after GPU wait. The probe therefore does not establish zero barrier penalty, 100% overlap, or a 5-12% contention bound.
-
-Follow-up issues from the 2026-09-01 sweep:
-
-- [#33](https://github.com/1architect/macqwen-releases/issues/33) Remove or repair the unreachable `ExpertLRU` merge path.
-- [#34](https://github.com/1architect/macqwen-releases/issues/34) Bound FlashNext benchmark token limits.
-- [#35](https://github.com/1architect/macqwen-releases/issues/35) Complete the excluded FlashNext read-path measurements.
-- [#36](https://github.com/1architect/macqwen-releases/issues/36) Correct absolute GPU utilization reporting.
-- [#37](https://github.com/1architect/macqwen-releases/issues/37) Measure the resident-work boundary below 640 MB.
-- [#38](https://github.com/1architect/macqwen-releases/issues/38) Recheck GDN timing with a dependency-correct chain.
-- [#39](https://github.com/1architect/macqwen-releases/issues/39) Explain clean-boot GPU busy variance.
-
-### Standing decisions
-
-- Concentrated global slabs (`FLASHNEXT_SLAB_GLOBAL=48, FLASHNEXT_SLAB_MIN_SLOTS=4`) outperform uniform and static first-12 layer slabs by concentrating the 48-slot budget into the highest-utility layers ([5, 11, 20, 23, 29, 32, 35, 39, 40, 44, 46, 47]), achieving 23.5% decode hit rate (vs 14.1% on slab12) for the exact same +149 MB active RAM, reaching 2.86–2.91 tok/s generation and 2.79–2.92 tok/s tail rate with bit-identical digest `29d04075ed7021b3`. Combined with the scratch-free register fused-down kernel, intermediate device scratch allocation and 768 threadgroup barriers per token are completely eliminated.
-- The native DMA probe does not establish a zero hardware penalty for
-  in-encoder Metal buffer barriers under physical SSD DMA. Keep the result
-  observational until an interval-valid premise is measured.
-- `pin-parts` is rejected. Its positive isolated reading disappeared when
-stacked with prewarm; the pair lost 1.4% and read 8% more.
-- Weight-preserving expert substitution is not bit-perfect. Keep the current
-cache-aware implementation unchanged.
-- Keep every accepted change on the shared chat path.
-- Installation and checkpoint verification could still be better.
+Use `--model-path` or `MACQWEN_FLASHNEXT_MODEL` for an explicit complete
+checkpoint. The REAP directory is normally under
+`$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
+
+Before a code change, inspect the worktree and the last commit. Keep unrelated
+user changes intact and do not reset or discard them implicitly.
+
+## Open risks and bugs
+
+- REAP long-turn quality and trajectory are unverified; hard reasoning turns
+  can loop or produce incomplete output.
+- The custom Q4/G64 kernel remains held out after a long-turn quality failure.
+  Its short equality evidence does not establish quality or speed.
+- REAP checkpoint-specific RMSNorm and mixed Conv1d layout handling must remain
+  shape-checked and fingerprint-aware; do not rewrite checkpoint tensors.
+- Issue #23 tracks the bit-exact RMSNorm compile gate.
+- Issue #24 tracks routed-expert Q4/G64 and Q4/G128 investigation.
+- Issue #25 tracks the REAP-288 quality/performance gate, with REAP-384 as a
+  fallback checkpoint.
+- Issue #43 tracks the pre-load wired-memory comparison.
+- Issue #45 tracks interval-valid Metal/SSD DMA contention evidence.
+- Issue #48 tracks SSD DMA and GPU contention outside FlashNext.
+- Issue #49 tracks FlashNext prefill when opened for plain and agent profiles.
+
+The complete-model comparison remains unresolved when a candidate falls inside
+the measured resolution band. We keep the current control unchanged until a
+new result clears both the statistical and exact-quality gates.
+
+## Next steps
+
+1. Keep REAP on generic MLX Q4/G64 with custom G64, G64 slabs, and stream-pack
+   off. Do not reintroduce the removed native prototype.
+2. Review the uncommitted code changes against the current control and split
+   safe compatibility work from rejected experiments before committing.
+3. Complete the pending manual QSA/prefill validation without changing the
+   benchmark protocol.
+4. If investigating G64 or REAP performance, run the short digest gate first,
+   then the long-turn quality gate, then the reversed interleaved benchmark.
+5. Record new evidence in `research.md`, update this handoff only with the
+   resulting operational decision, and state clearly whether the result is
+   accepted, unresolved, or rejected.
+
+Our immediate objective is reproducible, exact-quality MLX behavior. Speed
+claims follow evidence; they do not define the control.

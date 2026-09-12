@@ -23,10 +23,12 @@ quality section below.
 REAP compatibility accepts both n-gram shard naming conventions, selects the
 RMSNorm convention per model, sanitizes mixed Conv1d layouts, and filters stale
 expert IDs from old pin history. Q4/G64 uses streamed expert weights with the
-G64 Metal executor enabled for chat. Packed G64 slabs remain disabled.
+canonical MLX path; the G64 Metal executor is closed for normal chat. Packed
+G64 slabs remain disabled.
 
-The corrected 32-token G64 equality gate passes. REAP speed, quality, and
-packed-residency results remain open.
+The corrected 32-token G64 equality gate passes, but the long-turn SketchUp
+quality gate failed. REAP speed, quality, and packed-residency results remain
+unpromoted.
 
 The runtime saves an explicit `--checkpoint` choice and otherwise selects the sole complete compatible local checkpoint.
 

@@ -30,7 +30,8 @@ FlashNext MoE layers. The launcher enables these current settings:
 
 ```text
 FLASHNEXT_METAL_RUNTIME=1
-FLASHNEXT_METAL_G64=1
+FLASHNEXT_METAL_G64=0
+FLASHNEXT_SLAB_G64=0
 FLASHNEXT_SLAB_GLOBAL=60
 FLASHNEXT_SLAB_PACK=1
 FLASHNEXT_SLAB_POLICY=skew
@@ -48,11 +49,14 @@ control measurement, not a new production guarantee.
 
 ### Custom Metal kernels
 
-The custom path lives in `models/flashnext/metal_runtime.py` and
-`models/flashnext/metal_runtime_native.mm`. It uses SIMD Q4/G32 helpers with
-float32 activations and bfloat16 scales and biases. It combines the routed
-down-projection with router scores and writes the output without the separate
-intermediate routed tensor. It also removes 48 `astype` launches per token.
+The production custom path lives in `models/flashnext/metal_runtime.py` and
+uses MLX's Metal kernel API with SIMD Q4/G32 helpers, float32 activations, and
+bfloat16 scales and biases. It combines the routed down-projection with router
+scores and writes the output without the separate intermediate routed tensor.
+It also removes 48 `astype` launches per token. `models/flashnext/metal_native.py`
+and `models/flashnext/metal_runtime_native.mm` are isolated scheduler and DMA
+probes; they are not a complete native inference engine and are not part of the
+normal chat path.
 
 The isolated production-shape kernel is bit-identical to the MLX reference and
 measures about 3.5% to 4.4% faster across controlled miss levels. The current
@@ -68,9 +72,11 @@ profile's measured rate.
 
 The slab path uses page-aligned, file-backed storage and direct expert-major
 Metal addressing for compatible Q4/G32 models. REAP uses streamed Q4/G64
-execution without packed G64 residency. Its corrected 32-token equality gate
-passes, but no REAP speed result is published. Frontier 8B and streamed
-expert-major records remain disabled.
+weights through the canonical MLX path without packed G64 residency. The short
+32-token G64 equality gate passed, but the long-turn SketchUp quality gate
+failed, so we keep the G64 Metal executor closed for normal chat. No REAP speed
+result is published. Frontier 8B and streamed expert-major records remain
+disabled.
 
 ## Current support
 
@@ -106,8 +112,9 @@ The 256 GB reference Mac normally holds only one Flash-Next checkpoint.
 
 The current REAP checkpoint is `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
 It uses Q4/G64 expert weights and Q4/G32 n-gram weights. Its expert path
-uses streamed expert weights with the G64 Metal executor enabled by the normal
-chat launcher. Packed G64 slabs remain disabled.
+uses streamed expert weights through the canonical MLX path. The G64 Metal
+executor is closed by the normal chat launcher after the long-turn SketchUp
+gate failed. Packed G64 slabs remain disabled.
 
 oQ4 passed a recorded API coding test that oQ3-MTP failed.
 Use oQ3-MTP for prose, general chat, and the smallest supported installation.

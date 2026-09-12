@@ -4,9 +4,10 @@ from __future__ import annotations
 
 CHAT_ENV = {
     "FLASHNEXT_METAL_RUNTIME": "1",
-    # REAP uses Q4/G64. The corrected G64 kernel passed the full 32-token
-    # equality gate. Packed G64 residency stays opt-in and remains disabled.
-    "FLASHNEXT_METAL_G64": "1",
+    # The short G64 equality gate passed, but the long-turn SketchUp quality
+    # gate failed. Keep G64 closed for normal chat until that gate passes.
+    "FLASHNEXT_METAL_G64": "0",
+    "FLASHNEXT_SLAB_G64": "0",
     "FLASHNEXT_SLAB": "0",
     "FLASHNEXT_SLAB_GLOBAL": "60",
     "FLASHNEXT_SLAB_PACK": "1",
