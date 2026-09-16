@@ -75,8 +75,11 @@ class Q4G64KernelSourceTests(unittest.TestCase):
             proj_name="gate_proj"
         )
         source = backend.calls[0]["source"]
+        header = backend.calls[0]["header"]
         self.assertIn("qmv_mixed_impl<T, 64, 4>", source)
         self.assertIn("simdgroup_index_in_threadgroup", source)
+        self.assertIn("const int in_vec_size", header)
+        self.assertNotIn("const int& in_vec_size", header)
 
 
 class Q4G64MetalExactTests(unittest.TestCase):

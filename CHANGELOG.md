@@ -28,6 +28,8 @@
 
 - Guard QSA mask allocation for large projected masks and correct G64 streamed
   down-projection offsets.
+- Keep custom QMV helpers compatible with Metal compilers that reject
+  unqualified reference parameters.
 - Infer mixed quantization layouts from tensor metadata consistently across the
   loader, MTP path, runtime checks, and pin profiles.
 - Preserve failed benchmark arms before validation, report paired regressions

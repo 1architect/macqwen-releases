@@ -383,9 +383,10 @@ def _mlx_qmv_header() -> str:
     fast_acc = _make_accumulate(fast, "qmv_fast_mixed_impl", "qmv_fast_accumulate_impl")
     impl_acc = _make_accumulate(impl, "qmv_mixed_impl", "qmv_accumulate_impl")
     header += fast_acc + impl_acc
-    # Custom-kernel helpers receive compile-time local dimensions, not buffer
-    # address-space constants.
-    return header.replace("const constant int&", "const int&")
+    # Custom-kernel helpers receive small local dimensions, not buffer
+    # address-space constants. Pass them by value so older Metal compilers do
+    # not reject references without an explicit address space.
+    return header.replace("const constant int&", "const int")
 
 
 _FUSED_DOWN_COMBINE_BODY = r"""
