@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pstats
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from models.k2_horizon import bench
 
@@ -81,6 +84,129 @@ class BenchTests(unittest.TestCase):
                          ["improvement", "regression", "tie"])
         self.assertEqual(result["direction"], "tie")
         self.assertEqual(result["ties"], 1)
+
+    def test_profile_option_stays_out_of_constructor(self):
+        self.assertIn("profile", bench.COMPARISONS)
+        self.assertEqual(bench.COMPARISONS["profile"]["cprofile"], {"profile": True})
+        constructor, _effective = bench._constructor_options({"profile": True}, 512)
+        self.assertEqual(constructor, {})
+
+    def test_generation_profile_splits_phases_and_writes_pstats(self):
+        profiler = bench.GenerationProfile()
+        self.addCleanup(profiler.stop)
+
+        def prefill_work():
+            return sum(range(100))
+
+        def decode_work():
+            return sum(range(200))
+
+        profiler.start()
+        prefill_work()
+        profiler.start_decode()
+        decode_work()
+        profiler.stop()
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        record = profiler.save(str(Path(directory.name) / "probe.jsonl"), "probe-arm")
+        self.assertEqual(sorted(record["phases"]), ["decode", "prefill"])
+        self.assertTrue(record["scope"].startswith("backend.generate"))
+        self.assertIn("GPU waits", record["clock"])
+        self.assertGreater(record["phases"]["decode"]["total_s"], 0.0)
+        for phase in ("prefill", "decode"):
+            path = Path(record["phases"][phase]["pstats_path"])
+            self.assertTrue(path.exists(), path)
+            stats = pstats.Stats(str(path))
+            self.assertGreater(stats.total_calls, 0)
+            for function in (prefill_work, decode_work):
+                code = function.__code__
+                key = (code.co_filename, code.co_firstlineno, code.co_name)
+                self.assertEqual(key in stats.stats, function.__name__ == f"{phase}_work")
+        self.assertIn("bench.py", record["phases"]["decode"]["top30"])
+
+    def test_generation_profile_saves_never_started_and_empty_decode(self):
+        for started in (False, True):
+            with self.subTest(started=started), TemporaryDirectory() as directory:
+                profiler = bench.GenerationProfile()
+                self.addCleanup(profiler.stop)
+                if started:
+                    profiler.start()
+                    sum(range(10))
+                record = profiler.save(str(Path(directory) / "probe.jsonl"), "probe-arm")
+                self.assertEqual(set(record["phases"]), {"prefill", "decode"})
+                for phase, result in record["phases"].items():
+                    if started and phase == "prefill":
+                        self.assertEqual(result["status"], "captured")
+                        self.assertGreater(pstats.Stats(result["pstats_path"]).total_calls, 0)
+                    else:
+                        self.assertEqual(result["status"], "empty")
+                        self.assertEqual(result["total_calls"], 0)
+                        self.assertEqual(result["total_s"], 0.0)
+
+    def test_generation_profile_repeated_saves_have_unique_names(self):
+        profiler = bench.GenerationProfile()
+        self.addCleanup(profiler.stop)
+        profiler.start()
+        sum(range(10))
+        profiler.start_decode()
+        sum(range(20))
+        profiler.stop()
+        with TemporaryDirectory() as directory:
+            path = str(Path(directory) / "probe.jsonl")
+            records = [profiler.save(path, "probe-arm") for _ in range(2)]
+            paths = [result["pstats_path"] for record in records
+                     for result in record["phases"].values()]
+            self.assertEqual(len(set(paths)), 4)
+            for saved in paths:
+                self.assertGreater(pstats.Stats(saved).total_calls, 0)
+
+    def test_child_arm_saves_profile_and_retains_generation_error(self):
+        for prefilled in (False, True):
+            with self.subTest(prefilled=prefilled), TemporaryDirectory() as directory:
+                error = RuntimeError(f"generation failed: prefilled={prefilled}")
+
+                def generate(*, on_prefilled, **_kwargs):
+                    if prefilled:
+                        on_prefilled()
+                    raise error
+
+                profiler = bench.GenerationProfile()
+                self.addCleanup(profiler.stop)
+                backend = Mock(pending=[1, 2])
+                backend.open_conversation.return_value = 2
+                backend.generate.side_effect = generate
+                mx = SimpleNamespace(random=Mock(), synchronize=Mock())
+                path = str(Path(directory) / "failed.jsonl")
+                with (
+                    patch("models.k2_horizon.backend.K2HorizonBackend", return_value=backend) as constructor,
+                    patch.dict(sys.modules, {"mlx": SimpleNamespace(core=mx), "mlx.core": mx}),
+                    patch.object(bench, "GenerationProfile", return_value=profiler),
+                    patch.object(bench, "snapshot", return_value={}),
+                    patch.object(bench, "_disk", return_value=0),
+                ):
+                    result = bench.child_arm(
+                        checkpoint=str(Path(directory) / "missing"), arm_id="failed-arm",
+                        condition="cprofile", options={"profile": True}, record_path=path,
+                        fixture="context-2k", horizon=32, window=32, thinking=False,
+                        effort="medium", sampling="greedy", prefill_step_size=512, round_index=0,
+                    )
+                self.assertEqual(result, 1)
+                constructor.assert_called_once_with(str(Path(directory) / "missing"), prefill_step_size=512)
+                backend.generate.assert_called_once()
+                rows = bench.read_jsonl(path)
+                self.assertEqual([row["type"] for row in rows], ["arm", "profile", "cleanup"])
+                arm, profile, cleanup = rows
+                self.assertEqual(arm["status"], "failed")
+                self.assertEqual(arm["error"], {"type": "RuntimeError", "message": str(error)})
+                self.assertEqual(profile["arm_id"], arm["arm_id"])
+                self.assertEqual(profile["status"], "captured")
+                self.assertEqual(profile["phases"]["prefill"]["status"], "captured")
+                self.assertEqual(profile["phases"]["decode"]["status"], "captured" if prefilled else "empty")
+                self.assertEqual("prefill" in arm["snapshots"], prefilled)
+                for phase in profile["phases"].values():
+                    if phase["status"] == "captured":
+                        self.assertGreater(pstats.Stats(phase["pstats_path"]).total_calls, 0)
+                self.assertEqual(cleanup["status"], "complete")
 
     def test_run_comparison_keeps_raw_rows_and_records_digest_failures(self):
         calls = []

@@ -142,6 +142,47 @@ sliding windows, context truncation, vocabulary shortlists, changed reasoning
 budgets, disk offload, KV recomputation, and speculative decoding are outside
 this research scope.
 
+## Product-path profiling on k2-research
+
+We added an opt-in `profile` comparison without changing runtime defaults.
+We ran six fresh-process arms in AB/BA/AB order with 2,731 prompt tokens
+and 256 greedy output tokens. All six arms retain digest
+`e7031fcb1943d25d3269e8e384c40577d9f0dfda24b3f247afe7668137f65048`.
+The raw record is `measurements/k2-profile-product.jsonl`.
+
+Our control median is 11.314 tok/s. This is not an improvement over the
+historical 9.680 tok/s baseline: environment and run conditions differ.
+The profiled condition differs by +0.620% on paired rates, with a 0.096%
+two-SE band. This measures instrumentation effects, not an optimization.
+Three pairs do not establish sign-test significance (two-sided p=0.25).
+
+Across the three decode profiles, `generate_step` self time accounts for
+97.757% of recorded wall time. This includes native execution and waits.
+Text decoding plus protocol translation takes 67.845 ms across 67.541 seconds,
+about 0.100%. We have no premise for a 5% gain from removing this text work.
+The profiles exclude checkpoint loading and terminal UI.
+
+We also captured one Metal System Trace diagnostic. The process exits normally.
+Our exported intervals identify Python PID 62240 explicitly. Merged active
+compute intervals cover 23.515 of 23.530 seconds in the decode snapshot window
+(99.936%). These intervals identify command buffers, not individual kernels.
+They cannot separate arithmetic, memory stalls, or synchronization.
+
+The prefill snapshot window contains 16.672 seconds of active intervals across
+25.628 seconds. The remaining 8.956 seconds has no attributed cause here.
+We must identify that cause before claiming removable prefill work.
+Snapshot correlation uses the trace wall-clock origin; it is not a kernel marker.
+Lookahead submission crosses the prefill boundary, and decode includes cleanup.
+
+We retain the Metal child record in `measurements/k2-metal-diagnostic.jsonl`.
+The full trace and interval export remain temporary local artifacts, as detailed
+in the measurement index. This single diagnostic does not establish a speed gain.
+
+Our next step is kernel-level GPU attribution and prefill gap attribution.
+We do not select compilation, normalization fusion, or projection packing yet.
+No model, dependency, weight, cache, or sampling implementation changes result
+from these measurements.
+
 ## Decision
 
 No candidate produced a promotable gain. We retain prefill 512, native BF16 KV

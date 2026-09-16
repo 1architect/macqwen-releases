@@ -97,8 +97,13 @@ recomputation, and speculative decoding are separate quality or scope changes.
 
 ## Next work
 
-Profile the complete product path before selecting another optimization. Reopen
-only one bounded candidate when the trace attributes enough removable work to
-clear both a 5% gain and the measured resolution band, or shows a substantial
-memory saving at identical context and output lengths. Record new evidence in
-[`research.md`](research.md) and keep raw arms under [`measurements/`](measurements/).
+Our backend profiling finds about 0.100% of decode time in text decoding and
+protocol translation. One Metal diagnostic shows nearly continuous active GPU
+intervals during decode, but does not identify individual kernel costs.
+
+Next, attribute kernel costs and the unexplained prefill interval gap before
+selecting an optimization. These profiles exclude terminal UI. Reopen only one
+bounded candidate when attributed removable work clears a 5% gain and the
+resolution band, or demonstrates substantial memory savings at identical lengths.
+Record evidence in [`research.md`](research.md) and raw arms under
+[`measurements/`](measurements/).

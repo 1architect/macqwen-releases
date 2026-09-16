@@ -98,6 +98,47 @@ conclusions and are omitted from this index. We did not use them to compute
 the table or decisions. We did not run model inference while preparing this
 documentation handoff.
 
+## Product profiling diagnostic
+
+We retain six fresh-process arms in `k2-profile-product.jsonl`, with
+AB/BA/AB ordering, 2,731 prompt tokens, and 256 greedy output tokens.
+All arms preserve the product digest. We use the project `.venv` interpreter.
+The following command reproduces the run configuration:
+
+```bash
+.venv/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare profile --fixture context-2k --horizon product --window 32 --rounds 3 --sampling greedy --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/k2-profile-product.jsonl
+```
+
+The original invocation calls `run_comparison` with these same options.
+Each profile record references separate prefill and decode `.pstats` files.
+Our control median is 11.314 tok/s. The paired +0.620% difference measures
+instrumentation effects, not a runtime improvement. Text decoding and protocol
+translation account for 0.100% of pooled profiled decode time.
+We do not compare these rates directly with the historical baseline.
+
+Our separate `k2-metal-diagnostic.jsonl` records one unprofiled backend arm
+under Xcode-beta's Metal System Trace. We used this command:
+
+```bash
+/Applications/Xcode-beta.app/Contents/Developer/usr/bin/xctrace record --template "Metal System Trace" --output "/var/folders/58/86027c3j0tvc1gkm43k28c180000gn/T/opencode/k2-product-metal.trace" --time-limit 100s --launch -- /Users/gioma/Developer/MACQWEN/.venv/bin/python -m models.k2_horizon.bench --child --checkpoint k2 --arm-id metal-diagnostic --condition control --round 0 --options-json '{}' --record docs/k2_horizon/measurements/k2-metal-diagnostic.jsonl --fixture context-2k --horizon 256 --window 32 --effort medium --sampling greedy --prefill-step-size 512 --seed 7
+```
+
+The trace starts at `2026-09-16T20:22:28.578-03:00` and ends after 57.636162 seconds.
+We exported `metal-gpu-intervals` to `gpu-intervals.xml` in that same temporary directory.
+These temporary artifacts are not part of the repository and may expire.
+The export contains 13,553 intervals attributed to Python PID 62240.
+We merge overlapping intervals before measuring coverage.
+
+| Snapshot window | Wall seconds | Active GPU interval union | Coverage |
+|---|---:|---:|---:|
+| Generation start to prefill | 25.627784 | 16.672142 | 65.055% |
+| Prefill to decode end | 23.530236 | 23.515268 | 99.936% |
+
+These command-buffer intervals do not identify individual kernel costs or
+separate arithmetic from memory stalls. Snapshot alignment uses wall-clock
+correlation. We have no attributed cause for the 8.956-second prefill gap.
+No kernel candidate or performance change earns promotion from this diagnostic.
+
 ## Retained constraints
 
 We keep the installed Q8/G64 weights, BF16 KV, every context token, all

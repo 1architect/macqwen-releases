@@ -1,29 +1,35 @@
 from __future__ import annotations
 import argparse
+import cProfile
 import hashlib
 import importlib.metadata
 import importlib.util
+import io
 import json
 import math
 import os
 import platform
+import pstats
 from pathlib import Path
 import resource
 import statistics as st
 import subprocess
 import sys
 import time
+import uuid
 from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 SHORT, PRODUCT, WINDOW, SEED = 32, 256, 32, 7
 COMPARISONS = {
     "baseline": {"control": {}},
+    "profile": {"control": {}, "cprofile": {"profile": True}},
     "allocator": {"control": {}, "allocator-256": {"allocator_cache_mb": 256}},
     "clear-cache": {"control": {}, "clear-cache-after": {"clear_cache_after_generate": True}},
     "wired": {"control": {}, "wired-limit": {"wired_limit_enabled": True}},
     "cache-step": {"step-256": {"cache_step": 256}, "step-1024": {"cache_step": 1024}},
     "prefill": {"prefill-512": {"prefill_step_size": 512}, "prefill-256": {"prefill_step_size": 256}},
 }
+DIAGNOSTIC_COMPARISONS = {"profile"}
 _ANALYSIS_REQUEST = "Using the numbered records, write a detailed neutral analysis of at least 300 words covering the observed patterns and exceptions."
 def _context_fixture(records: int) -> tuple[str, str, None, None]:
     context = "\n".join(f"Record {i:04d}: category {i % 16}; value {(i * 37) % 100}; status {('stable', 'review')[i % 2]}; note segment {i % 7}." for i in range(1, records + 1))
@@ -262,14 +268,55 @@ def _windows(arrivals: list[dict[str, Any]], window: int) -> list[dict[str, Any]
     return result
 def _vm_delta(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
     return {key: int(right.get(key, 0)) - int(left.get(key, 0)) for key in sorted(set(left) | set(right))}
+class GenerationProfile:
+    def __init__(self):
+        self.profiles = {phase: cProfile.Profile() for phase in ("prefill", "decode")}
+        self.phase = "prefill"
+
+    def start(self):
+        self.profiles[self.phase].enable()
+
+    def start_decode(self):
+        self.stop()
+        self.phase = "decode"
+        self.start()
+
+    def stop(self):
+        self.profiles[self.phase].disable()
+
+    def save(self, record_path: str, arm_id: str) -> dict[str, Any]:
+        self.stop()
+        phases = {}
+        target = Path(record_path).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        invocation = uuid.uuid4().hex
+        for phase, profiler in self.profiles.items():
+            path = target.with_name(f"{target.stem}-{arm_id}-{invocation}-{phase}.pstats")
+            profiler.create_stats()
+            if not profiler.stats:
+                phases[phase] = {"status": "empty", "total_calls": 0, "total_s": 0.0}
+                continue
+            profiler.dump_stats(str(path))
+            stream = io.StringIO()
+            stats = pstats.Stats(profiler, stream=stream)
+            stats.sort_stats(pstats.SortKey.TIME).print_stats(30)
+            phases[phase] = {"status": "captured", "pstats_path": str(path), "top30": stream.getvalue(),
+                             "total_calls": stats.total_calls, "total_s": stats.total_tt}
+        return {"scope": "backend.generate; excludes load and terminal UI",
+                "clock": "wall; native calls include GPU waits, not GPU kernel timing",
+                "boundary": "prefill includes completion snapshot and decode lookahead submission; decode includes cleanup",
+                "phases": phases}
+
+
 def _constructor_options(options: dict[str, Any], default_prefill_step: int) -> tuple[dict[str, Any], int]:
-    constructor = {k: v for k, v in options.items() if k != "cache_step"}
+    constructor = {k: v for k, v in options.items() if k not in ("cache_step", "profile")}
     return constructor, int(constructor.pop("prefill_step_size", default_prefill_step))
 def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str, Any],
               record_path: str, fixture: str, horizon: int, window: int,
               thinking: bool, effort: str, sampling: str, prefill_step_size: int,
               round_index: int, seed: int = SEED) -> int:
     started, backend, arrivals, raw_written = time.perf_counter(), None, [], False
+    profiler = GenerationProfile() if options.get("profile") else None
     record = {"type": "arm", "schema": 1, "arm_id": arm_id, "condition": condition,
               "round": round_index, "status": "failed", "tokens": [],
               "token_digest": _digest([]), "error": None, "snapshots": {}, "windows": [], "seed": seed}
@@ -305,11 +352,19 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
         def on_prefilled():
             prefill_at[0] = time.perf_counter()
             record["snapshots"]["prefill"] = snapshot(backend, "prefill", os_probes=False)
+            if profiler is not None:
+                profiler.start_decode()
         def on_token(value, _piece):
             arrivals.append({"token": int(value), "at_s": time.perf_counter() -
                              (prefill_at[0] or generation_start)})
-        text, model_stats = backend.generate(max_tokens=horizon, on_prefilled=on_prefilled,
-                                             on_decode_token=on_token)
+        if profiler is not None:
+            profiler.start()
+        try:
+            text, model_stats = backend.generate(max_tokens=horizon, on_prefilled=on_prefilled,
+                                                 on_decode_token=on_token)
+        finally:
+            if profiler is not None:
+                profiler.stop()
         generation_done = time.perf_counter()
         sync_start = time.perf_counter()
         try:
@@ -325,7 +380,7 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
             tokens = [int(x) for x in backend.tape[-count:]]
         start, decode = record["snapshots"]["generation-start"], record["snapshots"]["decode"]
         record.update({"status": "raw", "text": text, "tokens": tokens,
-            "token_digest": _digest(tokens), "stats": {
+            "token_digest": _digest(tokens), "profile": bool(profiler), "stats": {
                 "finish": getattr(model_stats, "finish", None), "tokens": count,
                 "seconds": float(getattr(model_stats, "seconds", 0.0) or 0.0),
                 "rate_tps": float(getattr(model_stats, "rate", 0.0) or 0.0),
@@ -370,6 +425,19 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
                                        "status": "failed", "failure": record["error"]})
         return 1
     finally:
+        if profiler is not None:
+            profiler.stop()
+            try:
+                profile_record = {"type": "profile", "arm_id": arm_id,
+                                  "condition": condition, "round": round_index,
+                                  "status": "captured", **profiler.save(record_path, arm_id)}
+            except Exception as error:
+                profile_record = {"type": "profile", "arm_id": arm_id, "status": "failed",
+                                  "error": {"type": type(error).__name__, "message": str(error)}}
+            append_jsonl(record_path, profile_record)
+            if profile_record["status"] == "failed":
+                append_jsonl(record_path, {"type": "validation", "arm_id": arm_id,
+                                          "status": "failed", "failure": profile_record["error"]})
         cleanup = {"type": "cleanup", "arm_id": arm_id, "status": "complete"}
         try:
             if backend is not None:
@@ -435,6 +503,8 @@ def run_comparison(*, checkpoint: str, comparison: str, record_path: str, fixtur
     conditions, meta = COMPARISONS[comparison], metadata(
         checkpoint, comparison, fixture, horizon, window, thinking, effort,
         sampling, prefill_step_size, seed)
+    if comparison in DIAGNOSTIC_COMPARISONS:
+        meta["purpose"] = "profiler overhead diagnostic; not an optimization comparison"
     append_jsonl(record_path, {"type": "run", "status": "started", "metadata": meta})
     rows = {name: [] for name in conditions}
     for round_index, condition in ordered_conditions(list(conditions), rounds):
