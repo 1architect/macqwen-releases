@@ -31,6 +31,7 @@ class DistributionTests(unittest.TestCase):
     def test_ci_and_release_automation_exist(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
         self.assertIn("models/flashnext", workflow)
+        self.assertIn("models/qwen27b", workflow)
         self.assertIn("models/k2_horizon", workflow)
         self.assertIn("gh release create", workflow)
 

@@ -34,6 +34,7 @@ so we only use checkpoints from sources we trust.
 | `macqwen/tools/` | Provide repository, API, code, and search tools |
 | `macqwen/backends/` | Adapt each model runtime to the session loop |
 | `models/k2_horizon/` | Own K2 loading, settings, protocol adaptation, and tests |
+| `docs/k2_horizon/` | Hold K2 status, research decisions, operation, and measurements |
 
 ## Commands
 
@@ -135,8 +136,10 @@ Run the shared suite:
 
 ```bash
 python3 -m unittest discover -s macqwen -p 'test_*.py'
+python3 -m unittest discover -s models/flashnext -p 'test_*.py'
+python3 -m unittest discover -s models/qwen27b -p 'test_*.py'
 python3 -m unittest discover -s models/k2_horizon -p 'test_*.py'
-python3 -m compileall -q macqwen models/flashnext models/k2_horizon
+python3 -m compileall -q macqwen models/flashnext models/qwen27b models/k2_horizon
 git diff --check
 ```
 

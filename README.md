@@ -114,6 +114,10 @@ K2-Horizon supplies its MLX model implementation in `model.py`. Loading this
 checkpoint executes that local file, so only use a checkpoint source we trust.
 Set `MACQWEN_K2_HORIZON_PYTHON` if it needs a different Python environment.
 
+Read the [K2-Horizon brief](docs/k2_horizon/brief.md) for current status, the
+[research record](docs/k2_horizon/research.md) for measured decisions, and the
+[handoff](docs/k2_horizon/handoff.md) before changing or benchmarking it.
+
 ## Daily use
 
 Run `/help` inside the chat to see the current commands. The essentials are:
@@ -275,6 +279,7 @@ models/qwen27b/          Qwen3.8-27B runtime and research utilities
 docs/                    Current guides, results, and historical records
 docs/MLX/               MLX Metal backend source notes
 docs/flashnext/graphics/ FlashNext trace screenshots and plots
+docs/k2_horizon/         K2-Horizon brief, research, handoff, and measurements
 ```
 
 `chat.sh` selects the model, checkpoint, and Python environment before loading the runtime.
@@ -293,6 +298,13 @@ Run Flash-Next tests:
 ```bash
 .venv/bin/python -m unittest discover \
   -s models/flashnext -p 'test_*.py' -q
+```
+
+Run Qwen3.8-27B tests:
+
+```bash
+.venv/bin/python -m unittest discover \
+  -s models/qwen27b -p 'test_*.py' -q
 ```
 
 Run K2-Horizon adapter tests:

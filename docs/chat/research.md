@@ -74,7 +74,9 @@ The progress bar uses filled `█` and unfilled `░` cells. It omits border cha
 
 `ToolCallStreamFilter` remains model-agnostic and detects the established
 `<tool_call>` contract. The K2-Horizon package translates its native JSON
-protocol to that contract before output reaches the shared chat. The filter
+protocol to that contract before output reaches the shared chat. K2-specific
+measurements and decisions remain in
+[`docs/k2_horizon/research.md`](../k2_horizon/research.md). The filter
 hides protocol markup and emits the tool name after `<function=NAME>` arrives.
 
 The tool UI uses these states:

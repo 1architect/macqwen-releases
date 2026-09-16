@@ -1,8 +1,10 @@
 """Resident MLX-LM runtime for K2-Horizon 7B."""
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -32,6 +34,18 @@ THINK_FIELDS = {
     "low": "think_faster",
 }
 _SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+@contextmanager
+def _cache_limit(mx, megabytes: float | None):
+    if megabytes is None:
+        yield
+        return
+    previous = mx.set_cache_limit(int(megabytes * 1024 * 1024))
+    try:
+        yield
+    finally:
+        mx.set_cache_limit(previous)
 
 
 @dataclass
@@ -125,8 +139,19 @@ class K2HorizonBackend(Conversation):
         model_path: str,
         *,
         prefill_step_size: int = 512,
+        allocator_cache_mb: float | None = None,
+        clear_cache_after_generate: bool = False,
+        wired_limit_enabled: bool = False,
         session_dir: str = SESSION_DIR,
     ):
+        prefill_step_size = int(prefill_step_size)
+        if prefill_step_size <= 0:
+            raise ValueError("prefill_step_size must be greater than zero")
+        if allocator_cache_mb is not None:
+            allocator_cache_mb = float(allocator_cache_mb)
+            if not math.isfinite(allocator_cache_mb) or allocator_cache_mb < 0:
+                raise ValueError("allocator_cache_mb must be a finite non-negative number")
+
         import mlx_lm
         from mlx_lm.models.cache import make_prompt_cache
 
@@ -138,7 +163,11 @@ class K2HorizonBackend(Conversation):
         self.model = model
         self.model_path = str(path)
         self.cache = make_prompt_cache(model)
-        self.prefill_step_size = int(prefill_step_size)
+        self._validate_cache(self.cache)
+        self.prefill_step_size = prefill_step_size
+        self.allocator_cache_mb = allocator_cache_mb
+        self.clear_cache_after_generate = bool(clear_cache_after_generate)
+        self.wired_limit_enabled = bool(wired_limit_enabled)
         self.session_dir = Path(session_dir).expanduser()
         self.thinking_enabled = False
         self.reasoning_effort = "medium"
@@ -224,6 +253,32 @@ class K2HorizonBackend(Conversation):
                     raise RuntimeError("K2-Horizon cache cannot rewind its stop token")
                 item.offset -= 1
 
+    @staticmethod
+    def _validate_cache(cache) -> None:
+        from mlx_lm.models.cache import KVCache
+
+        if any(type(item) is not KVCache for item in cache):
+            raise TypeError("K2-Horizon requires ordinary MLX-LM KVCache objects")
+
+    def check_invariant(self) -> bool:
+        offsets = [int(item.offset) for item in self.cache if hasattr(item, "offset")]
+        return (
+            not self.cache and not self.tape
+        ) or (
+            bool(offsets)
+            and len(offsets) == len(self.cache)
+            and all(offset == len(self.tape) for offset in offsets)
+        )
+
+    def _mark_replay_needed(self) -> None:
+        """Drop a partially consumed cache; the next turn replays the tape."""
+        from mlx_lm.models.cache import make_prompt_cache
+
+        self.cache = make_prompt_cache(self.model)
+        self._validate_cache(self.cache)
+        self._replay_needed = bool(self.tape)
+        self.turn_closed = False
+
     def generate(
         self,
         max_tokens: int,
@@ -236,7 +291,7 @@ class K2HorizonBackend(Conversation):
             return "", Stats()
 
         import mlx.core as mx
-        from mlx_lm.generate import generate_step
+        from mlx_lm.generate import generate_step, generation_stream, wired_limit
 
         prompt = list(self.tape) + self.pending if self._replay_needed else list(self.pending)
         prompt_tokens = len(prompt)
@@ -260,48 +315,105 @@ class K2HorizonBackend(Conversation):
                 if on_prefilled is not None:
                     on_prefilled()
 
-        steps = generate_step(
-            mx.array(prompt),
-            self.model,
-            max_tokens=max_tokens,
-            sampler=sampler,
-            prompt_cache=self.cache,
-            prefill_step_size=self.prefill_step_size,
-            prompt_progress_callback=progress,
-        )
+        steps = None
+        try:
+            steps = generate_step(
+                mx.array(prompt),
+                self.model,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                prompt_cache=self.cache,
+                prefill_step_size=self.prefill_step_size,
+                prompt_progress_callback=progress,
+            )
+        except BaseException:
+            try:
+                mx.synchronize(generation_stream)
+            finally:
+                self._mark_replay_needed()
+            raise
         produced: list[int] = []
         pieces: list[str] = []
         partial: list[int] = []
         protocol = ProtocolTranslator()
         finish = "length"
         stop_seen = False
+        interrupted = False
+        cleaned = False
+
+        cache_limit = _cache_limit(mx, self.allocator_cache_mb)
+
+
+        def cleanup_steps():
+            nonlocal cleaned, interrupted
+            if cleaned:
+                return
+            cleaned = True
+            close = getattr(steps, "close", None)
+            try:
+                if close is not None:
+                    close()
+            finally:
+                # generate_step schedules one prediction ahead.  Synchronize
+                # the same stream before wired_limit restores its old limit.
+                mx.synchronize(generation_stream)
+
         try:
-            for token, _logprobs in steps:
-                value = int(token)
-                if value in self.stops:
-                    stop_seen = True
-                    finish = "stop"
-                    self.turn_closed = False
-                    break
-                self.tape.append(value)
-                produced.append(value)
-                sampler.observe(value)
-                raw = stream_decode(self.tokenizer, partial, value)
-                piece = protocol.feed(raw) if raw else ""
-                if on_decode_token is not None:
-                    on_decode_token(value, piece)
-                if piece:
-                    pieces.append(piece)
-                    if out is not None:
-                        with timer.emitting():
-                            out(piece)
-            else:
-                self.turn_closed = False
+            with cache_limit:
+                try:
+                    residency = (
+                        wired_limit(self.model, [generation_stream])
+                        if self.wired_limit_enabled
+                        else nullcontext()
+                    )
+                    with residency:
+                        try:
+                            for token, _logprobs in steps:
+                                value = int(token)
+                                if value in self.stops:
+                                    stop_seen = True
+                                    finish = "stop"
+                                    self.turn_closed = False
+                                    break
+                                self.tape.append(value)
+                                produced.append(value)
+                                sampler.observe(value)
+                                raw = stream_decode(self.tokenizer, partial, value)
+                                piece = protocol.feed(raw) if raw else ""
+                                if on_decode_token is not None:
+                                    on_decode_token(value, piece)
+                                if piece:
+                                    pieces.append(piece)
+                                    if out is not None:
+                                        with timer.emitting():
+                                            out(piece)
+                            else:
+                                self.turn_closed = False
+                        except BaseException:
+                            interrupted = True
+                            raise
+                        finally:
+                            cleanup_steps()
+                except BaseException:
+                    interrupted = True
+                    raise
+                finally:
+                    if not cleaned:
+                        cleanup_steps()
+                    steps = None
+                    if self.clear_cache_after_generate:
+                        mx.clear_cache()
         finally:
-            if stop_seen:
-                steps.close()
-                mx.synchronize()
-                self._rewind_stop_token()
+            if not cleaned:
+                interrupted = True
+                cleanup_steps()
+            steps = None
+            try:
+                if stop_seen:
+                    self._rewind_stop_token()
+            finally:
+                if interrupted:
+                    self._mark_replay_needed()
 
         raw_tail = self.tokenizer.decode(partial) if partial else ""
         tail = protocol.feed(raw_tail) + protocol.finish()
@@ -404,6 +516,7 @@ class K2HorizonBackend(Conversation):
         from mlx_lm.models.cache import make_prompt_cache
 
         self.cache = make_prompt_cache(self.model)
+        self._validate_cache(self.cache)
         self.tape = []
         self.pending = []
         self.turn_closed = True
@@ -415,7 +528,10 @@ class K2HorizonBackend(Conversation):
             return (
                 "K2-Horizon settings\n"
                 f"  checkpoint          {self.model_path}\n"
-                f"  prefill-step-size   {self.prefill_step_size}"
+                f"  prefill-step-size   {self.prefill_step_size}\n"
+                f"  allocator-cache-mb  {self.allocator_cache_mb if self.allocator_cache_mb is not None else 'off'}\n"
+                f"  clear-cache-after   {'on' if self.clear_cache_after_generate else 'off'}\n"
+                f"  wired-limit         {'on' if self.wired_limit_enabled else 'off'}"
             )
         raise ValueError("K2-Horizon has no model-specific runtime settings")
 

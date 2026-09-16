@@ -26,6 +26,8 @@ jobs:
         run: python -m unittest discover -s macqwen -p 'test_*.py' -q
       - name: Test Flash-Next runtime
         run: python -m unittest discover -s models/flashnext -p 'test_*.py' -q
+      - name: Test Qwen3.8-27B runtime
+        run: python -m unittest discover -s models/qwen27b -p 'test_*.py' -q
       - name: Test K2-Horizon runtime
         run: python -m unittest discover -s models/k2_horizon -p 'test_*.py' -q
 
