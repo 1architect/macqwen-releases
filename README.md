@@ -12,9 +12,8 @@ The project includes no model weights.
 
 | Operation | Result |
 |---|---:|
-| Short terminal generation | About 2.0 to 3.0 tok/s |
-| Current 60-slot Frontier 8A + Up-QMV/SwiGLU | 3.08 tok/s gen, 3.00 tok/s tail, 279.7 MB/token |
-| Corrected 16-worker decode-only control | 3.13 tok/s gen, 3.04 tok/s tail, 262.0 MB/token |
+| REAP terminal sanity, 32 tokens | 3.74 tok/s median, 3.45 tok/s tail, 193.3 MB/token |
+| Historical Q4/G32 60-slot control | 3.08 tok/s gen, 3.00 tok/s tail, 279.7 MB/token |
 | Long-prompt prefill near 5,000 tokens | About 40 to 50 tok/s; 62.19 tok/s synthetic result |
 
 These results come from the reference Mac.
@@ -25,13 +24,17 @@ The listed controlled results preserve token IDs.
 
 ## Current FlashNext runtime
 
-The current FlashNext runtime adds a custom Metal execution path for the
-FlashNext MoE layers. The launcher enables these current settings:
+`chat.sh` defaults to the MLX-backed Metal runtime
+(`FLASHNEXT_METAL_RUNTIME=1`). For the REAP checkpoint, that runtime still
+executes Q4/G64 experts through generic MLX. The experimental G64 executor is
+opt-in through `FLASHNEXT_METAL_G64=1`; it is not enabled by the normal chat
+launcher. G64 slabs and expert-major stream-pack remain off:
 
 ```text
 FLASHNEXT_METAL_RUNTIME=1
 FLASHNEXT_METAL_G64=0
 FLASHNEXT_SLAB_G64=0
+FLASHNEXT_STREAM_PACK=0
 FLASHNEXT_SLAB_GLOBAL=60
 FLASHNEXT_SLAB_PACK=1
 FLASHNEXT_SLAB_POLICY=skew
@@ -39,17 +42,18 @@ FLASHNEXT_FUSED_SHARED=1
 FLASHNEXT_FUSED_UP_SWIGLU=1
 ```
 
-The current controlled 60-slot Frontier 8A profile with Up-QMV/SwiGLU measured
-3.08 tok/s generation, 3.00 tok/s tail, and 279.7 MB/token. All arms kept the
-same token digest. Use the research record for comparison rules and status.
+The `FLASHNEXT_SLAB_GLOBAL` and `FLASHNEXT_SLAB_PACK` values remain in the
+launcher for compatible Q4/G32 checkpoints. They do not activate a REAP Q4/G64
+slab while `FLASHNEXT_SLAB_G64=0`.
 
-The corrected decode-only 16-worker control measured 3.13 tok/s generation,
-3.04 tok/s tail, 262.0 MB/token, and 3,620.7 MB active memory. The result is a
-control measurement, not a new production guarantee.
+The 3.74 tok/s REAP result is a three-arm terminal sanity observation, not a
+statistical promotion or a stock-versus-custom comparison. The 60-slot and
+custom Q4/G32 results below are historical compatibility evidence from another
+checkpoint layout.
 
-### Custom Metal kernels
+### Historical compatible Metal kernels
 
-The production custom path lives in `models/flashnext/metal_runtime.py` and
+The compatible custom path lives in `models/flashnext/metal_runtime.py` and
 uses MLX's Metal kernel API with SIMD Q4/G32 helpers, float32 activations, and
 bfloat16 scales and biases. It combines the routed down-projection with router
 scores and writes the output without the separate intermediate routed tensor.
@@ -58,25 +62,33 @@ and `models/flashnext/metal_runtime_native.mm` are isolated scheduler and DMA
 probes; they are not a complete native inference engine and are not part of the
 normal chat path.
 
-The isolated production-shape kernel is bit-identical to the MLX reference and
-measures about 3.5% to 4.4% faster across controlled miss levels. The current
-60-slot Frontier 8A profile with Up-QMV/SwiGLU measures 3.08 tok/s generation,
+For Q4/G32, the isolated production-shape kernel is bit-identical to the MLX
+reference and measures about 3.5% to 4.4% faster across controlled miss levels. The current
+historical 60-slot Frontier 8A profile with Up-QMV/SwiGLU measures 3.08 tok/s generation,
 3.00 tok/s tail, and 279.7 MB/token with the custom path active. The corrected
 16-worker control measures 3.13 tok/s generation, 3.04 tok/s tail, and
 262.0 MB/token. Both controls preserve token digests.
 
-The direct 16-arm stock-versus-custom comparison measured 2.91 tok/s for the
-custom path versus 2.89 tok/s for stock MLX. Its +0.7% median difference stayed
+The historical Q4/G32 16-arm stock-versus-custom comparison measured 2.91
+tok/s for the custom path versus 2.89 tok/s for stock MLX. Its +0.7% median difference stayed
 inside a 7.8% resolution band. This comparison does not limit the newer
 profile's measured rate.
 
 The slab path uses page-aligned, file-backed storage and direct expert-major
 Metal addressing for compatible Q4/G32 models. REAP uses streamed Q4/G64
-weights through the canonical MLX path without packed G64 residency. The short
-32-token G64 equality gate passed, but the long-turn SketchUp quality gate
-failed, so we keep the G64 Metal executor closed for normal chat. No REAP speed
-result is published. Frontier 8B and streamed expert-major records remain
-disabled.
+weights through generic MLX on Metal unless the experimental G64 executor is
+explicitly enabled. The short 32-token G64 equality gate passed, but the
+available long-turn attempt was interrupted before a completed answer and
+used an enlarged `xhigh` allowance. It is an incomplete gate, not a quality
+failure or a speed result. No REAP speed result is published. Frontier 8B and
+streamed expert-major records remain disabled.
+
+The pending G64 quality comparison remains future work. We will predeclare
+seeds 7, 19, and 73, alternate paired G64-off and G64-on arms with slabs and
+stream-pack disabled, and score completed SketchUp `.rb` outputs blind to arm
+labels. Seed 42 is a known regression case from a short check, not a
+representative quality seed. Interrupted generations are incomplete gates, not
+quality failures.
 
 ## Current support
 
@@ -112,9 +124,9 @@ The 256 GB reference Mac normally holds only one Flash-Next checkpoint.
 
 The current REAP checkpoint is `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
 It uses Q4/G64 expert weights and Q4/G32 n-gram weights. Its expert path
-uses streamed expert weights through the canonical MLX path. The G64 Metal
-executor is closed by the normal chat launcher after the long-turn SketchUp
-gate failed. Packed G64 slabs remain disabled.
+uses streamed expert weights through generic MLX on Metal by default. The
+experimental G64 executor requires `FLASHNEXT_METAL_G64=1`; G64 slabs and
+stream-pack remain disabled by the normal launcher.
 
 oQ4 passed a recorded API coding test that oQ3-MTP failed.
 Use oQ3-MTP for prose, general chat, and the smallest supported installation.
@@ -189,9 +201,10 @@ The launcher also accepts an active compatible Python environment.
 ## What to expect
 
 The default `exact-quality` mode prioritizes output quality.
-The model reads selected expert data from SSD during generation.
-Baseline resident memory is about 4.19 GB.
-Pinned memory is about 4.66 GB.
+The model reads selected expert data from SSD during generation. Resident and
+pinned memory depend on the checkpoint, route history, context, and selected
+policy; the 4.19 GB baseline and 4.66 GB pinned figures are historical oQ4
+measurements, not REAP guarantees.
 The performance figures are measurements, not minimum guarantees.
 
 ## Daily use

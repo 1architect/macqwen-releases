@@ -232,13 +232,13 @@ class Session:
             text = argument.strip()
             if not text or text == "all":
                 prefs = self.preferences
-                answer_budget, _, separate_think, _ = _effective_turn_budgets(
+                answer_budget, requested_think, effective_think, _ = _effective_turn_budgets(
                     self.backend, prefs, self.profile
                 )
                 budget = (
                     f"{answer_budget} answer + "
-                    f"{separate_think} reasoning"
-                    if prefs["thinking_enabled"] and separate_think is not None
+                    f"{effective_think} reasoning"
+                    if prefs["thinking_enabled"] and requested_think is not None
                     else f"{answer_budget} answer (reasoning shares it)"
                 )
                 shared = (
@@ -301,7 +301,14 @@ def _effective_turn_budgets(
     think = effective_think_budget(
         requested_think, prefs["effort"], checkpoint,
     )
-    total = answer if think is None else answer + think
+    if requested_think is None:
+        # ``None`` is the historical shared-total sentinel: ``answer`` is the
+        # one generation ceiling. Keep the effective cap in ``think`` so the
+        # backend can close reasoning at that point, but do not add it to the
+        # total or turn 2,048 total tokens into 2,048 + 4,096.
+        total = answer
+    else:
+        total = answer if think is None else answer + think
     return answer, requested_think, think, total
 
 
@@ -380,6 +387,13 @@ def build_backend(name: str, args, prefs: dict):
         return backend
     raise SystemExit(
         f"unknown model {name!r}. Use 'flashnext' or 'qwen27b'.")
+
+
+def _apply_seed(seed: int | None) -> None:
+    if seed is not None:
+        import mlx.core as mx
+
+        mx.random.seed(seed)
 
 
 def main() -> int:
@@ -467,6 +481,10 @@ def main() -> int:
     parser.add_argument("--session-dir", default=None)
     parser.add_argument("--workspace", default=None)
     parser.add_argument("--max-tokens", type=int, default=None)
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="seed sampling for reproducible chat runs",
+    )
     parser.add_argument("--think-budget", type=int, default=None)
     parser.add_argument("--think", dest="thinking_enabled",
                         action="store_true", default=None)
@@ -608,6 +626,7 @@ def main() -> int:
             backend = build_backend(prefs["model"], args, prefs)
     else:
         backend = build_backend(prefs["model"], args, prefs)
+    _apply_seed(args.seed)
     session = Session(
         backend,
         prefs["profile"],
@@ -1037,7 +1056,7 @@ def token_stats_text(stats_items, context: int, elapsed: float) -> str:
 def run_turn_agent(session, prompt: str) -> None:
     open_or_continue(session, prompt)
     prefs = session.preferences
-    answer_budget, _, think_budget, _ = _effective_turn_budgets(
+    answer_budget, requested_think, think_budget, limit = _effective_turn_budgets(
         session.backend, prefs, "agent"
     )
 
@@ -1101,10 +1120,15 @@ def run_turn_agent(session, prompt: str) -> None:
         reason = run_agent(
             session.backend, session.tools, out,
             Limits(
-                max_tokens=answer_budget,
-                # ``run_agent`` adds this value to max_tokens, so preserve
-                # the shared-budget sentinel without passing None to it.
-                think_tokens=0 if think_budget is None else think_budget,
+                # A shared budget uses the one total ceiling. Separate quotas
+                # use the answer allowance here because run_agent adds
+                # think_tokens to it. The REAP xhigh cap remains in the
+                # backend's interactive budget tuple for shared turns.
+                max_tokens=limit if requested_think is None else answer_budget,
+                # ``run_agent`` adds this value to max_tokens. In shared mode
+                # the cap is enforced by the backend, while the generation
+                # call must retain the one total ceiling.
+                think_tokens=0 if requested_think is None else think_budget,
             ),
             approve=ask_approval if prefs["approval"] == "ask" else None,
             model_out=model_out,

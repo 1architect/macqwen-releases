@@ -25,9 +25,9 @@ class G64PackedExecutionTests(unittest.TestCase):
         cls.HEADER_SIZE = HEADER_SIZE
         cls.layout = Q4G64_LAYOUT
 
-    def make_packs(self):
+    def make_packs(self, experts=2):
         mx = self.mx
-        hidden, inter, experts = 2560, 640, 2
+        hidden, inter = 2560, 640
 
         def pack(seed, output_width, input_width):
             values = (
@@ -63,32 +63,51 @@ class G64PackedExecutionTests(unittest.TestCase):
                     raw[start:start + len(row)] = row
         return self.mx.array(np.frombuffer(raw, dtype=np.uint8))
 
-    def make_input(self, dtype):
+    def make_input(self, dtype, tokens=1):
         mx = self.mx
-        x = (((mx.arange(2560, dtype=mx.float32) % 31) - 15) / 64).reshape(1, 2560)
+        x = (((mx.arange(tokens * 2560, dtype=mx.float32) % 31) - 15) / 64)
+        x = x.reshape(tokens, 2560)
         return x.astype(dtype)
 
-    def expected(self, x, packs, routes, scores, shared_y=None):
+    def expected(self, x, packs, routes, scores, shared_y=None,
+                 shared=None, shared_gate=None):
         mx = self.mx
-        logical_routes = mx.array([[0, 1]], dtype=mx.uint32)
-        args = dict(
-            rhs_indices=logical_routes,
-            transpose=True,
-            group_size=64,
-            bits=4,
-            mode="affine",
-            sorted_indices=False,
+        # Slab routes carry a high-bit residency flag; MLX sees only the
+        # logical expert index.  Build one-row references because gather_qmm's
+        # batched route output has an extra axis for a multi-token input.
+        logical_routes = (
+            mx.array([[0, 1]], dtype=mx.uint32)
+            if routes is None
+            else routes & mx.array(0x7FFFFFFF, dtype=mx.uint32)
         )
-        gate = mx.gather_qmm(x, *packs["gate_proj"], **args).squeeze(-2)
-        up = mx.gather_qmm(x, *packs["up_proj"], **args).squeeze(-2)
-        activation = self.swiglu(gate, up)
-        down = mx.gather_qmm(
-            mx.expand_dims(activation, -2), *packs["down_proj"], **args
-        ).squeeze(-2)
-        # G64 follows the generic MLX score product and reduction order.
-        expected = (down * scores[..., None]).sum(axis=-2)
+        rows = []
+        for row in range(x.shape[0]):
+            token_x = x[row : row + 1]
+            token_routes = logical_routes[row : row + 1]
+            args = dict(
+                rhs_indices=token_routes,
+                transpose=True,
+                group_size=64,
+                bits=4,
+                mode="affine",
+                sorted_indices=False,
+            )
+            gate = mx.gather_qmm(
+                token_x, *packs["gate_proj"], **args
+            ).squeeze(-2)
+            up = mx.gather_qmm(
+                token_x, *packs["up_proj"], **args
+            ).squeeze(-2)
+            activation = self.swiglu(gate, up)
+            down = mx.gather_qmm(
+                mx.expand_dims(activation, -2), *packs["down_proj"], **args
+            ).squeeze(-2)
+            rows.append((down * scores[row : row + 1, ..., None]).sum(axis=-2))
+        expected = mx.concatenate(rows, axis=0)
         if shared_y is not None:
             expected = expected + shared_y
+        elif shared is not None:
+            expected = expected + shared_gate * shared
         return expected
 
     def assert_exact(self, actual, expected, label):
@@ -158,6 +177,36 @@ class G64PackedExecutionTests(unittest.TestCase):
         executor = self.MetalMoEExecutor(2, 2560, 2, backend="metal", group_size=64)
         actual = executor.execute(x, routes, packs, scores=scores)
         self.assert_exact(actual, expected, "BF16-score G64 reduction")
+
+    def test_g64_production_shape_ten_routes_and_shared_bfloat16_rounding(self):
+        """Exercise real widths, max routed slots, and both shared epilogues."""
+        mx = self.mx
+        packs = self.make_packs(experts=10)
+        x = self.make_input(mx.bfloat16, tokens=2)
+        routes = mx.array(
+            [list(range(10)), list(reversed(range(10)))], dtype=mx.uint32
+        )
+        scores = (
+            ((mx.arange(20, dtype=mx.float32) % 7) + 1) / 28
+        ).reshape(2, 10).astype(mx.bfloat16)
+        shared = (
+            ((mx.arange(2 * 2560, dtype=mx.float32) % 29) - 14) / 32
+        ).reshape(2, 2560).astype(mx.bfloat16)
+        shared_gate = mx.array([[0.333984375], [-0.421875]], dtype=mx.bfloat16)
+        executor = self.MetalMoEExecutor(
+            10, 2560, 10, backend="metal", group_size=64
+        )
+
+        for label, kwargs in (
+            ("shared_y", {"shared_y": shared}),
+            ("shared_parts", {"shared": shared, "shared_gate": shared_gate}),
+        ):
+            with self.subTest(label=label):
+                expected = self.expected(x, packs, routes, scores, **kwargs)
+                actual = executor.execute(
+                    x, routes, packs, scores=scores, **kwargs
+                )
+                self.assert_exact(actual, expected, label)
 
 
 if __name__ == "__main__":

@@ -14,17 +14,180 @@ This file is the single active research record for Flash-Next. It preserves the 
 
 ## Current operational correction, 2026-09-12
 
-Our production backend remains MLX-backed. We have not promoted a REAP-288
-throughput or quality result. The custom G64 kernel, G64 slab pack,
-expert-major stream-pack path, and C++/Native Metal pipeline are disabled for
-normal chat. REAP Q4/G64 currently uses the generic MLX path. Q4/G32 with
-60-slot residency is a historical control for compatible checkpoints, not the
-current REAP runtime. Historical isolated-kernel results below do not change
-this state.
+Our production backend remains MLX-backed. `chat.sh` defaults to the
+MLX-backed Metal runtime (`FLASHNEXT_METAL_RUNTIME=1`), but REAP Q4/G64 still
+uses generic MLX expert execution unless the experimental G64 executor is
+explicitly enabled with `FLASHNEXT_METAL_G64=1`. G64 slabs remain off with
+`FLASHNEXT_SLAB_G64=0`, and the expert-major stream-pack path remains off with
+`FLASHNEXT_STREAM_PACK=0`. We have not promoted a REAP-288 throughput or
+quality result. Q4/G32 with 60-slot residency is a historical control for
+compatible checkpoints, not the current REAP runtime. Historical
+isolated-kernel results below do not change this state.
 
-The only accepted performance records are the controlled 60-slot profiles
-with their recorded token digests and physical-read accounting. We keep the
-REAP question open for a future checkpoint-specific quality and speed gate.
+The only accepted performance records are the controlled 60-slot profiles for
+compatible Q4/G32 checkpoints, with their recorded token digests and
+physical-read accounting. They are not REAP results. We keep the REAP question
+open for a future checkpoint-specific quality and speed gate.
+
+### Evidence correction after independent review
+
+We discard the recent REAP "stock versus custom" interpretation. That run
+toggled `FLASHNEXT_METAL_RUNTIME`, but both arms kept
+`FLASHNEXT_METAL_G64=0`; routed Q4/G64 experts therefore used the same generic
+MLX fallback. It was an A/A runtime sanity check, not evidence for a custom
+kernel effect. The separately recorded 3.74 tok/s terminal result remains a
+sanity observation only.
+
+We also withdraw causal attribution of slower runs to heat, Codex,
+WindowServer, or any other application. The recorded load and elapsed-time
+changes can identify possible environmental contention, but do not establish
+its source. Reverse interleaving mitigates order bias without proving that a
+comparison is unaffected by drift.
+
+The first REAP `xhigh` safeguard changed historical `think_budget=-1` shared
+total capacity into an additional 4,096-token allowance. That is a product
+regression, not a model-quality result. We must first preserve the existing
+total ceiling while bounding reasoning within it. Making a cap cumulative
+across tool calls is a separate product decision.
+
+Saved pin profiles must carry checkpoint identity in normal reference
+execution, not only while an experimental G64 kernel is active. Optional
+prewarm must reject missing or mismatched identity and enforce the configured
+pin budget before consuming rows.
+
+### Corrective implementation, 2026-09-15
+
+We preserve the shared generation ceiling while giving the backend a bounded
+reasoning phase. A 2,048-token shared turn remains 2,048 total; an 8,192-token
+shared turn remains 8,192 total while REAP `xhigh` closes reasoning by 4,096.
+The agent loop does not add that internal cap to the generation allowance.
+
+The production harness now applies normal chat defaults, refuses the generic
+Metal comparison on Q4/G64, verifies actual executor paths, uses neutral
+elapsed-rate correlation language, and writes incremental failure evidence.
+It publishes each raw arm before post-generation validation, preserving tokens
+and measurements when that validation fails. Ordinary baseline artifacts now
+record checkpoint identity plus separate runtime and harness fingerprints, and
+verify that both source sets remain unchanged. The generic comparison names
+both arms as FlashNext paths rather than calling one an untouched stock model.
+
+Paired reporting now uses an exact two-sided sign test. It removes ties from
+the effective sample, reports them explicitly, and distinguishes improvement
+from regression instead of treating an all-loss sequence as `p=1` evidence
+that the pairs do not separate.
+
+Pin history now records checkpoint identity and tensor-derived quantization
+layouts for the normal reference path. The loader, MTP path, and pin-profile
+validation share the same inference helper, including layer-specific checks
+for mixed-layout exports. Prewarm validates provenance, plans the complete
+request against its budget before pinning rows, and ignores stale slab history.
+
+We ran no checkpoint inference or performance benchmark during this repair.
+The non-model suites pass 251 `macqwen` tests and 323 FlashNext tests, including
+56 focused Metal/runtime and slab checks.
+
+A later manual G64 quality attempt was interrupted before either sampled arm
+produced a final answer. It is an incomplete gate, not a quality failure or a
+comparison result. The G64 arm's visible reasoning incorrectly questioned
+whether the Portuguese prompt was Spanish; we retain that only as a diagnostic
+observation. Because the two sampled processes did not share an explicit RNG
+seed, the transcript does not by itself isolate the Metal executor as the
+cause. Interactive chat now accepts `--seed`; future paired quality arms must
+use the same explicit seed.
+
+We then ran one deliberately short fixed-seed check rather than repeating the
+full quality gate. Reference and G64 used the same prompt, `xhigh`, normal
+sampling, seed 42, and a 32-token total limit. Seed 42 remains a known
+regression case, not a representative quality seed. Both produced digest
+`956631b20cf2b294e4ddb07cee1ada16aa12b576c5d4779de521cc2446568cd0` and
+the same visible opening, including the mistaken question about answering in
+Chinese. All 32 tokens remained inside reasoning and neither arm produced an
+answer. This clears only short sampled-trajectory equality: it attributes the
+observed opening to the shared model trajectory rather than a G64 divergence,
+but it does not clear either model quality or the long-turn G64 gate. The
+single-pair rates, 2.258 versus 2.260 tok/s, are not performance evidence.
+
+### Future G64 quality comparison retained from Astra's recommendation
+
+The next G64 comparison remains future work. We predeclare exactly three seeds,
+7, 19, and 73, and pair the existing Metal runtime with G64 off versus the
+experimental G64 executor on. Both arms keep slabs and stream-pack off:
+`FLASHNEXT_SLAB=0`, `FLASHNEXT_SLAB_GLOBAL=0`, `FLASHNEXT_SLAB_PACK=0`,
+`FLASHNEXT_SLAB_G64=0`, and `FLASHNEXT_STREAM_PACK=0`. We alternate arm order
+between rounds, hold the checkpoint, prompt, template, sampler, effort, and
+token allowance fixed, and require both arms to produce completed outputs.
+The comparison is blind to arm labels when we score the complete SketchUp
+`.rb` artifact: it must load and function, extrude multiple faces to the
+user-defined height, and use the real SketchUp API correctly. We do not claim a
+quality or speed result until all three paired seeds complete those checks.
+
+### Quality-preserving speed opportunities, inspection only
+
+The strongest new long-context candidate is removing repeated QSA indexer
+work. The installed `mlx_vlm` implementation recomputes pooled, normalized,
+and rotary-transformed keys for every completed context block on later calls,
+although completed blocks ordinarily do not change. We can independently test:
+
+1. caching completed pooled indexer keys and computing only newly completed
+   blocks; and
+2. using the existing scatter-based mask construction for decode while
+   preserving the same selected tokens and attention calculation.
+
+The current decode mask logically compares 512 selected blocks with every
+context position. At 32K context that is a 512 by 32K boolean intermediate,
+or 16 MiB per QSA layer before implementation-level fusion. This stays below
+the current 512 MiB safety threshold, so the guard does not choose the bounded
+path. These changes remove redundant work rather than approximate the model.
+They still require exact-output coverage for partial blocks, cache trimming,
+session restore, and position handling. We have measured no speed gain, and a
+short-context benchmark may show little effect.
+
+Inspection sources are the installed
+`mlx_vlm/models/qwen4_exp/language.py` indexer and our
+`models/flashnext/qsa_chunk.py` bounded-mask implementation.
+
+The next G64 question is the existing corrected executor, not another kernel
+rewrite. Its projections already run through the experimental Metal path while
+weighted reduction and shared-output addition remain in MLX to preserve
+rounding. After the long-turn correctness gate, compare this path against the
+generic REAP reference with packed residency off in both arms. Do not combine
+kernel execution and memory-policy changes, and do not reopen fused-down work
+before measuring the existing executor.
+The retained implementation is in `models/flashnext/metal_runtime.py`.
+
+Residency remains a measured memory-policy question. The recovered REAP
+records report about 3.95 to 4.06 GB of ordinary expert pins and 0.11 to 0.18
+seconds for the pin operation in a 32-token arm. Removing that operation alone
+would account for only about 1% to 2% of those diagnostic runs. A material gain
+must instead improve memory allocation, physical reads, or sustained decode.
+A bounded REAP comparison of 32 versus 8 pinned experts remains eligible if it
+keeps routes, scores, arithmetic, checkpoint, and packed residency unchanged.
+Adopt the smaller set only when controlled evidence shows lower physical reads
+or better sustained throughput.
+The recovered evidence remains at
+`~/.cache/flashnext/reap-baseline-20260905/chat-pin-memory-recovered-20260908-105036.json`.
+
+For prompts of at most 2,048 tokens, prefill still computes vocabulary logits
+for every prompt position even though ordinary generation consumes only the
+last row. The last-row-only path already protects larger prompts. Extending it
+to smaller prompts is primarily a time-to-first-token and temporary-memory
+candidate, especially after tool results; it is not a steady-state decode
+claim. Because changing matrix shapes can select different numerical kernels,
+the gate must compare the exact final logits.
+The existing threshold and last-row-only path are in
+`models/flashnext/prefill.py`.
+
+Priority order is QSA redundant-work elimination for long conversations, then
+the existing G64 executor comparison, followed by the bounded REAP residency
+comparison. The last-row-only prefill change is independent and should be
+reported as prefill latency. Do not reopen generic prefetch, worker-count
+sweeps, n-gram LRU caching, speculative decoding, or broad projection fusion
+without a new premise.
+
+For scale only, not as a forecast, improving the observed 3.74 tok/s sanity
+rate to 4 tok/s requires about 17 ms/token of real removed work; reaching
+5 tok/s requires about 67 ms/token. We have not yet measured that removable
+work in any candidate above.
 
 ### Native prototype audit note
 
@@ -44,15 +207,19 @@ rate was 3.45 tok/s, physical reads were 193.3 MB/token, and every arm produced
 digest `1a9abb4b5fdc523a`. This is a sanity check, not a statistical promotion;
 it does not promote G64 or change the MLX control.
 
-## Current status, 2026-09-04
+## Historical status, 2026-09-04
 
-The current FlashNext runtime uses 60 skew-selected slots, file-backed slab storage, the SIMD Q4/G32 Metal MoE path, scratch-free fused-down accumulation, shared-output fusion, Up-QMV/SwiGLU, chunk 2, and 16 I/O workers.
+At that time, the FlashNext runtime used 60 skew-selected slots, file-backed
+slab storage, the SIMD Q4/G32 Metal MoE path, scratch-free fused-down
+accumulation, shared-output fusion, Up-QMV/SwiGLU, chunk 2, and 16 I/O workers.
 
 The controlled 60-slot Frontier 8A profile measures 3.08 tok/s generation, 3.00 tok/s tail, and 279.7 MB/token. The corrected decode-only 16-worker control measures 3.13 tok/s generation, 3.04 tok/s tail, and 262.0 MB/token. The accepted clean-boot baseline remains 2.83 tok/s.
 
 The isolated custom Q4 kernel is bit-identical and 3.5% to 4.4% faster on production shapes. The complete-model comparison remains unresolved inside a 7.8% resolution band. Issues #24, #25, #43, #45, #48, and #49 remain open. Issue #23 remains the bit-exact RMSNorm compile gate.
 
-Later corrections supersede earlier interpretations. Historical tables remain evidence. Use this section and the final resume section for active decisions.
+Later corrections supersede these interpretations. Historical tables remain
+checkpoint-specific evidence. Use the operational correction and the final
+REAP sections for active decisions.
 
 ## Original chronological record
 
@@ -1498,9 +1665,7 @@ The wide run was much noisier than the earlier swap comparison. Standard deviati
 The gate exists because oQ3-MTP was adopted on speed and failed a code task. Cache-aware was in the same position: a rate and a byte count, no code test. This is that test. The prompt, verbatim, is the one oQ4 exact-quality passed earlier:
 
 ```text
-crie uma extensao para sketchup que extrude varias faces ao mesmo tempo ate
-uma altura definida pelo usuario. produza o codigo para eu salvar em um
-arquivo .rb
+crie uma extensão para sketchup que extrude várias faces ao mesmo tempo até uma altura definida pelo usuário. produza o código para eu salvar em um arquivo .rb
 ```
 
 Both runs used oQ4, `effort xhigh`, thinking on, `think_budget` off, same machine, same day, and greedy decoding.
@@ -3769,10 +3934,12 @@ All 47 eligible candidate layers report custom Metal execution. Evidence:
 Both runs retain unchanged source fingerprints. The independent pair is a
 correctness check, not a performance comparison.
 
-## G64 held out of normal chat after quality report, 2026-09-08
+## G64 held out of normal chat after incomplete quality attempt, 2026-09-08
 
 We set `FLASHNEXT_METAL_G64=0` in the normal `chat.sh` environment after a
-long agent turn returned incomplete, placeholder-filled SketchUp code.
+long agent turn was interrupted before a completed answer and returned
+incomplete, placeholder-filled SketchUp code. This is an incomplete quality
+gate, not a quality failure.
 `FLASHNEXT_SLAB_G64` remains `0`. Set `FLASHNEXT_METAL_G64=1` only when
 comparing the experimental kernel against reference chat behavior.
 

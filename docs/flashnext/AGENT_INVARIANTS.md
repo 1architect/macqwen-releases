@@ -9,10 +9,15 @@ changes or experiments.
 - Keep the canonical control path unchanged unless a measured result promotes
   an opt-in path.
 - Make every optimization opt-in until it passes the promotion rules below.
-- Preserve two controls. The historical control is 60 skew slots with
-  Frontier 8A and Up-QMV-to-SwiGLU off. The current runtime control uses the
-  same settings with Up-QMV-to-SwiGLU on, following our decision.
-- Keep Frontier 8B and streamed expert-major records disabled by default.
+- `chat.sh` defaults to the MLX-backed Metal runtime. For REAP Q4/G64, keep
+  generic MLX expert execution unless `FLASHNEXT_METAL_G64=1` explicitly opts
+  into the experimental executor.
+- Preserve the generic MLX Q4/G64 path as the current REAP control. The
+  60-slot Q4/G32 Frontier 8A profiles are checkpoint-specific historical
+  controls and must not be presented as the current REAP runtime.
+- Keep the G64 Metal executor, G64 packed residency, Frontier 8B, and streamed
+  expert-major records disabled by default. G64 slabs and stream-pack stay off
+  with `FLASHNEXT_SLAB_G64=0` and `FLASHNEXT_STREAM_PACK=0`.
 - Preserve the exact token digest. Any digest change rejects the optimization.
 - Preserve BF16 rounding boundaries. A small numerical difference is not an
   acceptable quality result.
@@ -43,6 +48,12 @@ callbacks, or context managers when disabled.
   direct compressor, pageout, reclaim, or swap measurements.
 - Do not rank separate same-boot boundary probes by absolute time when their
   physical-read states differ.
+- Do not infer heat, application interference, or immunity from drift from an
+  elapsed-time correlation. Interleaving mitigates order bias but does not
+  establish a cause or eliminate confounding.
+- Limit negative performance conclusions to the checkpoint, hardware, and
+  controls actually measured. A rejected sweep is not a universal
+  impossibility result.
 
 ## Experiment invariants
 
@@ -52,6 +63,12 @@ callbacks, or context managers when disabled.
   benchmark preparation.
 - Performance work uses greedy decoding and exact digests. We perform
   final quality evaluation through `chat.sh` with sampling and `xhigh` effort.
+- The future paired G64 quality comparison predeclares seeds 7, 19, and 73,
+  alternates G64-off and G64-on order, and keeps slabs and stream-pack off.
+  Require completed outputs and score the complete SketchUp `.rb` artifact
+  blind to arm labels. Seed 42 is a known regression case, not a
+  representative quality seed. An interrupted generation is an incomplete
+  gate, not a quality failure.
 
 Every optimization experiment must:
 
@@ -93,15 +110,20 @@ enablement, promotion, and defaults.
 
 ## Current next-work order
 
-1. With our approval, rerun the corrected decode-only Section 17 control.
-2. Then sweep worker-pool width using the Section 17
-   instrumentation. Use the same reads and report queue residence,
-   positioned-read time, total I/O wait, physical MB/token, and generation.
-3. Test one task per expert only if the worker sweep supports a scheduling or
-   queue hypothesis. Keep all other topology variables fixed.
-4. Calibrate the 48-slot core, then run the offline physical-miss ceiling gate.
-   Do not run the hybrid model comparison below 20 MB/token predicted saving.
-5. Keep both 60-slot Frontier 8A controls frozen. Historical has Up fusion
-   off. Current runtime has Up fusion on.
+1. Keep the generic MLX Q4/G64 path as the REAP control.
+2. Validate long and cached behavior on that control.
+3. Complete the cached tool-result QSA/prefill check, then test completed-block
+   QSA key caching and the existing scatter mask separately; claim no speed
+   gain until measured.
+4. Run the existing paired G64 comparison under the predeclared-seed,
+   completed-output protocol before considering executor promotion.
+5. Compare 32 versus 8 REAP expert pins without changing routes or arithmetic.
+6. Evaluate last-row-only prefill below 2,048 tokens as a TTFT/memory change.
+7. Profile the current reference path before deciding whether another
+   checkpoint-specific G64 kernel experiment is worthwhile.
+
+The completed worker and topology experiments remain historical evidence. Do
+not prescribe or repeat them without a new, checkpoint-specific premise and
+our explicit approval.
 
 Do not run benchmarks, sweeps, or tests without our explicit permission.

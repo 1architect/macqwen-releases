@@ -58,16 +58,29 @@ Do not use greedy benchmark output for chat-quality conclusions.
 Use a quality gate when a change can alter model output.
 This includes checkpoints, routing, quantization, speculation, and approximations.
 
-The retained gate requests a SketchUp extension that extrudes selected faces.
-The extension must request a height and load as a `.rb` file.
+Use this exact prompt for every retained quality-gate arm:
+
+```text
+crie uma extensão para sketchup que extrude várias faces ao mesmo tempo até uma altura definida pelo usuário. produza o código para eu salvar em um arquivo .rb
+```
 
 Run the gate at `medium` and `high` effort with sampling enabled.
-Use identical settings for both conditions.
+Use identical settings and the same explicit `--seed` for both conditions.
 Add `xhigh` when the change can affect long reasoning.
 
 Check the complete file, not only the named API method.
 The recorded oQ3-MTP test used `pushpull` with an invalid second argument.
 The oQ4 checkpoint produced a working file in the same test.
+
+For the pending REAP G64 comparison, we retain Astra's recommendation: we
+predeclare seeds 7, 19, and 73, pair the MLX-backed Metal runtime G64-off
+versus G64-on, and alternate arm order. We keep slabs and stream-pack off in
+both arms. We score the completed SketchUp `.rb` outputs blind to arm labels
+using functional criteria: the file must load, use the correct SketchUp API,
+extrude multiple faces, and honor the user-defined height. Seed 42 is a known
+regression case, not a representative quality seed. An interrupted generation
+is an incomplete gate, not a quality failure, and cannot be scored as a
+completed answer.
 
 ## Repository rules
 

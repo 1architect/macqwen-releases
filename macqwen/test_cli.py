@@ -38,6 +38,21 @@ class LauncherTests(unittest.TestCase):
                 _command, child_env = cli.command(["--model", "flashnext"])
         self.assertEqual(child_env["FLASHNEXT_SLAB_GLOBAL"], "56")
 
+    def test_explicit_metal_runtime_opt_out_wins(self):
+        with tempfile.TemporaryDirectory() as root:
+            python = Path(root, "python")
+            python.touch()
+            with patch.dict(
+                os.environ,
+                {
+                    "MACQWEN_FLASHNEXT_PYTHON": str(python),
+                    "FLASHNEXT_METAL_RUNTIME": "0",
+                },
+                clear=False,
+            ):
+                _command, child_env = cli.command(["--model", "flashnext"])
+        self.assertEqual(child_env["FLASHNEXT_METAL_RUNTIME"], "0")
+
     def test_warns_when_branch_does_not_include_known_main(self):
         stale = subprocess.CompletedProcess([], 1, stdout="", stderr="")
         branch = subprocess.CompletedProcess(
@@ -77,10 +92,14 @@ class LauncherTests(unittest.TestCase):
             python = Path(root, "python")
             python.touch()
             with patch.dict(os.environ, {"MACQWEN_FLASHNEXT_PYTHON": str(python)}, clear=False):
-                command, _ = cli.command(["--model", "flashnext", "--profile", "agent"])
+                command, _ = cli.command([
+                    "--model", "flashnext", "--profile", "agent",
+                    "--seed", "17",
+                ])
         self.assertEqual(command[2], str(python))
         self.assertIn("flashnext", command)
         self.assertIn("agent", command)
+        self.assertEqual(command[-2:], ["--seed", "17"])
 
     def test_flashnext_forwards_checkpoint_alias(self):
         with tempfile.TemporaryDirectory() as root:

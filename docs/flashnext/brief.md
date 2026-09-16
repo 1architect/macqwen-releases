@@ -22,13 +22,16 @@ quality section below.
 
 REAP compatibility accepts both n-gram shard naming conventions, selects the
 RMSNorm convention per model, sanitizes mixed Conv1d layouts, and filters stale
-expert IDs from old pin history. Q4/G64 uses streamed expert weights with the
-canonical MLX path; the G64 Metal executor is closed for normal chat. Packed
-G64 slabs remain disabled.
+expert IDs from old pin history. `chat.sh` defaults to the MLX-backed Metal
+runtime. REAP Q4/G64 uses streamed expert weights through generic MLX unless
+the experimental G64 executor is explicitly enabled with
+`FLASHNEXT_METAL_G64=1`. G64 slabs and stream-pack remain disabled.
 
-The corrected 32-token G64 equality gate passes, but the long-turn SketchUp
-quality gate failed. REAP speed, quality, and packed-residency results remain
-unpromoted.
+The corrected 32-token G64 equality gate passes. The available long-turn
+SketchUp attempt was interrupted before a completed answer and used an
+enlarged `xhigh` allowance; it is an incomplete gate, not a quality failure.
+REAP speed, quality, and packed-residency results remain unpromoted, and the
+attempt neither promotes nor disproves the experimental G64 architecture.
 
 The runtime saves an explicit `--checkpoint` choice and otherwise selects the sole complete compatible local checkpoint.
 
@@ -40,9 +43,11 @@ The loader replaces large tensors before MLX materializes them. It streams selec
 
 The dense model core stays resident.
 
-## oQ4 results
+## Historical oQ4 results
 
-These are the current measurements. The oQ3-MTP sweep finished: it failed the trajectory gate, so oQ4 stayed.
+These retained measurements are from the compatible oQ4/Q4/G32 runtime. They
+do not describe REAP Q4/G64 performance. The oQ3-MTP sweep finished: it failed
+the trajectory gate, so oQ4 stayed as the recorded quality baseline.
 
 - Baseline resident memory was about 4.19 GB on the tested M4 Mac.
 - Load time was about 2.1 seconds.
@@ -77,7 +82,8 @@ long-context comparison stayed coherent, but the exact-quality answer was better
   `gather_qmm`. It recovers about 4.16 ms and measures 13 to 16 ms of expert
   gather. Issue #23 is open again for the corrected zero-drive RMSNorm gate.
 - A 12-arm test gives `buffer-chunk2` a resolved 6.3% generation gain over the
-  concatenate path. Token IDs match and physical bytes fall. Issue #26 is
+  concatenate path. Token IDs match and physical bytes fall. This is a
+  historical Q4/G32 result; it does not claim a REAP gain. Issue #26 is
   closed.
 - The Metal trace measured about 149 ms of GPU execution and 257 ms of drive
   reading in one state. A later clean-boot comparison measured 182.5 ms GPU
@@ -106,14 +112,14 @@ long-context comparison stayed coherent, but the exact-quality answer was better
 - A controlled RMSNorm compile is bit-exact and 1.7% faster at zero drive, but
   remains unresolved in production. Keep it disabled by default.
 
-## Current runtime and speed
+## Historical Q4/G32 runtime and speed
 
-The current FlashNext runtime enables a custom SIMD Q4/G32 Metal MoE executor,
+The compatible Q4/G32 runtime enables a custom SIMD Metal MoE executor,
 60 skew-selected slab slots, file-backed slab storage, shared-output fusion,
 and Up-QMV/SwiGLU fusion. The active settings remain opt-in until each result
 passes the promotion rules in the handoff.
 
-The current controlled 60-slot Frontier 8A profile with Up-QMV/SwiGLU measures
+The historical controlled 60-slot Frontier 8A profile with Up-QMV/SwiGLU measures
 3.08 tok/s generation, 3.00 tok/s tail, and 279.7 MB/token. The corrected
 decode-only 16-worker control measures 3.13 tok/s generation, 3.04 tok/s tail,
 and 262.0 MB/token. These results use newer runtime paths and separate control
@@ -149,21 +155,28 @@ Use a similar code task for each checkpoint gate.
 
 ## Revised performance direction
 
-Three open fronts remain for the unexplained GPU cost:
+Our leading quality-preserving candidate is eliminating repeated QSA work in
+long conversations: cache completed pooled indexer keys and separately test the
+existing scatter-based decode mask. Neither path has a measured speed result.
 
-- Finish the pre-load `wired_limit` comparison in issue #43. The standalone
-  2 GB result was 13.5% faster, but the live post-load result was -0.4% inside
-  a 7.6% band. Do not treat the standalone result as a gain.
-- Isolate Metal barrier and fence cost under mixed residency in issue #45.
-  The source proves the barriers and fences, but not their SSD-DMA cost.
-- Change the physical expert working set with Q4/G64/G128 and REAP-288 in
-  issues #24 and #25. Measure physical bytes and GPU span.
+The next G64 comparison is future work only. Following Astra's recommendation,
+we will predeclare seeds 7, 19, and 73, pair the MLX-backed Metal runtime
+G64-off versus G64-on, alternate arm order, and keep slabs and stream-pack off
+in both arms. We will score completed outputs blind to arm labels against the
+functional SketchUp `.rb` criteria. Seed 42 is a known regression case from a
+short equality check, not a representative quality seed. Interrupted
+generations are incomplete gates, not quality failures.
 
-The clean-boot baseline is 2.83 tok/s. The practical target is about 20 ms per
-token, from about 353 to 333 ms. The revised assessment gives high confidence
-that no simple 50 to 100 ms Python or high-level MLX hotspot remains, good
-confidence that the hump is real, moderate confidence that Metal scheduling is
-involved, and low probability of recovering the full roughly 80 ms.
+Next, evaluate the corrected G64 executor already present, with packed
+residency disabled in both arms. Residency is a separate policy question: a
+REAP-specific 32-versus-8 pin comparison must preserve routing and arithmetic
+and win on physical reads or sustained throughput. Extending last-row-only
+logits below the current 2,048-token threshold is a prefill latency and memory
+candidate, not a decode claim.
+
+Moving the 3.74 tok/s REAP sanity observation to 4 tok/s requires about
+17 ms/token of actual removed work; 5 tok/s requires about 67 ms/token. These
+figures are scale calculations, not forecasts or measured gains.
 
 ## Routing profiles
 
@@ -180,8 +193,11 @@ Threshold `1.0` keeps the shipped router selection.
 
 ## Status
 
-The text runtime, six routing profiles, exact sessions, and shared chat integration are active. Cache-aware is optional. The production
-backend keeps the included MTP weights disabled. Current performance work is
-tracked by issues #23 through #25, #43, #45, and #48. Issue #49 tracks FlashNext
-prefill on open for both chat profiles. Issues #21, #22, #26 through #27, and
-#41 through #42 are closed.
+The text runtime, six routing profiles, exact sessions, and shared chat
+integration are active. `chat.sh` keeps the REAP control on generic MLX Q4/G64
+expert execution through the MLX-backed Metal runtime; the experimental G64
+executor, G64 slabs, and stream-pack remain off. Cache-aware is optional, and
+the production backend keeps the included MTP weights disabled. REAP quality
+and speed remain open. The QSA cache/mask, existing G64 comparison, 32-versus-8
+residency comparison, and last-row-only prefill extension are future
+opportunities; we claim no speed gain for them.

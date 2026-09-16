@@ -4,8 +4,8 @@ from __future__ import annotations
 
 CHAT_ENV = {
     "FLASHNEXT_METAL_RUNTIME": "1",
-    # The short G64 equality gate passed, but the long-turn SketchUp quality
-    # gate failed. Keep G64 closed for normal chat until that gate passes.
+    # The short G64 equality gate passed. The available long-turn run was
+    # confounded by an enlarged xhigh budget, so it cannot promote G64.
     "FLASHNEXT_METAL_G64": "0",
     "FLASHNEXT_SLAB_G64": "0",
     "FLASHNEXT_SLAB": "0",

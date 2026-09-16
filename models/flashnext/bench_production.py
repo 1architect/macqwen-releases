@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """The standard production benchmark. One protocol, comparable numbers.
 
-Decode rate on this machine spans about 21 percent on identical code,
-depending on how much of the checkpoint the page cache holds. Free memory
-correlates with rate at -0.84: more free memory means a colder cache and a
-slower run. A rate published without its physical read volume therefore
-cannot be compared against another rate, and a two-arm A/B cannot resolve
-anything.
+Decode rate on this machine varies with checkpoint residency and other
+conditions. A rate published without its physical read volume therefore
+cannot be compared against another rate, and a single two-arm A/B is not
+enough to resolve an effect.
 
 This harness enforces the protocol:
 
-* alternates conditions so drift hits every arm equally,
-* discards the first arms of each condition, which run on a cold cache,
+* alternates conditions to reduce ordering bias without assuming that drift
+  affects every arm equally,
+* discards the first arms of each condition, which establish the initial
+  cache state,
 * stops as soon as the median settles, instead of running a fixed count. The
-  machine is fanless. A long run heats it, the clock drops, and the extra
-  arms buy noise rather than confidence,
+  machine is fanless, and a longer run can introduce changing conditions;
+  extra arms buy noise rather than confidence,
 * records every arm with the seconds since the run began, and reports the
-  correlation between rate and elapsed time. A strongly negative one means
-  the run measured thermal decay, not the change under test,
+  correlation between rate and elapsed time as a drift diagnostic. The
+  correlation does not identify its cause or make the comparison immune to
+  environmental changes,
 * reports median and range, never a bare mean,
 * reports physical MB per token beside every rate,
 * asserts identical token IDs across arms, so a changed runtime cannot pass
@@ -37,9 +38,12 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import atexit
 import gc
+import hashlib
 import json
 import os
+from pathlib import Path
 import statistics as st
 import sys
 import tempfile
@@ -49,6 +53,161 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 PROMPT = ("<|im_start|>user\nExplique a fotossintese em duas frases."
           "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
+
+# A benchmark can stop before its final summary (for example, when an arm
+# changes the token trajectory). Keep a small, JSON-serializable snapshot
+# alive so the process can publish that failure from ``atexit``. The parent
+# benchmark does not load a model merely by importing this module.
+_ACTIVE_EVIDENCE = None
+
+
+def write_evidence(path, payload: dict) -> None:
+    """Atomically write benchmark evidence, including incomplete runs."""
+    from pathlib import Path
+
+    target = Path(path).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=target.parent, prefix=f".{target.name}.",
+            suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = handle.name
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
+def _flush_incomplete_evidence() -> None:
+    state = _ACTIVE_EVIDENCE
+    if state is None:
+        return
+    payload = state["payload"]
+    if payload.get("status") != "running":
+        return
+    payload["status"] = "failed"
+    payload.setdefault("failure", {
+        "type": "incomplete_exit",
+        "message": "benchmark exited before producing a complete summary",
+    })
+    try:
+        current = runtime_source_fingerprints()
+        payload["source_fingerprints_at_failure"] = current
+        expected = payload.get("source_fingerprints")
+        if expected is not None and current != expected:
+            payload["source_changed"] = True
+    except (OSError, TypeError, ValueError):
+        pass
+    try:
+        write_evidence(state["path"], payload)
+    except OSError:
+        # Never hide the original benchmark error while trying to save its
+        # evidence. A best-effort write is still useful for normal paths.
+        pass
+
+
+def _record_terminal_failure(error: BaseException) -> None:
+    """Persist the exception that stopped a command-line benchmark."""
+    state = _ACTIVE_EVIDENCE
+    if state is None:
+        return
+    payload = state["payload"]
+    payload["status"] = "failed"
+    terminal_failure = {
+        "type": type(error).__name__,
+        "message": str(error) or "benchmark terminated before completion",
+    }
+    # A validation path can persist a specific failure (for example,
+    # ``token_mismatch``) and then raise SystemExit. Keep that causal record;
+    # replacing it here with the wrapper's generic exception loses the useful
+    # evidence that the artifact was designed to preserve.
+    if not isinstance(payload.get("failure"), dict):
+        payload["failure"] = terminal_failure
+    elif payload["failure"].get("type") in {None, "incomplete_exit"}:
+        payload["failure"] = terminal_failure
+    else:
+        payload["terminal_failure"] = terminal_failure
+    try:
+        current = runtime_source_fingerprints()
+        payload["source_fingerprints_at_failure"] = current
+        expected = payload.get("source_fingerprints")
+        if expected is not None and current != expected:
+            payload["source_changed"] = True
+    except (OSError, TypeError, ValueError):
+        pass
+    try:
+        write_evidence(state["path"], payload)
+    except OSError:
+        pass
+
+
+atexit.register(_flush_incomplete_evidence)
+
+
+def effective_chat_environment(process_environment=None) -> dict[str, str]:
+    """Return normal-chat defaults while preserving explicit overrides."""
+    from models.flashnext.settings.launch import CHAT_ENV
+
+    source = os.environ if process_environment is None else process_environment
+    environment = dict(CHAT_ENV)
+    for key in CHAT_ENV:
+        if key in source:
+            environment[key] = str(source[key])
+    return environment
+
+
+def benchmark_harness_fingerprint(path=None) -> str:
+    """Hash this benchmark harness separately from the model runtime."""
+    source = Path(path or __file__).expanduser().resolve()
+    digest = hashlib.sha256(b"flashnext-production-benchmark-v1")
+    digest.update(source.name.encode("utf-8") + b"\0")
+    digest.update(hashlib.sha256(source.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def runtime_source_fingerprints() -> dict[str, str]:
+    """Return fingerprints for the complete runtime and benchmark harness."""
+    from models.flashnext.bench_chat_parity import source_fingerprint
+
+    return {
+        # The shared helper covers local Python/Metal runtime sources and
+        # dependencies used by the FlashNext chat path. It intentionally
+        # excludes bench_* files, so the production harness is recorded below.
+        "runtime": source_fingerprint(),
+        "benchmark": benchmark_harness_fingerprint(),
+    }
+
+
+def benchmark_provenance(checkpoint) -> dict:
+    """Return provenance that applies to every production benchmark arm.
+
+    The checkpoint identity only reads its config/index and shard metadata;
+    it never opens model tensors.  ``source_fingerprint`` is the shared
+    FlashNext runtime fingerprint used by the chat-parity harness and covers
+    the local Python/Metal runtime sources.  Keep both the descriptive name
+    and the historical alias in artifacts so old evidence remains readable.
+    """
+    from models.flashnext.slab_pack import checkpoint_identity
+
+    checkpoint_path = Path(checkpoint).expanduser().resolve()
+    fingerprints = runtime_source_fingerprints()
+    runtime_fingerprint = fingerprints["runtime"]
+    identity = checkpoint_identity(checkpoint_path)
+    return {
+        "checkpoint": str(checkpoint_path),
+        "checkpoint_identity": str(identity),
+        "runtime_source_fingerprint": runtime_fingerprint,
+        "source_fingerprint": runtime_fingerprint,
+        "benchmark_source_fingerprint": fingerprints["benchmark"],
+        "source_fingerprints": fingerprints,
+    }
 
 # These comparisons change routed experts and can change the token trajectory.
 # They need a separate quality interpretation when their digests differ.
@@ -128,8 +287,16 @@ COMPARISONS = {
         "one-sync": {"FLASHNEXT_ONE_SYNC": "1"},
     },
     "metal-runtime": {
-        "stock": {"FLASHNEXT_METAL_RUNTIME": "0", "FLASHNEXT_SLAB": "0"},
-        "custom": {"FLASHNEXT_METAL_RUNTIME": "1", "FLASHNEXT_SLAB": "0"},
+        # This is an MLX reference versus the opt-in custom executor on a
+        # Q4/G32 checkpoint. It is intentionally not called "stock": both
+        # arms are FlashNext and a Q4/G64 checkpoint would route both arms to
+        # MLX while the guarded G64 flag remains disabled.
+        "mlx-reference": {
+            "FLASHNEXT_METAL_RUNTIME": "0", "FLASHNEXT_SLAB": "0",
+        },
+        "custom-runtime": {
+            "FLASHNEXT_METAL_RUNTIME": "1", "FLASHNEXT_SLAB": "0",
+        },
     },
     "g64-kernel": {
         "g64-reference": {
@@ -389,6 +556,9 @@ LOAD_TIME_SETTINGS = {
     "FLASHNEXT_METAL_G64",
     "FLASHNEXT_SLAB_G64",
     "FLASHNEXT_SLAB_PACK",
+    # Each arm gets a fresh backend so stale executor objects from the other
+    # arm cannot make a live flip look like a distinct runtime comparison.
+    "FLASHNEXT_METAL_RUNTIME",
 }
 
 
@@ -482,6 +652,82 @@ def check_g64_kernel_checkpoint(checkpoint: str) -> dict:
     return {"status": g64_kernel_status(), "capability": capability}
 
 
+def check_metal_runtime_checkpoint(checkpoint: str) -> dict:
+    """Require a checkpoint on which the two runtime arms can differ.
+
+    The generic custom executor currently has a Q4/G32 production contract.
+    Q4/G64 remains behind its separate guarded comparison. Running the
+    generic runtime comparison against Q4/G64 with that guard off would make
+    both arms use MLX and would report an invalid A/A result.
+    """
+    from models.flashnext.bench_chat_parity import checkpoint_runtime_capability
+
+    capability = checkpoint_runtime_capability(checkpoint)
+    if capability.get("group_size") != 32:
+        raise SystemExit(
+            "metal-runtime requires a Q4/G32 checkpoint so its custom arm "
+            "has a distinct executor; the selected checkpoint is "
+            f"Q4/G{capability.get('group_size')} (use g64-kernel for the "
+            "separate guarded experiment)"
+        )
+    return capability
+
+
+def inspect_metal_runtime(backend, enabled: bool, phase: str = "after") -> dict:
+    """Verify the actual generic Metal executor path for one benchmark arm."""
+    switch_layers = 0
+    capable_layers = 0
+    paths = set()
+    executor_layers = set()
+    executor_count = 0
+    group_sizes = set()
+    for layer_index, layer in enumerate(backend.language.model.layers):
+        switch = getattr(getattr(layer, "mlp", None), "switch_mlp", None)
+        if switch is None:
+            continue
+        switch_layers += 1
+        if getattr(switch, "metal_runtime_capable", False):
+            capable_layers += 1
+        for projection in (
+            getattr(switch, "gate_proj", None),
+            getattr(switch, "up_proj", None),
+            getattr(switch, "down_proj", None),
+        ):
+            if projection is not None and hasattr(projection, "group_size"):
+                group_sizes.add(int(projection.group_size))
+        executors = getattr(switch, "_metal_executors", {})
+        executor_count += len(executors)
+        if executors:
+            executor_layers.add(layer_index)
+        paths.update(
+            getattr(executor, "last_path", "unknown")
+            for executor in executors.values()
+        )
+    state = {
+        "enabled": bool(enabled),
+        "switch_layers": switch_layers,
+        "capable_layers": capable_layers,
+        "group_sizes": sorted(group_sizes),
+        "executor_count": executor_count,
+        "executor_layers": sorted(executor_layers),
+        "paths": sorted(paths),
+    }
+    if switch_layers != 48:
+        raise SystemExit(f"invalid FlashNext layer count: {state}")
+    if enabled and capable_layers != switch_layers:
+        raise SystemExit(
+            "custom Metal runtime was requested but the checkpoint has no "
+            f"executor capability on every routed layer: {state}"
+        )
+    expected_paths = {"custom-metal"} if enabled and phase != "before" else set()
+    if set(state["paths"]) != expected_paths:
+        raise SystemExit(f"invalid generic Metal executor paths: {state}")
+    expected_layers = set(range(1, 48)) if expected_paths else set()
+    if set(state["executor_layers"]) != expected_layers:
+        raise SystemExit(f"incomplete generic Metal executor coverage: {state}")
+    return state
+
+
 def apply_condition(backend, env: dict) -> None:
     """Make a condition real on a live backend, then prove it took."""
     for key, value in env.items():
@@ -509,7 +755,9 @@ def check_load_time(env: dict, fresh_arms: bool) -> None:
         )
 
 
-def arm(backend, tokens, meter, run_began, condition=None):
+def arm(backend, tokens, meter, run_began, condition=None,
+        validate_metal_runtime: bool = False, on_raw_result=None,
+        provenance: dict | None = None):
     from models.flashnext.diskio import free_memory_mb
 
     free = free_memory_mb()
@@ -518,7 +766,11 @@ def arm(backend, tokens, meter, run_began, condition=None):
         # RoutingProfile.reset restores defaults. Apply the live condition at
         # the point where this arm starts, then validate its effective value.
         apply_condition(backend, condition)
-        if "FLASHNEXT_METAL_G64" in condition:
+        if validate_metal_runtime and "FLASHNEXT_METAL_RUNTIME" in condition:
+            inspect_metal_runtime(
+                backend, condition["FLASHNEXT_METAL_RUNTIME"] == "1", phase="before"
+            )
+        elif "FLASHNEXT_METAL_G64" in condition:
             inspect_g64_runtime(
                 backend, condition["FLASHNEXT_METAL_G64"] == "1", phase="before"
             )
@@ -537,44 +789,71 @@ def arm(backend, tokens, meter, run_began, condition=None):
     _text, stats = backend.generate(
         max_tokens=tokens, on_prefilled=on_prefilled
     )
-    if stats.tokens and not prefilled:
-        raise RuntimeError("backend did not report the prefill boundary")
-    if stats.tokens <= 0 or stats.rate <= 0:
-        raise RuntimeError(
-            f"generation produced no measurable tokens or rate: "
-            f"tokens={stats.tokens}, rate={stats.rate}"
-        )
     wall = time.perf_counter() - began
     read = meter.bytes_since()
-    if read < 0:
-        raise RuntimeError("physical read telemetry is unavailable")
-    ids = tuple(backend.tape[-stats.tokens:]) if stats.tokens else ()
-    tail = stats.tail_tokens / stats.tail_seconds if stats.tail_seconds else 0.0
-    state = None
-    if condition and "FLASHNEXT_METAL_G64" in condition:
-        state = inspect_g64_runtime(
-            backend, condition["FLASHNEXT_METAL_G64"] == "1"
-        )
+    generated_tokens = int(getattr(stats, "tokens", 0) or 0)
+    generated_rate = float(getattr(stats, "rate", 0.0) or 0.0)
+    ids = tuple(backend.tape[-generated_tokens:]) if generated_tokens else ()
+    tail_tokens = int(getattr(stats, "tail_tokens", 0) or 0)
+    tail_seconds = float(getattr(stats, "tail_seconds", 0.0) or 0.0)
+    tail = tail_tokens / tail_seconds if tail_seconds else 0.0
     active_mb = None
     try:
         import mlx.core as mx
         active_mb = float(mx.get_active_memory()) / 1e6
-    except (AttributeError, TypeError):
+    except (AttributeError, ImportError, TypeError):
         pass
-    return {
+
+    # Preserve the measurements before any post-generation validation.  In
+    # particular, inspect_* can reject a path after generation has produced
+    # useful tokens; the caller must still be able to write this raw arm.
+    raw = {
         "elapsed_s": time.perf_counter() - run_began,
-        "gen_tokens": stats.tokens,
-        "gen_rate": stats.rate,
+        "gen_tokens": generated_tokens,
+        "gen_rate": generated_rate,
         "tail_rate": tail,
-        "mb_per_token": read / stats.tokens / 1e6,
-        "pinned_gb": stats.pinned_bytes / 1e9,
+        "mb_per_token": (
+            read / generated_tokens / 1e6
+            if generated_tokens and read >= 0 else -1.0
+        ),
+        "pinned_gb": getattr(stats, "pinned_bytes", 0) / 1e9,
         "active_mb": active_mb,
-        "capable_layers": state["capable_layers"] if state else None,
-        "actual_path": state["paths"] if state else [],
+        "capable_layers": None,
+        "actual_path": [],
         "free_mb_before": free,
         "wall": wall,
         "ids": ids,
     }
+    if provenance:
+        raw.update(provenance)
+    if on_raw_result is not None:
+        on_raw_result(raw)
+
+    # Only after the raw snapshot is published do we reject malformed or
+    # incomplete measurements and validate the concrete executor path.
+    if generated_tokens and not prefilled:
+        raise RuntimeError("backend did not report the prefill boundary")
+    if generated_tokens <= 0 or generated_rate <= 0:
+        raise RuntimeError(
+            f"generation produced no measurable tokens or rate: "
+            f"tokens={generated_tokens}, rate={generated_rate}"
+        )
+    if read < 0:
+        raise RuntimeError("physical read telemetry is unavailable")
+    state = None
+    if validate_metal_runtime and condition and "FLASHNEXT_METAL_RUNTIME" in condition:
+        state = inspect_metal_runtime(
+            backend, condition["FLASHNEXT_METAL_RUNTIME"] == "1"
+        )
+    elif condition and "FLASHNEXT_METAL_G64" in condition:
+        state = inspect_g64_runtime(
+            backend, condition["FLASHNEXT_METAL_G64"] == "1"
+        )
+    raw.update({
+        "capable_layers": state["capable_layers"] if state else None,
+        "actual_path": state["paths"] if state else [],
+    })
+    return raw
 
 
 def settled(rates, window, tolerance) -> bool:
@@ -586,8 +865,8 @@ def settled(rates, window, tolerance) -> bool:
     return abs(now - before) / now < tolerance
 
 
-def thermal_drift(arms):
-    """Correlation between rate and seconds elapsed. Negative means heat."""
+def elapsed_rate_correlation(arms):
+    """Correlate rate with elapsed time without assigning a cause."""
     if len(arms) < 4:
         return 0.0
     xs = [a["elapsed_s"] for a in arms]
@@ -597,6 +876,12 @@ def thermal_drift(arms):
     num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
     den = (sum((x - mx) ** 2 for x in xs) * sum((y - my) ** 2 for y in ys)) ** 0.5
     return num / den if den else 0.0
+
+
+# Keep the old import name for small downstream diagnostics. New reports use
+# the neutral ``elapsed_rate_correlation`` field instead of calling this
+# measurement thermal drift.
+thermal_drift = elapsed_rate_correlation
 
 
 def report(name, arms, drop):
@@ -615,7 +900,7 @@ def report(name, arms, drop):
         "tail_median": round(st.median(tails), 3),
         "mb_per_token_median": round(st.median(mb), 1) if mb else -1.0,
         "free_mb_first": round(kept[0]["free_mb_before"], 0) if kept else -1,
-        "thermal_drift": round(thermal_drift(kept), 2),
+        "elapsed_rate_correlation": round(elapsed_rate_correlation(kept), 2),
         "arms": [
             {k: (round(v, 3) if isinstance(v, float) else v)
              for k, v in a.items() if k != "ids"}
@@ -670,13 +955,35 @@ def resolution_note(base, other, drop: int = 0) -> str:
     )
 
 
-def report_paired(results, drop: int = 0) -> None:
-    """Compare arm against arm, which cancels drift.
+def _two_sided_sign_p(diffs: list[float]) -> tuple[float, int, int, int]:
+    """Return an exact two-sided sign-test p-value and its pair counts.
 
-    Arms alternate, so the two conditions sit at the same point in the run.
-    Differencing each pair removes whatever the machine was doing at that
-    moment, including heat, and a sign test over the pairs needs no
-    assumption about the spread.
+    Zero differences are ties and do not contribute to the null distribution.
+    Keeping them out of the effective sample size avoids treating an exact tie
+    as either an improvement or a regression while still reporting it to the
+    caller.
+    """
+    from math import comb
+
+    wins = sum(1 for difference in diffs if difference > 0)
+    losses = sum(1 for difference in diffs if difference < 0)
+    ties = len(diffs) - wins - losses
+    total = wins + losses
+    if total == 0:
+        return 1.0, wins, losses, ties
+
+    lower_tail = sum(comb(total, k) for k in range(wins + 1)) / 2 ** total
+    upper_tail = sum(comb(total, k) for k in range(wins, total + 1)) / 2 ** total
+    p_value = min(1.0, 2 * min(lower_tail, upper_tail))
+    return p_value, wins, losses, ties
+
+
+def report_paired(results, drop: int = 0) -> None:
+    """Compare arm pairs taken at matched run positions.
+
+    Alternating arms controls for shared run position, but it does not prove
+    that environmental variation was eliminated. A sign test over the pairs
+    needs no assumption about the spread.
     """
     if len(results) != 2:
         return
@@ -689,11 +996,9 @@ def report_paired(results, drop: int = 0) -> None:
         print("  matched paired result unavailable: need three equal pairs")
         return
     diffs = [(y - x) / x * 100 for x, y in pairs]
-    wins = sum(1 for d in diffs if d > 0)
+    p_value, wins, losses, ties = _two_sided_sign_p(diffs)
     total = len(diffs)
-    from math import comb
-
-    tail = sum(comb(total, k) for k in range(wins, total + 1)) / 2 ** total
+    directional_total = wins + losses
     bytes_down = sum(
         1 for x, y in zip(base["arms"][drop:], other["arms"][drop:])
         if y["mb_per_token"] < x["mb_per_token"]
@@ -701,39 +1006,53 @@ def report_paired(results, drop: int = 0) -> None:
     print()
     print(f"  paired over {total} arms: mean {st.mean(diffs):+.1f} percent, "
           f"median {st.median(diffs):+.1f}")
-    print(f"  {other['condition']} ahead in {wins} of {total} pairs, "
-          f"sign test p = {tail:.3f}")
+    print(f"  {other['condition']} improved in {wins} of {directional_total} "
+          f"non-tied pairs and regressed in {losses}; ties: {ties}")
+    print(f"  two-sided sign test p = {p_value:.3f}")
     print(f"  fewer bytes in {bytes_down} of {total} pairs")
-    if tail > 0.05:
-        print("  The pairs do not separate. Treat this as unresolved.")
+    if directional_total == 0:
+        print("  All matched pairs tied; there is no directional effect to resolve.")
+    elif p_value > 0.05:
+        if losses == 0:
+            direction = "improvement"
+        elif wins == 0:
+            direction = "regression"
+        else:
+            direction = "improvement versus regression"
+        print(
+            f"  The {direction} direction is not statistically resolved at "
+            f"p = {p_value:.3f}; collect more matched pairs."
+        )
 
 
 def report_drift(results) -> None:
-    """Separate a hot machine from a condition that degrades as it runs.
+    """Report elapsed-time correlations without inferring their cause.
 
-    Conditions are interleaved, so heat reaches every arm. When every
-    condition slides, the run measured the machine. When one slides and
-    another does not, the run measured that condition.
+    Conditions are interleaved, so a common time-varying influence can affect
+    every arm. A condition-specific correlation is a diagnostic to investigate,
+    not proof that the condition caused the change.
     """
-    sliding = [r for r in results if r["thermal_drift"] < -0.6]
+    sliding = [r for r in results if r["elapsed_rate_correlation"] < -0.6]
     if not sliding:
         return
     print()
     if len(sliding) == len(results):
-        print("  every condition falls with elapsed time. The machine is hot,")
-        print("  so the absolute rates are depressed. Arms alternate, so the")
-        print("  paired comparison above is unaffected; the medians are not.")
+        print("  every condition has a negative elapsed-time correlation.")
+        print("  This indicates a shared time-varying influence; its cause is")
+        print("  not established, and absolute rates should be treated cautiously.")
         return
     for row in sliding:
         steady = [r for r in results if r not in sliding]
-        print(f"  {row['condition']} falls with elapsed time "
-              f"(r={row['thermal_drift']:+.2f}) while "
+        print(f"  {row['condition']} has a negative elapsed-time correlation "
+              f"(r={row['elapsed_rate_correlation']:+.2f}) while "
               f"{', '.join(r['condition'] for r in steady)} does not.")
-        print(f"  Interleaved arms share the same wall clock, so this is not")
-        print(f"  heat: {row['condition']} degrades as it runs.")
+        print("  This is a diagnostic association, not a causal conclusion;")
+        print("  inspect the environment before interpreting the arm effect.")
 
 
 def main() -> None:
+    global _ACTIVE_EVIDENCE
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--arms", type=int, default=8,
                         help="ceiling on arms per condition; the run stops "
@@ -753,6 +1072,22 @@ def main() -> None:
     args = parser.parse_args()
 
     conditions = COMPARISONS[args.compare]
+    routing_altering = args.compare in ROUTING_ALTERING_COMPARISONS
+    effective_environment = effective_chat_environment()
+    evidence = {
+        "status": "running",
+        "comparison": args.compare,
+        "fresh_arms": args.fresh_arms,
+        "routing_altering": routing_altering,
+        "condition_definitions": conditions,
+        "effective_environment": effective_environment,
+        "conditions": [],
+        "raw_arms": {name: [] for name in conditions},
+    }
+    if args.json:
+        _ACTIVE_EVIDENCE = {"path": args.json, "payload": evidence}
+        write_evidence(args.json, evidence)
+
     if args.arms <= 0:
         parser.error("--arms must be positive")
     if args.min_arms <= 0 or args.min_arms > args.arms:
@@ -769,23 +1104,34 @@ def main() -> None:
     for env in conditions.values():
         check_load_time(env, args.fresh_arms)
 
+    # Capture provenance for ordinary baseline runs too.  This metadata is
+    # collected before a backend is constructed and checkpoint_identity only
+    # reads metadata/stat information, so it does not run model inference.
+    from macqwen.checkpoints import resolve_flashnext
+
+    checkpoint = resolve_flashnext(os.environ.get("MACQWEN_FLASHNEXT_MODEL"))
+    provenance = benchmark_provenance(checkpoint)
+    evidence.update(provenance)
+    evidence["runtime_source_fingerprints"] = provenance["source_fingerprints"]
+    if args.json:
+        write_evidence(args.json, evidence)
     g64_preflight = None
+    metal_preflight = None
     if args.compare == "g64-kernel":
-        from macqwen.checkpoints import resolve_flashnext
-        checkpoint = resolve_flashnext(os.environ.get("MACQWEN_FLASHNEXT_MODEL"))
         g64_preflight = check_g64_kernel_checkpoint(str(checkpoint))
         if g64_preflight["status"] != "ready":
             raise SystemExit(
                 "g64-kernel executor is pending numerical verification; "
                 "refusing to create a benchmark backend"
             )
+    elif args.compare == "metal-runtime":
+        metal_preflight = check_metal_runtime_checkpoint(str(checkpoint))
 
     from models.flashnext.diskio import ReadMeter
 
     meter = ReadMeter()
     run_began = time.perf_counter()
     results, collected, first_ids = [], {name: [] for name in conditions}, None
-    routing_altering = args.compare in ROUTING_ALTERING_COMPARISONS
     if routing_altering:
         print(
             "  routing-altering comparison: digest changes are expected; "
@@ -793,8 +1139,13 @@ def main() -> None:
             flush=True,
         )
 
-    condition_keys = set().union(*(env.keys() for env in conditions.values()))
-    initial_values = {key: os.environ.get(key) for key in condition_keys}
+    condition_keys = set(effective_environment).union(
+        *(env.keys() for env in conditions.values())
+    )
+    initial_values = {
+        key: effective_environment.get(key, os.environ.get(key))
+        for key in condition_keys
+    }
 
     def set_condition_environment(env, pin_path=None):
         for key in condition_keys:
@@ -805,6 +1156,25 @@ def main() -> None:
                 os.environ[key] = value
         if pin_path is not None:
             os.environ["FLASHNEXT_PIN_CACHE"] = str(pin_path)
+
+    def persist_progress(round_index=None, name=None, failure=None):
+        if _ACTIVE_EVIDENCE is None:
+            return
+        payload = _ACTIVE_EVIDENCE["payload"]
+        payload["raw_arms"] = collected
+        if round_index is not None and name is not None:
+            payload["current_arm"] = {
+                "round": round_index + 1,
+                "condition": name,
+                "environment": {
+                    key: conditions[name].get(key, initial_values.get(key))
+                    for key in condition_keys
+                },
+            }
+        if failure is not None:
+            payload["status"] = "failed"
+            payload["failure"] = failure
+        write_evidence(_ACTIVE_EVIDENCE["path"], payload)
 
     if args.fresh_arms:
         # Fresh mode creates a new backend for every arm, while the arm order
@@ -836,6 +1206,7 @@ def main() -> None:
                     with open(private_pin, "wb") as handle:
                         handle.write(source_bytes)
                     set_condition_environment(env, private_pin)
+                    persist_progress(round_index, name)
                     if "FLASHNEXT_PREWARM" in env:
                         want = env["FLASHNEXT_PREWARM"] == "1"
                         if prewarm_enabled() != want:
@@ -855,9 +1226,14 @@ def main() -> None:
                     # Import after the first condition environment is active.
                     from macqwen.backends.flashnext import FlashNextBackend
                     backend = FlashNextBackend()
+                    def preserve_raw(row, arm_name=name, arm_round=round_index):
+                        collected[arm_name].append(row)
+                        persist_progress(arm_round, arm_name)
                     try:
                         row = arm(
-                            backend, args.tokens, meter, run_began, condition=env
+                            backend, args.tokens, meter, run_began, condition=env,
+                            validate_metal_runtime=args.compare == "metal-runtime",
+                            on_raw_result=preserve_raw, provenance=provenance,
                         )
                     finally:
                         store = backend.store
@@ -871,6 +1247,10 @@ def main() -> None:
                             mx.clear_cache()
                         except AttributeError:
                             mx.metal.clear_cache()
+                    # ``arm`` already published this same dict before its
+                    # post-generation checks. Persist once more to capture
+                    # validated executor metadata on successful completion.
+                    persist_progress(round_index, name)
                     if first_ids is None:
                         first_ids = row["ids"]
                     if row["ids"] != first_ids:
@@ -878,8 +1258,11 @@ def main() -> None:
                         if routing_altering:
                             print(message + " (expected for routing-altering run)")
                         else:
+                            persist_progress(
+                                round_index, name,
+                                {"type": "token_mismatch", "message": message},
+                            )
                             raise SystemExit(message + "; exact comparison rejected")
-                    collected[name].append(row)
                 rounds_run += 1
                 if rounds_run >= args.min_arms:
                     if all(
@@ -906,10 +1289,19 @@ def main() -> None:
             )
             for name in order:
                 set_condition_environment(conditions[name])
+                persist_progress(round_index, name)
+                def preserve_raw(row, arm_name=name, arm_round=round_index):
+                    collected[arm_name].append(row)
+                    persist_progress(arm_round, arm_name)
                 row = arm(
                     backend, args.tokens, meter, run_began,
                     condition=conditions[name],
+                    validate_metal_runtime=args.compare == "metal-runtime",
+                    on_raw_result=preserve_raw, provenance=provenance,
                 )
+                # ``arm`` already published this same dict before its
+                # post-generation checks. Persist once more after validation.
+                persist_progress(round_index, name)
                 if first_ids is None:
                     first_ids = row["ids"]
                 if row["ids"] != first_ids:
@@ -920,8 +1312,11 @@ def main() -> None:
                     if routing_altering:
                         print(message + " (expected for routing-altering run)")
                     else:
+                        persist_progress(
+                            round_index, name,
+                            {"type": "token_mismatch", "message": message},
+                        )
                         raise SystemExit(message + "; exact comparison rejected")
-                collected[name].append(row)
             rounds_run += 1
             if rounds_run >= args.min_arms and all(
                 settled(
@@ -933,7 +1328,24 @@ def main() -> None:
                 print(f"  every median settled after {rounds_run} rounds")
                 break
 
-    import hashlib
+    completion_fingerprints = runtime_source_fingerprints()
+    if completion_fingerprints != provenance["source_fingerprints"]:
+        failure = {
+            "type": "source_changed",
+            "message": (
+                "runtime source or benchmark harness changed during the run"
+            ),
+        }
+        if args.json:
+            payload = _ACTIVE_EVIDENCE["payload"]
+            payload["source_fingerprints_at_completion"] = completion_fingerprints
+            persist_progress(failure=failure)
+        raise RuntimeError(failure["message"])
+    if args.json:
+        _ACTIVE_EVIDENCE["payload"]["source_fingerprints_at_completion"] = (
+            completion_fingerprints
+        )
+
     print()
     for name, arms in collected.items():
         results.append(report(name, arms, args.drop))
@@ -953,17 +1365,23 @@ def main() -> None:
         print(f"  {resolution_note(base, other, args.drop)}")
 
     if args.json:
-        with open(args.json, "w") as handle:
-            json.dump({
-                "comparison": args.compare,
-                "fresh_arms": args.fresh_arms,
-                "routing_altering": routing_altering,
-                "g64_preflight": g64_preflight,
-                "g64_status": g64_kernel_status() if args.compare == "g64-kernel" else None,
-                "conditions": results,
-            }, handle, indent=2)
+        payload = _ACTIVE_EVIDENCE["payload"]
+        payload.update({
+            "status": "completed",
+            "g64_preflight": g64_preflight,
+            "g64_status": g64_kernel_status() if args.compare == "g64-kernel" else None,
+            "metal_preflight": metal_preflight,
+            "conditions": results,
+            "raw_arms": collected,
+        })
+        write_evidence(args.json, payload)
+        _ACTIVE_EVIDENCE = None
         print(f"\n  wrote {args.json}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException as error:
+        _record_terminal_failure(error)
+        raise

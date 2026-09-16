@@ -161,11 +161,9 @@ def swap_streaming(language, store, mode: str, capacity: int = 0) -> None:
     prefix = f"{PREFIX}.layers.0.mlp.switch_mlp"
     block = language.mtp.layers[0].mlp
     old = block.switch_mlp
-    packed = store.shape(f"{prefix}.gate_proj.weight")[-1]
-    groups = store.shape(f"{prefix}.gate_proj.scales")[-1]
-    down_out = store.shape(f"{prefix}.down_proj.weight")[1]
-    bits = packed * 32 // down_out
-    group_size = down_out // groups
+    from .loader import infer_switch_quantization
+
+    group_size, bits = infer_switch_quantization(store, prefix)
     block.switch_mlp = StreamingSwitchGLU(
         store,
         prefix,

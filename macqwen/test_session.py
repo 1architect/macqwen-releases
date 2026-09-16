@@ -4,6 +4,7 @@ import tempfile
 from contextlib import redirect_stdout
 from io import StringIO
 from types import SimpleNamespace
+import sys
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -11,7 +12,9 @@ from pathlib import Path
 from macqwen import preferences
 from macqwen.session import (
     Session,
+    _effective_turn_budgets,
     ask_approval,
+    main,
     run_benchmark,
     run_turn_plain,
     token_stats_text,
@@ -84,6 +87,89 @@ class FakeTools:
 
 
 class SessionTests(unittest.TestCase):
+    def test_seed_is_applied_after_backend_load_before_generation(self):
+        import mlx.core as mx
+
+        events = []
+
+        class LoadedBackend(FakeBackend):
+            def __init__(self):
+                self.tape = []
+                self.pending = []
+
+        def load_backend(*_args, **_kwargs):
+            events.append("backend")
+            return LoadedBackend()
+
+        def generate(*_args, **_kwargs):
+            events.append("generation")
+
+        with tempfile.TemporaryDirectory() as root, \
+                patch.object(sys, "argv", [
+                    "session.py", "--model", "qwen27b",
+                    "--model-path", str(Path(root) / "model"),
+                    "--preferences-file", str(Path(root) / "preferences.json"),
+                    "--api-keys-file", str(Path(root) / "keys.json"),
+                    "--seed", "37",
+                ]), \
+                patch("macqwen.session.build_backend", side_effect=load_backend), \
+                patch("macqwen.session.run_turn_plain", side_effect=generate), \
+                patch("macqwen.session.read_prompt", side_effect=("hello", "/quit")), \
+                patch.object(
+                    mx.random, "seed",
+                    side_effect=lambda value: events.append(("seed", value)),
+                ), redirect_stdout(StringIO()):
+            self.assertEqual(main(), 0)
+
+        self.assertEqual(events, ["backend", ("seed", 37), "generation"])
+
+    def test_reap_xhigh_shared_thinking_budget_stays_one_total_ceiling(self):
+        with tempfile.TemporaryDirectory() as root:
+            checkpoint = Path(root) / "reap"
+            checkpoint.mkdir()
+            (checkpoint / "config.json").write_text(
+                '{"model_type": "qwen4_exp", '
+                '"reap_prune": {"kept_experts": 288}}'
+            )
+            backend = SimpleNamespace(model_path=checkpoint)
+            prefs = dict(
+                preferences.DEFAULTS,
+                thinking_enabled=True,
+                effort="xhigh",
+                max_tokens=2048,
+                think_budget=-1,
+            )
+
+            answer, requested, think, total = _effective_turn_budgets(
+                backend, prefs, "agent"
+            )
+
+            self.assertEqual((answer, requested, think, total),
+                             (2048, None, 4096, 2048))
+
+    def test_reap_xhigh_caps_a_large_shared_total_without_adding_reasoning(self):
+        with tempfile.TemporaryDirectory() as root:
+            checkpoint = Path(root) / "reap"
+            checkpoint.mkdir()
+            (checkpoint / "config.json").write_text(
+                '{"reap_prune": {"kept_experts": 288}}'
+            )
+            backend = SimpleNamespace(model_path=checkpoint)
+            prefs = dict(
+                preferences.DEFAULTS,
+                thinking_enabled=True,
+                effort="xhigh",
+                max_tokens=8192,
+                think_budget=-1,
+            )
+
+            answer, requested, think, total = _effective_turn_budgets(
+                backend, prefs, "plain"
+            )
+
+            self.assertEqual((answer, requested, think, total),
+                             (8192, None, 4096, 8192))
+
     def test_agent_token_stats_combine_model_segments(self):
         stats = [
             SimpleNamespace(

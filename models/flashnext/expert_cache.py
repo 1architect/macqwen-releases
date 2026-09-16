@@ -899,9 +899,46 @@ class StreamingSwitchLinear(nn.Module):
         )
 
 
-def get_hot_slab_experts(layer_id: int, count: int) -> List[int]:
-    """Retrieve top hot experts for a layer from the persistent profile cache."""
+def _compatible_pin_profile(store=None, expected_group_size=None, layer_ids=None):
+    """Return pin history only when it belongs to this store's layout."""
     data = _load_pin_profile()
+    if data is None or store is None:
+        return data
+    from .routing import pin_profile_compatible
+
+    if layer_ids is None and expected_group_size is not None:
+        # Global slab allocation consumes only the layers represented by the
+        # saved ranking.  A mixed export is safe when those selected layers
+        # match, even if unrelated layers use another group size.
+        ranked = data.get("ranked_counts") or data.get("ranked_scores") or data.get("layers")
+        if isinstance(ranked, dict):
+            layer_ids = tuple(ranked)
+
+    compatible, _reason = pin_profile_compatible(
+        store, data, expected_group_size=expected_group_size,
+        layer_ids=layer_ids,
+    )
+    return data if compatible else None
+
+
+def _pin_profile_cache_identity(store):
+    if store is None:
+        return None
+    from .routing import checkpoint_identity_for_store
+
+    return checkpoint_identity_for_store(store)
+
+
+def get_hot_slab_experts(
+    layer_id: int,
+    count: int,
+    store=None,
+    expected_group_size: int | None = None,
+) -> List[int]:
+    """Retrieve top hot experts for a layer from the persistent profile cache."""
+    data = _compatible_pin_profile(
+        store, expected_group_size, layer_ids=(layer_id,)
+    )
     if data is None or count <= 0:
         return []
     ranked_scores = data["ranked_scores"].get(str(layer_id))
@@ -1000,7 +1037,12 @@ def _g64_pin_profile_compatible(store, profile: dict | None) -> tuple[bool, str 
     """
     if profile is None:
         return False, "Q4/G64 slab pack needs checkpoint-specific pin history"
-    group_size = profile.get("group_size", profile.get("quantization_group_size"))
+    quantization = profile.get("quantization") or {}
+    if not isinstance(quantization, dict):
+        return False, "pin history has invalid Q4/G64 provenance"
+    group_size = quantization.get(
+        "group_size", profile.get("group_size", profile.get("quantization_group_size"))
+    )
     try:
         if int(group_size) != 64:
             return False, "pin history does not declare Q4/G64"
@@ -1009,22 +1051,22 @@ def _g64_pin_profile_compatible(store, profile: dict | None) -> tuple[bool, str 
     recorded = profile.get("checkpoint_identity", profile.get("model_identity"))
     if not recorded:
         return False, "pin history has no checkpoint identity"
-    model_dir = getattr(store, "dir", None)
-    if not model_dir:
-        return False, "cannot verify Q4/G64 checkpoint identity"
     try:
-        current = getattr(store, "_flashnext_checkpoint_identity", None)
-        if current is None:
-            from .slab_pack import checkpoint_identity
-            current = checkpoint_identity(model_dir)
-            try:
-                store._flashnext_checkpoint_identity = current
-            except AttributeError:
-                pass
-    except (OSError, ValueError, TypeError):
-        return False, "cannot verify Q4/G64 checkpoint identity"
-    if str(recorded) != str(current):
-        return False, "Q4/G64 pin history belongs to another checkpoint"
+        from .routing import pin_profile_compatible
+
+        compatible, reason = pin_profile_compatible(
+            store, profile, expected_group_size=64
+        )
+    except (ImportError, OSError, TypeError, ValueError):
+        compatible, reason = False, "cannot verify Q4/G64 checkpoint identity"
+    if not compatible:
+        if reason == "pin history has no checkpoint identity":
+            return False, reason
+        if reason == "pin history belongs to another checkpoint":
+            return False, reason
+        if reason == "pin history has incompatible quantization":
+            return False, "pin history does not declare Q4/G64"
+        return False, reason or "cannot verify Q4/G64 checkpoint identity"
     return True, None
 
 
@@ -1049,6 +1091,8 @@ def get_physical_miss_slab_allocation(
     min_slots: int = 4,
     max_slots: int = 6,
     num_layers: int = 12,
+    store=None,
+    expected_group_size: int | None = None,
 ) -> Dict[int, List[int]]:
     """Read evidence for the guarded physical-miss hybrid probe."""
     profile_path = os.environ.get(
@@ -1067,6 +1111,8 @@ def get_physical_miss_slab_allocation(
         min_slots=min_slots,
         max_slots=max_slots,
         num_layers=num_layers,
+        store=store,
+        expected_group_size=expected_group_size,
     )
     if not canonical:
         raise RuntimeError("physical-miss hybrid needs a canonical skew allocation")
@@ -1083,7 +1129,12 @@ def get_physical_miss_slab_allocation(
     return allocation
 
 
-def get_global_slab_allocation(total_slots: int, min_slots: int = 1) -> Dict[int, List[int]]:
+def get_global_slab_allocation(
+    total_slots: int,
+    min_slots: int = 1,
+    store=None,
+    expected_group_size: int | None = None,
+) -> Dict[int, List[int]]:
     """Allocate a global slot budget across layers.
 
     If min_slots <= 1, distributes slots purely by descending individual candidate scores.
@@ -1093,10 +1144,13 @@ def get_global_slab_allocation(total_slots: int, min_slots: int = 1) -> Dict[int
     if total_slots <= 0:
         return {}
     min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", str(min_slots)))
-    cache_key = ("global", _pin_profile_signature(), total_slots, min_slots)
+    cache_key = (
+        "global", _pin_profile_signature(), total_slots, min_slots,
+        expected_group_size, _pin_profile_cache_identity(store),
+    )
     if cache_key in _GLOBAL_SLAB_CACHE:
         return _GLOBAL_SLAB_CACHE[cache_key]
-    data = _load_pin_profile()
+    data = _compatible_pin_profile(store, expected_group_size)
     if data is None:
         return {}
     ranked = data["ranked_scores"]
@@ -1170,6 +1224,8 @@ def get_skew_slab_allocation(
     min_slots: int = 4,
     max_slots: int = 6,
     num_layers: int = 12,
+    store=None,
+    expected_group_size: int | None = None,
 ) -> Dict[int, List[int]]:
     """Allocate a global slot budget across layers with skew awareness.
 
@@ -1184,18 +1240,23 @@ def get_skew_slab_allocation(
     num_layers = int(os.environ.get("FLASHNEXT_SLAB_NUM_LAYERS", str(num_layers)))
     cache_key = (
         "skew", _pin_profile_signature(), total_slots, min_slots, max_slots,
-        num_layers,
+        num_layers, expected_group_size, _pin_profile_cache_identity(store),
     )
     if cache_key in _GLOBAL_SLAB_CACHE:
         return _GLOBAL_SLAB_CACHE[cache_key]
 
-    data = _load_pin_profile()
+    data = _compatible_pin_profile(store, expected_group_size)
     if data is None:
         return {}
     # Prefer ranked_counts if present, fallback to ranked_scores
     ranked = data["ranked_counts"] or data["ranked_scores"]
     if not ranked:
-        return get_global_slab_allocation(total_slots, min_slots=min_slots)
+        return get_global_slab_allocation(
+            total_slots,
+            min_slots=min_slots,
+            store=store,
+            expected_group_size=expected_group_size,
+        )
 
     # Score each layer by the sum of its top min_slots candidates
     layer_scores = []
@@ -1360,10 +1421,14 @@ class StreamingSwitchGLU(nn.Module):
             min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", 4))
             policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
             if policy == "uniform":
-                alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
+                alloc = get_global_slab_allocation(
+                    global_budget, min_slots=min_slots, store=store,
+                    expected_group_size=group_size,
+                )
             elif policy == "physical-miss-hybrid":
                 alloc = get_physical_miss_slab_allocation(
-                    global_budget, min_slots=min_slots
+                    global_budget, min_slots=min_slots, store=store,
+                    expected_group_size=group_size,
                 )
                 store._slab_alloc_provenance = last_hybrid_summary()
             elif policy == "physical-miss":
@@ -1372,7 +1437,10 @@ class StreamingSwitchGLU(nn.Module):
                     "use physical-miss-hybrid for the guarded probe"
                 )
             else:
-                alloc = get_skew_slab_allocation(global_budget, min_slots=min_slots)
+                alloc = get_skew_slab_allocation(
+                    global_budget, min_slots=min_slots, store=store,
+                    expected_group_size=group_size,
+                )
             hot = alloc.get(layer_id, [])
             slab_size = len(hot)
             has_slab = slab_size > 0
@@ -1381,7 +1449,13 @@ class StreamingSwitchGLU(nn.Module):
             slab_size = int(os.environ.get("FLASHNEXT_SLAB", 0))
             max_slab_layer = int(os.environ.get("FLASHNEXT_SLAB_LAYERS", -1))
             has_slab = slab_size > 0 and (max_slab_layer < 0 or (0 <= layer_id < max_slab_layer))
-            hot = get_hot_slab_experts(layer_id, slab_size) if has_slab else []
+            hot = (
+                get_hot_slab_experts(
+                    layer_id, slab_size, store=store,
+                    expected_group_size=group_size,
+                )
+                if has_slab else []
+            )
             make_slab = lambda name: ResidentSlab(store, f"{prefix}.{name}", slab_size, initial_experts=hot) if has_slab else None
 
         make = lambda name: StreamingSwitchLinear(
@@ -1407,10 +1481,14 @@ class StreamingSwitchGLU(nn.Module):
             if alloc is None:
                 policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
                 if policy == "uniform":
-                    alloc = get_global_slab_allocation(global_budget, min_slots=min_slots)
+                    alloc = get_global_slab_allocation(
+                        global_budget, min_slots=min_slots, store=store,
+                        expected_group_size=group_size,
+                    )
                 elif policy == "physical-miss-hybrid":
                     alloc = get_physical_miss_slab_allocation(
-                        global_budget, min_slots=min_slots
+                        global_budget, min_slots=min_slots, store=store,
+                        expected_group_size=group_size,
                     )
                     store._slab_alloc_provenance = last_hybrid_summary()
                 elif policy == "physical-miss":
@@ -1419,7 +1497,10 @@ class StreamingSwitchGLU(nn.Module):
                         "use physical-miss-hybrid for the guarded probe"
                     )
                 else:
-                    alloc = get_skew_slab_allocation(global_budget, min_slots=min_slots)
+                    alloc = get_skew_slab_allocation(
+                        global_budget, min_slots=min_slots, store=store,
+                        expected_group_size=group_size,
+                    )
                 store._slab_alloc = alloc
             # Missing history is expected on first launch. Keep reference
             # streaming active until a valid allocation becomes available.

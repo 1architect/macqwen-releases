@@ -132,7 +132,15 @@ class G64IntegrationTests(unittest.TestCase):
             _flashnext_requested_read_mode=None,
             dir="/checkpoint",
             unpin_all=lambda: None,
-            shape=lambda name: (288, 640, 320) if name.endswith("weight") else (288, 640, 40),
+            shape=lambda name: (
+                (288, 2560, 80)
+                if name.endswith("down_proj.weight")
+                else (288, 640, 320)
+                if name.endswith("weight")
+                else (288, 2560, 10)
+                if name.endswith("down_proj.scales")
+                else (288, 640, 40)
+            ),
         )
         profile = routing.RoutingProfile("standard", store, None)
         profile.pinned = {1: {2}}

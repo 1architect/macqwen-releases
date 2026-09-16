@@ -455,11 +455,11 @@ _TAIL_THRESHOLD = [0.20]
 _TAIL_SENSITIVE = [0.40]
 FAST_LAYERS = (24, 12, 10, 21, 7, 18, 33, 22, 15, 5, 26, 16)
 _OVERLAP = os.environ.get("FLASHNEXT_OVERLAP", "1") == "1"
-# A token blocks on 98 `mx.eval` calls for 236.7 ms, half the token, while the
-# IOKit counter puts the shaders at 10.7% busy. 43 of those evals cost 2 to 5
-# ms each and carry 75.7% of the block time, which is a fixed round-trip cost,
-# not work. Two of them are per layer: `mx.eval(scores)` here, and
-# `mx.eval(flat)` in StreamingSwitchGLU.
+# One recorded profile blocked on 98 `mx.eval` calls for 236.7 ms while an
+# IOKit counter reported 10.7% shader busy. The counters do not isolate a fixed
+# host/device round-trip cost or prove that the remaining time was idle. Two
+# synchronization points in that measured path were per layer:
+# `mx.eval(scores)` here and `mx.eval(flat)` in StreamingSwitchGLU.
 #
 # The second one exists only to bring the routed expert list to the host. That
 # list is a function of `inds`, `keeps` and the resident mask, and every one of

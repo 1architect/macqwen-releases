@@ -1,4 +1,4 @@
-"""Compare broad expert pinning with a smaller set while retaining the slab."""
+"""Compare broad and narrow expert pinning on the REAP reference path."""
 from pathlib import Path
 
 from .api import COMMON_METRICS, TestSpec
@@ -15,25 +15,27 @@ def command(config, result_path: Path) -> list[str]:
 
 
 TEST = TestSpec(
-    id="chat-pin-budget", title="32 versus 8 pinned experts with the 60-slot slab",
+    id="chat-pin-budget", title="REAP 32 versus 8 pinned experts",
     category="performance",
     explanation=(
-        "Compares the current 32-expert pin set with eight experts per layer. "
-        "Both keep the same 60-slot slab and generate the same 32 tokens."
+        "Compares 32 pinned experts with eight experts per layer on the same "
+        "generic MLX REAP path. Packed G64 residency stays off."
     ),
     why=(
-        "Our pin diagnostic locks 4.65 GB and records compression and swap "
-        "during cold pinning. A smaller pin set may relieve memory pressure."
+        "Recovered REAP records show about 3.95 to 4.06 GB pinned. The pin "
+        "operation itself is only 0.11 to 0.18 seconds, so a useful result "
+        "must improve memory allocation, physical reads, or sustained decode."
     ),
     script=command,
     metrics=COMMON_METRICS + ("actual pinned MB", "VM deltas", "effective pin count"),
     controls={
         "control": "32 pinned experts per layer",
         "candidate": "8 pinned experts per layer",
-        "runtime": "60-slot slab, 16 workers, exact-quality routing, both profilers off",
+        "runtime": "generic MLX Q4/G64, packed residency off, 16 workers",
         "workload": "same everyday prompt, 32 greedy tokens, closed thinking, renderer on",
         "order": "reversed pairs; identical private initial pin profiles",
-        "digest": "identical prompt, output, and slab allocation required",
+        "digest": "identical prompt and output required; routes and scores unchanged",
+        "decision": "adopt only with lower physical reads or better sustained throughput",
     },
     source="models/flashnext/bench_chat_parity.py",
     promotion=False,

@@ -256,7 +256,7 @@ def _swap_experts(model, store, capacity, mode) -> int:
             continue
         old = block.switch_mlp
         block._flashnext_layer_id = index
-        group_size, bits = _infer_switch_quant(store, prefix)
+        group_size, bits = infer_switch_quantization(store, prefix)
         nxt = f"language_model.model.layers.{index + 1}.mlp.switch_mlp"
         block.switch_mlp = StreamingSwitchGLU(
             store, prefix, group_size, bits, mode, capacity, old.activation,
@@ -267,14 +267,34 @@ def _swap_experts(model, store, capacity, mode) -> int:
     return count
 
 
-def _infer_switch_quant(store: SafeTensorStore, prefix: str):
-    # gate_proj input dim is the model hidden size; recover bits from packing.
-    packed = store.shape(f"{prefix}.gate_proj.weight")[-1]
-    groups = store.shape(f"{prefix}.gate_proj.scales")[-1]
-    down_out = store.shape(f"{prefix}.down_proj.weight")[1]
-    bits = packed * 32 // down_out
-    group_size = down_out // groups
+def infer_switch_quantization(store: SafeTensorStore, prefix: str):
+    """Infer one expert block's quantization from its tensor shapes.
+
+    The top-level config describes the export in aggregate, but converted
+    checkpoints can contain layers with different packed layouts.  The
+    streaming loader already derives the runtime arguments from the tensors
+    for each layer; pin-profile provenance must use this same calculation.
+    """
+    # ``down_proj.weight`` stores [experts, hidden, packed_intermediate].
+    # Its second dimension is therefore the logical input width shared by the
+    # gate/up projections.  Recover bits from the packed gate width and the
+    # group size from the gate scale count.
+    packed = int(store.shape(f"{prefix}.gate_proj.weight")[-1])
+    groups = int(store.shape(f"{prefix}.gate_proj.scales")[-1])
+    hidden = int(store.shape(f"{prefix}.down_proj.weight")[1])
+    if packed <= 0 or groups <= 0 or hidden <= 0:
+        raise ValueError(f"invalid switch quantization shapes at {prefix}")
+    packed_bits = packed * 32
+    if packed_bits % hidden or hidden % groups:
+        raise ValueError(f"incompatible switch quantization shapes at {prefix}")
+    bits = packed_bits // hidden
+    group_size = hidden // groups
     return group_size, bits
+
+
+# Keep the historical private name for focused compatibility tests and local
+# callers while making the shared implementation explicit for new consumers.
+_infer_switch_quant = infer_switch_quantization
 
 
 def _swap_ngram(model, store, capacity, mode) -> int:

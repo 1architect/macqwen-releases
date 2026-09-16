@@ -90,9 +90,20 @@ Every runnable test shows:
 - a final interpretation;
 - a JSON result record.
 
-The default control is 60-slot skew plus Frontier 8A. Benchmarks use greedy
-decoding and exact digests. We evaluate final quality with `chat.sh`,
-normal sampling, and `xhigh` effort.
+Historical compatible Q4/G32 benchmark cases use 60-slot skew plus Frontier
+8A as their control. `chat.sh` defaults to the MLX-backed Metal runtime, while
+REAP Q4/G64 uses generic MLX unless the experimental G64 executor is explicitly
+enabled. G64 slabs and stream-pack remain off. Benchmarks use greedy decoding
+and exact digests. We evaluate final quality with `chat.sh`, normal sampling,
+and `xhigh` effort.
+
+The future paired G64 quality comparison predeclares seeds 7, 19, and 73,
+alternates G64-off and G64-on order, and keeps slabs and stream-pack off. It
+requires completed outputs and blind scoring of the complete SketchUp `.rb`
+artifact. Seed 42 is a known regression case, not a representative quality
+seed. An interrupted generation is an incomplete gate, not a quality failure.
+The canonical prompt is recorded by `case_quality_chat.py`; do not paraphrase
+or translate it between arms.
 
 The suite never requires a reboot. The VM quiescence gate and file-cache purge
 are optional diagnostics and disabled by default.

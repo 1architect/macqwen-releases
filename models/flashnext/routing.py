@@ -64,6 +64,233 @@ def prewarm_enabled() -> bool:
     """Read at call time. A module-level constant cannot be flipped by a
     benchmark, because Python caches the module after the first import."""
     return os.environ.get("FLASHNEXT_PREWARM") == "1"
+
+
+def checkpoint_identity_for_store(store) -> str | None:
+    """Return and memoize the identity of ``store``'s checkpoint.
+
+    Pin profiles contain expert row IDs, so they are only safe to reuse when
+    they came from this exact checkpoint.  This is deliberately independent
+    of the experimental G64 flag: the normal MLX reference path also writes
+    and consumes pin profiles.
+    """
+    identity = getattr(store, "_flashnext_checkpoint_identity", None)
+    if identity:
+        return str(identity)
+    model_dir = getattr(store, "dir", None)
+    if not model_dir:
+        return None
+    try:
+        from .slab_pack import checkpoint_identity
+
+        identity = checkpoint_identity(model_dir)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    try:
+        store._flashnext_checkpoint_identity = identity
+    except AttributeError:
+        pass
+    return str(identity)
+
+
+def _switch_prefixes(store) -> dict[str, str]:
+    """Return the loader's streamed expert prefixes keyed by layer.
+
+    ``SafeTensorStore.refs`` is the source of truth for which expert tensors
+    exist.  In particular, do not infer a layout from ``config.json`` here:
+    mixed-layout exports are valid and the loader inspects each layer's
+    tensors when it replaces that layer.
+    """
+    refs = getattr(store, "refs", None)
+    if refs is None:
+        return {}
+    suffix = ".mlp.switch_mlp.gate_proj.weight"
+    result = {}
+    for key in refs:
+        if not isinstance(key, str) or not key.endswith(suffix):
+            continue
+        prefix = key[: -len(".gate_proj.weight")]
+        marker = "language_model.model.layers."
+        if not prefix.startswith(marker):
+            continue
+        layer_and_rest = prefix[len(marker) :]
+        layer, separator, rest = layer_and_rest.partition(".")
+        if not separator or rest != "mlp.switch_mlp":
+            continue
+        try:
+            layer_id = int(layer)
+        except (TypeError, ValueError):
+            continue
+        if layer_id >= 0:
+            result[str(layer_id)] = prefix
+    return result
+
+
+def _quantization_layouts(store) -> dict[str, dict] | None:
+    """Infer every streamed expert layout using the loader's shape logic."""
+    from .loader import infer_switch_quantization
+
+    prefixes = _switch_prefixes(store)
+    # Small test stores and older callers may expose shape() without refs.
+    # Keep that compatibility fallback, but still use the exact loader helper.
+    if not prefixes:
+        prefixes = {
+            "0": "language_model.model.layers.0.mlp.switch_mlp",
+        }
+    layouts = {}
+    for layer, prefix in prefixes.items():
+        try:
+            group_size, bits = infer_switch_quantization(store, prefix)
+        except (
+            AttributeError, IndexError, KeyError, TypeError, ValueError,
+            ZeroDivisionError,
+        ):
+            # A declared streamed layer with incomplete metadata is not safe
+            # provenance.  Fail closed rather than silently dropping it.
+            if _switch_prefixes(store):
+                return None
+            continue
+        layouts[str(layer)] = {
+            "group_size": int(group_size),
+            "bits": int(bits),
+        }
+    return layouts or None
+
+
+def quantization_for_store(store) -> dict | None:
+    """Describe all expert layouts from the tensors the loader will use."""
+    cached = getattr(store, "_flashnext_pin_quantization", None)
+    if cached:
+        return dict(cached)
+    layouts = _quantization_layouts(store)
+    if not layouts:
+        return None
+    group_sizes = {item["group_size"] for item in layouts.values()}
+    bits = {item["bits"] for item in layouts.values()}
+    result = {"layouts": layouts}
+    # Retain the flat fields for single-layout profile readers.  A mixed
+    # export deliberately has no singular group size, so compatibility checks
+    # must use the complete per-layer map.
+    if len(group_sizes) == 1:
+        result["group_size"] = next(iter(group_sizes))
+    if len(bits) == 1:
+        result["bits"] = next(iter(bits))
+    try:
+        store._flashnext_pin_quantization = dict(result)
+    except AttributeError:
+        pass
+    return result
+
+
+def _normalized_layouts(value) -> dict[str, tuple[int, int]] | None:
+    if not isinstance(value, dict):
+        return None
+    normalized = {}
+    for layer, metadata in value.items():
+        if not isinstance(metadata, dict):
+            return None
+        try:
+            layer_id = str(int(layer))
+            group_size = int(metadata["group_size"])
+            bits = int(metadata["bits"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if int(layer_id) < 0 or group_size <= 0 or bits <= 0:
+            return None
+        normalized[layer_id] = (group_size, bits)
+    return normalized
+
+
+def pin_profile_compatible(
+    store,
+    profile: dict | None,
+    expected_group_size: int | None = None,
+    layer_ids=None,
+) -> tuple[bool, str | None]:
+    """Check provenance before a persisted expert set can be used.
+
+    ``layer_ids`` narrows validation for callers that consume one known layer
+    (or a known subset of layers).  Without it, all recorded layouts must
+    agree with the current store, which remains the safe default for global
+    packed allocations.
+    """
+    if not isinstance(profile, dict):
+        return False, "pin history is missing"
+    recorded_identity = profile.get(
+        "checkpoint_identity", profile.get("model_identity")
+    )
+    if not recorded_identity:
+        return False, "pin history has no checkpoint identity"
+    current_identity = checkpoint_identity_for_store(store)
+    if not current_identity:
+        return False, "cannot verify checkpoint identity"
+    if str(recorded_identity) != str(current_identity):
+        return False, "pin history belongs to another checkpoint"
+
+    recorded_quantization = profile.get("quantization") or {}
+    if not isinstance(recorded_quantization, dict):
+        return False, "pin history has invalid quantization metadata"
+    recorded_group_size = None
+    if "layouts" not in recorded_quantization:
+        recorded_group_size = recorded_quantization.get(
+            "group_size",
+            profile.get("group_size", profile.get("quantization_group_size")),
+        )
+        try:
+            recorded_group_size = int(recorded_group_size)
+        except (TypeError, ValueError):
+            return False, "pin history has no quantization group size"
+    current_quantization = quantization_for_store(store)
+    if not current_quantization:
+        return False, "cannot verify checkpoint quantization"
+    current_layouts = _normalized_layouts(current_quantization.get("layouts"))
+    if current_layouts is None:
+        return False, "cannot verify checkpoint quantization"
+    if layer_ids is not None:
+        try:
+            selected_layers = {str(int(layer)) for layer in layer_ids}
+        except (TypeError, ValueError):
+            return False, "pin history has invalid layer metadata"
+        if not selected_layers or not selected_layers.issubset(current_layouts):
+            return False, "pin history has incomplete quantization metadata"
+        checked_layouts = {
+            layer: current_layouts[layer] for layer in selected_layers
+        }
+    else:
+        checked_layouts = current_layouts
+    current_groups = {group for group, _bits in checked_layouts.values()}
+    if expected_group_size is not None:
+        if current_groups != {int(expected_group_size)}:
+            return False, "pin history has incompatible quantization"
+
+    recorded_layouts = _normalized_layouts(recorded_quantization.get("layouts"))
+    if recorded_layouts is not None:
+        if layer_ids is not None:
+            if not selected_layers.issubset(recorded_layouts):
+                return False, "pin history has incomplete quantization metadata"
+            recorded_checked = {
+                layer: recorded_layouts[layer] for layer in selected_layers
+            }
+        else:
+            recorded_checked = recorded_layouts
+        if recorded_checked != checked_layouts:
+            return False, "pin history has incompatible quantization"
+    else:
+        # Flat metadata is safe only for a genuinely uniform current export.
+        # A legacy profile cannot prove that its per-layer IDs fit a mixed
+        # layout, even when its aggregate group size happens to match.  When a
+        # caller names one layer, only that layer is consumed and can be
+        # checked against the legacy flat value.
+        if len(current_groups) != 1:
+            return False, "pin history has incompatible quantization"
+        current_group_size = next(iter(current_groups))
+        if recorded_group_size != current_group_size:
+            return False, "pin history has incompatible quantization"
+        for field in ("bits", "mode"):
+            if field in recorded_quantization:
+                if current_quantization.get(field) != recorded_quantization[field]:
+                    return False, "pin history has incompatible quantization"
+    return True, None
 NEXT_TURN_THINK = (
     "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n"
     "<|im_start|>assistant\n<think>\n"
@@ -109,13 +336,10 @@ class RoutingProfile:
         self.pinned_signature = ""
         self._saved_signature = ""
         self._prefixes: dict = {}
-        self._checkpoint_identity = None
-        if os.environ.get("FLASHNEXT_METAL_G64") == "1":
-            try:
-                from .slab_pack import checkpoint_identity
-                self._checkpoint_identity = checkpoint_identity(self.store.dir)
-            except (AttributeError, OSError, TypeError, ValueError):
-                self._checkpoint_identity = None
+        # Collect provenance for every runtime, including the normal MLX
+        # reference path.  Restricting this to experimental G64 made the
+        # reference profile unsafe to reuse after a checkpoint switch.
+        self._checkpoint_identity = checkpoint_identity_for_store(self.store)
         saved_read_mode = getattr(
             self.store, "_flashnext_requested_read_mode", None
         )
@@ -385,18 +609,17 @@ class RoutingProfile:
                 "ranked_counts": ranked_counts,
             }
             # Pin IDs are only reusable when their checkpoint and quantization
-            # layout are known. Add provenance to newly collected profiles.
-            try:
-                prefix = "language_model.model.layers.0.mlp.switch_mlp.gate_proj"
-                weight_shape = self.store.shape(f"{prefix}.weight")
-                scale_shape = self.store.shape(f"{prefix}.scales")
-                group_size = int(weight_shape[-1] * 8 // scale_shape[-1])
-                identity = self._checkpoint_identity
-                if group_size in (32, 64) and identity:
-                    payload["group_size"] = group_size
-                    payload["checkpoint_identity"] = identity
-            except (AttributeError, IndexError, KeyError, TypeError, ValueError, OSError):
-                pass
+            # layout are known. Do not write an unprovenanceable profile: an
+            # old ID-only file is precisely the cross-checkpoint bug this
+            # metadata prevents.
+            quantization = quantization_for_store(self.store)
+            if not self._checkpoint_identity or not quantization:
+                return
+            payload["checkpoint_identity"] = self._checkpoint_identity
+            payload["quantization"] = quantization
+            # Keep the flat key for readers of the existing profile format.
+            if "group_size" in quantization:
+                payload["group_size"] = int(quantization["group_size"])
             with open(cache_file, "w") as handle:
                 json.dump(payload, handle)
             self._saved_signature = self.pinned_signature
@@ -413,24 +636,85 @@ class RoutingProfile:
                 payload = json.load(handle)
         except (OSError, ValueError):
             return 0
+        compatible, _reason = pin_profile_compatible(self.store, payload)
+        if not compatible:
+            return 0
         layers = payload.get("layers", {})
+        if not isinstance(layers, dict):
+            return 0
+        # Build and budget the complete plan before calling pin_rows. This
+        # prevents a profile that exceeds the current process budget from
+        # consuming rows from the first layers and only failing later.
+        plans = []
         pinned = 0
         for layer_str, experts in layers.items():
-            layer = int(layer_str)
+            try:
+                layer = int(layer_str)
+            except (TypeError, ValueError):
+                continue
             if layer >= len(self.language.model.layers):
                 continue
-            block = self.language.model.layers[layer].mlp.switch_mlp
-            prefix = block.gate_proj.cache.prefix.rsplit(".", 1)[0]
+            if layer < 0 or not isinstance(experts, list):
+                continue
+            block = getattr(
+                getattr(self.language.model.layers[layer], "mlp", None),
+                "switch_mlp", None,
+            )
+            if block is None:
+                continue
+            try:
+                prefix = block.gate_proj.cache.prefix.rsplit(".", 1)[0]
+            except AttributeError:
+                continue
             names = [
                 f"{prefix}.{projection}.{part}"
                 for projection in ("gate_proj", "up_proj", "down_proj")
                 for part in pin_parts()
             ]
-            for name in names:
-                pinned += self.store.pin_rows(name, experts)
-            self.pinned.setdefault(layer, set()).update(experts)
+            try:
+                expert_count = int(self.store.shape(f"{prefix}.gate_proj.weight")[0])
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+                continue
+            valid_experts = []
+            seen = set()
+            for value in experts:
+                try:
+                    expert = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= expert < expert_count and expert not in seen:
+                    seen.add(expert)
+                    valid_experts.append(expert)
+            allowed = []
+            selected_bytes = 0
+            try:
+                for expert in valid_experts:
+                    size = sum(self.store.pin_size(name, [expert]) for name in names)
+                    if pinned + selected_bytes + size > self.pin_budget:
+                        break
+                    allowed.append(expert)
+                    selected_bytes += size
+            except (AttributeError, KeyError, TypeError, ValueError, OSError):
+                return 0
+            if allowed:
+                plans.append((layer, names, allowed))
+                pinned += selected_bytes
+
+        if pinned > self.pin_budget:
+            return 0
+        actual_pinned = 0
+        try:
+            for layer, names, experts in plans:
+                for name in names:
+                    actual_pinned += self.store.pin_rows(name, experts)
+                self.pinned.setdefault(layer, set()).update(experts)
+        except (AttributeError, KeyError, TypeError, ValueError, OSError):
+            self.store.unpin_all()
+            self.pinned.clear()
+            self.pinned_bytes = 0
+            return 0
         self.pinned_bytes = pinned
-        return pinned
+        return actual_pinned
 
     def _pin_candidates(self):
         count = (
