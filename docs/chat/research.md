@@ -12,7 +12,7 @@ now starts each model through its required launcher.
 | One shared session loop | A chat feature reaches every model |
 | One command table | Aliases and settings cannot diverge |
 | One preferences schema | Each setting has one default and validator |
-| Separate model environments | The two MLX stacks are incompatible |
+| Separate model environments | Each runtime can select a compatible MLX stack |
 | Lazy backend imports | The shared package stays pure Python |
 | Profiles independent from models | Tools define chat behavior, not model capability |
 | Backend-owned persistence | Each model has a different exact cache format |
@@ -72,8 +72,10 @@ The progress bar uses filled `█` and unfilled `░` cells. It omits border cha
 
 ## Tool lifecycle
 
-`ToolCallStreamFilter` detects `<tool_call>` during streaming. It hides protocol markup and emits a pending event. It emits the tool name
-after `<function=NAME>` arrives.
+`ToolCallStreamFilter` remains model-agnostic and detects the established
+`<tool_call>` contract. The K2-Horizon package translates its native JSON
+protocol to that contract before output reaches the shared chat. The filter
+hides protocol markup and emits the tool name after `<function=NAME>` arrives.
 
 The tool UI uses these states:
 
