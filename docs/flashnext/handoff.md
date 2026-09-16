@@ -3,8 +3,9 @@
 Read this file, [`research.md`](research.md), and
 [`AGENT_INVARIANTS.md`](AGENT_INVARIANTS.md) before changing code or starting
 an experiment. [`CONTRIBUTING.md`](../../CONTRIBUTING.md) defines the project
-rules. Our current repair starts from commit `d7e458d`; inspect the worktree
-before every change instead of relying on a recorded clean/dirty state.
+rules. Release 0.4.1 closes the corrective REAP integration work; inspect the
+worktree before every change instead of relying on a recorded clean/dirty
+state.
 
 ## Decision and current state
 

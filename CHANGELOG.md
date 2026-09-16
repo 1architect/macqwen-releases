@@ -1,5 +1,46 @@
 # Changelog
 
+## MACQWEN 0.4.1 - 2026-09-16
+
+### Added
+
+- Add checkpoint compatibility for the REAP-288 export, including Q4/G64
+  experts, Q4/G32 n-gram weights, and both supported n-gram naming schemes.
+- Add opt-in G64 Metal execution, slab tooling, diagnostics, and
+  checkpoint-bound pin profiles without enabling experimental paths in normal
+  chat.
+- Add explicit sampling seeds and stronger benchmark artifacts with checkpoint,
+  runtime-source, harness, token, and failed-arm evidence.
+
+### Changed
+
+- Default `chat.sh` to the MLX-backed Metal runtime while keeping REAP expert
+  execution on generic MLX and preserving an explicit runtime opt-out.
+- Keep G64 execution, G64 slabs, and expert-major stream packing disabled by
+  default until the retained quality and performance gates pass.
+- Bound REAP `xhigh` reasoning inside the existing generation allowance instead
+  of adding tokens to the shared total.
+- Correct the FlashNext documentation to distinguish historical Q4/G32
+  controls, REAP sanity observations, incomplete quality attempts, and future
+  work.
+
+### Fixed
+
+- Guard QSA mask allocation for large projected masks and correct G64 streamed
+  down-projection offsets.
+- Infer mixed quantization layouts from tensor metadata consistently across the
+  loader, MTP path, runtime checks, and pin profiles.
+- Preserve failed benchmark arms before validation, report paired regressions
+  correctly, and bind ordinary reference artifacts to their checkpoint and
+  source identity.
+- Enforce shared pin budgets and reject stale or mismatched prewarm history
+  before pinning rows.
+
+### Tests
+
+- Pass 251 checkpoint-free MACQWEN tests and 323 checkpoint-free FlashNext
+  tests, plus Python bytecode compilation and whitespace validation.
+
 ## MACQWEN 0.4.0 - 2026-09-04
 
 ### Added
