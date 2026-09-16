@@ -16,176 +16,72 @@ The project includes no model weights.
 | Historical Q4/G32 60-slot control | 3.08 tok/s gen, 3.00 tok/s tail, 279.7 MB/token |
 | Long-prompt prefill near 5,000 tokens | About 40 to 50 tok/s; 62.19 tok/s synthetic result |
 
-These results come from the reference Mac.
-Speed changes with memory pressure, SSD state, and the macOS file cache.
-See [measurement evidence](docs/flashnext/measurements/) for test conditions.
+These results come from the reference Mac. Speed changes with memory pressure,
+SSD state, and the macOS file cache. See the
+[measurement evidence](docs/flashnext/measurements/) for test conditions.
 
 The listed controlled results preserve token IDs.
 
-## Current FlashNext runtime
-
-`chat.sh` defaults to the MLX-backed Metal runtime
-(`FLASHNEXT_METAL_RUNTIME=1`). For the REAP checkpoint, that runtime still
-executes Q4/G64 experts through generic MLX. The experimental G64 executor is
-opt-in through `FLASHNEXT_METAL_G64=1`; it is not enabled by the normal chat
-launcher. G64 slabs and expert-major stream-pack remain off:
-
-```text
-FLASHNEXT_METAL_RUNTIME=1
-FLASHNEXT_METAL_G64=0
-FLASHNEXT_SLAB_G64=0
-FLASHNEXT_STREAM_PACK=0
-FLASHNEXT_SLAB_GLOBAL=60
-FLASHNEXT_SLAB_PACK=1
-FLASHNEXT_SLAB_POLICY=skew
-FLASHNEXT_FUSED_SHARED=1
-FLASHNEXT_FUSED_UP_SWIGLU=1
-```
-
-The `FLASHNEXT_SLAB_GLOBAL` and `FLASHNEXT_SLAB_PACK` values remain in the
-launcher for compatible Q4/G32 checkpoints. They do not activate a REAP Q4/G64
-slab while `FLASHNEXT_SLAB_G64=0`.
-
-The 3.74 tok/s REAP result is a three-arm terminal sanity observation, not a
-statistical promotion or a stock-versus-custom comparison. The 60-slot and
-custom Q4/G32 results below are historical compatibility evidence from another
-checkpoint layout.
-
-### Historical compatible Metal kernels
-
-The compatible custom path lives in `models/flashnext/metal_runtime.py` and
-uses MLX's Metal kernel API with SIMD Q4/G32 helpers, float32 activations, and
-bfloat16 scales and biases. It combines the routed down-projection with router
-scores and writes the output without the separate intermediate routed tensor.
-It also removes 48 `astype` launches per token. `models/flashnext/metal_native.py`
-and `models/flashnext/metal_runtime_native.mm` are isolated scheduler and DMA
-probes; they are not a complete native inference engine and are not part of the
-normal chat path.
-
-For Q4/G32, the isolated production-shape kernel is bit-identical to the MLX
-reference and measures about 3.5% to 4.4% faster across controlled miss levels. The current
-historical 60-slot Frontier 8A profile with Up-QMV/SwiGLU measures 3.08 tok/s generation,
-3.00 tok/s tail, and 279.7 MB/token with the custom path active. The corrected
-16-worker control measures 3.13 tok/s generation, 3.04 tok/s tail, and
-262.0 MB/token. Both controls preserve token digests.
-
-The historical Q4/G32 16-arm stock-versus-custom comparison measured 2.91
-tok/s for the custom path versus 2.89 tok/s for stock MLX. Its +0.7% median difference stayed
-inside a 7.8% resolution band. This comparison does not limit the newer
-profile's measured rate.
-
-The slab path uses page-aligned, file-backed storage and direct expert-major
-Metal addressing for compatible Q4/G32 models. REAP uses streamed Q4/G64
-weights through generic MLX on Metal unless the experimental G64 executor is
-explicitly enabled. The short 32-token G64 equality gate passed, but the
-available long-turn attempt was interrupted before a completed answer and
-used an enlarged `xhigh` allowance. It is an incomplete gate, not a quality
-failure or a speed result. No REAP speed result is published. Frontier 8B and
-streamed expert-major records remain disabled.
-
-The pending G64 quality comparison remains future work. We will predeclare
-seeds 7, 19, and 73, alternate paired G64-off and G64-on arms with slabs and
-stream-pack disabled, and score completed SketchUp `.rb` outputs blind to arm
-labels. Seed 42 is a known regression case from a short check, not a
-representative quality seed. Interrupted generations are incomplete gates, not
-quality failures.
-
-## Current support
-
-| Runtime | Status | Typical use |
-|---|---|---|
-| Qwen3.8-Flash-Next | Primary | Local chat and compatible local APIs |
-| Qwen3.8-27B | Research | Existing custom V4 installations |
-
-Flash-Next supports regular local testing. The project remains experimental.
-
-
-## Why Qwen3.8-FlashNext and not others?
-
-Qwen3.8-Flash-Next has unusually fine-grained experts. Its moe_intermediate_size is 640 against a 2560 hidden size, so one expert is 3.07 MB. Considering the architecture of the challenge (running big models on low memory/high bandwidth machines) it is close to a best case scenario.
-
-## Requirements
-
-- An Apple Silicon Mac with Metal support.
-- Python 3.12.
-- A fast local SSD.
-- About 120 GB for oQ4, or 100 GB for oQ3-MTP.
-
-Keep enough free SSD space for macOS and temporary files.
-The 256 GB reference Mac normally holds only one Flash-Next checkpoint.
-
-## Choose a Flash-Next checkpoint
-
-| Checkpoint | Size | Guidance |
-|---|---:|---|
-| REAP-288 | 73.5 GB | Current research checkpoint; quality and speed gates remain open |
-| oQ4 | 111.7 GB | Quality baseline; recommended for code and accurate API names |
-| oQ3-MTP | 86.2 GiB | Public quick start; faster and smaller |
-
-The current REAP checkpoint is `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
-It uses Q4/G64 expert weights and Q4/G32 n-gram weights. Its expert path
-uses streamed expert weights through generic MLX on Metal by default. The
-experimental G64 executor requires `FLASHNEXT_METAL_G64=1`; G64 slabs and
-stream-pack remain disabled by the normal launcher.
-
-oQ4 passed a recorded API coding test that oQ3-MTP failed.
-Use oQ3-MTP for prose, general chat, and the smallest supported installation.
-Read the [Flash-Next research record](docs/flashnext/research.md) for the comparison.
-
-The production runtime does not use the MTP weights included with oQ3-MTP.
-
-An external [oQ4-MTP report](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-oQ4/discussions/2) describes degenerate repetition during long tool-use and coding turns. The run reached `max_tokens` and cut off tool calls. The same report did not reproduce the failure with oQ3-MTP under matching settings. The report uses oMLX on an M5 Max, and the checkpoint maintainer is investigating. This warning applies to the MTP variant. MACQWEN keeps MTP disabled in the production path.
-
 ## Quick start
 
-Clone the repository:
+You need an Apple Silicon Mac, Python 3.12, a fast SSD, and enough free space
+for one checkpoint. We test on an M4 Mac with 16 GB of unified memory.
+
+Clone MACQWEN and create its Python environment:
 
 ```bash
 git clone https://github.com/1architect/macqwen-releases.git
 cd macqwen-releases
-```
-
-Create the tested Python environment:
-
-```bash
 ./chat.sh setup
 ```
 
-This command creates `.venv` and installs the pinned Flash-Next dependencies.
-
-Download the current REAP research checkpoint:
-
-```bash
-hf download sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit \
-  --local-dir "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
-```
-
-Download the public oQ3-MTP checkpoint:
+For the smallest public setup, download oQ3-MTP:
 
 ```bash
 hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP \
   --local-dir "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ3-MTP"
 ```
 
-Verify the download:
+Start chatting:
 
 ```bash
-find "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ3-MTP" \
-  -name 'model-*-of-*.safetensors' | wc -l
-du -sh "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ3-MTP"
+./chat.sh --checkpoint oq3
 ```
 
-The first command must report `19`.
-The checkpoint contains 86.2 GiB of model weights.
+MACQWEN remembers the selected checkpoint. After the first run, `./chat.sh` is
+enough.
 
-Start the chat:
+## Choose a checkpoint
+
+Model weights are not included in this repository.
+
+| Checkpoint | Disk size | Choose it when... |
+|---|---:|---|
+| oQ3-MTP | 86.2 GiB | You want the smallest public general-chat setup |
+| oQ4 | 111.7 GB | Code quality and accurate external API names matter most |
+| REAP-288 | 73.5 GB | You are helping test the current research checkpoint |
+
+The production runtime does not use the MTP weights included with oQ3-MTP.
+Our recorded SketchUp API test passed on oQ4 and failed on oQ3-MTP, so prefer
+oQ4 for code that depends on exact third-party APIs. REAP-288 support is
+available, but its complete quality and performance gates remain open.
+
+Download oQ4:
 
 ```bash
-./chat.sh
+hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ4 \
+  --local-dir "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ4"
 ```
 
-MACQWEN selects a checkpoint automatically when one compatible checkpoint exists.
-Select one explicitly when the model directory contains multiple checkpoints:
+Download REAP-288:
+
+```bash
+hf download sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit \
+  --local-dir "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
+```
+
+When only one compatible checkpoint is installed, MACQWEN finds it
+automatically. Otherwise, select it by alias or full path:
 
 ```bash
 ./chat.sh --checkpoint oq4
@@ -193,25 +89,12 @@ Select one explicitly when the model directory contains multiple checkpoints:
 ./chat.sh --checkpoint /path/to/a/compatible-checkpoint
 ```
 
-The explicit selection stays in the preferences file.
 Set `MACQWEN_MODEL_ROOT` when checkpoints are outside `~/models`.
 Set `MACQWEN_FLASHNEXT_PYTHON` when the Python environment uses another path.
-The launcher also accepts an active compatible Python environment.
-
-## What to expect
-
-The default `exact-quality` mode prioritizes output quality.
-The model reads selected expert data from SSD during generation. Resident and
-pinned memory depend on the checkpoint, route history, context, and selected
-policy; the 4.19 GB baseline and 4.66 GB pinned figures are historical oQ4
-measurements, not REAP guarantees.
-The performance figures are measurements, not minimum guarantees.
 
 ## Daily use
 
-Run `/help` inside the chat for the current command list.
-
-Primary commands:
+Run `/help` inside the chat to see the current commands. The essentials are:
 
 ```text
 /help [all]
@@ -222,26 +105,20 @@ Primary commands:
 /quit
 ```
 
-`/help` shows these primary commands. `/help all` also shows compatibility
-commands. Existing commands such as `/thinking`, `/settings`, `/save`, and
-`/reset` remain accepted.
-
-The chat uses Qwen's recommended thinking-mode sampling defaults.
-Use `/config sampling greedy` only when deterministic output is necessary.
-
-The default answer limit is 4,096 tokens.
-The default thinking capacity is 512 additional tokens.
-Use `/status` to inspect the active model, sampling, routing, context, and memory values.
-
-The terminal streams complete words and shows prefill progress.
-Use `/config display animate off` to disable the text fade.
+Use `/status` to inspect the model, routing mode, context, and memory. Use
+`/config display animate off` if you prefer output without the text animation.
 
 ## Routing modes
 
-Select a mode at startup:
+The default `exact-quality` mode is the right choice for most users:
 
 ```bash
 ./chat.sh --exact-quality
+```
+
+Other modes are available for controlled experiments:
+
+```bash
 ./chat.sh --cache-aware
 ./chat.sh --standard
 ./chat.sh --fast
@@ -262,11 +139,19 @@ Use `exact-quality` for code, long work, and tasks that require precise facts.
 Cache-aware routing changes some expert choices and can change the reply.
 The fast modes trade output accuracy for speed.
 
-Use `--threshold 1.0` to keep every expert selected by the shipped router.
-The default threshold is `0.85`.
-
 Read the [Flash-Next brief](docs/flashnext/brief.md) for current mode status.
 Read the [Flash-Next research record](docs/flashnext/research.md) for full results.
+
+## How it works
+
+MACQWEN keeps the core model in unified memory and reads the routed experts it
+needs from SSD. Flash-Next is a good fit because its experts are small enough
+to stream selectively. The normal launcher uses MLX and Metal; it does not use
+our abandoned native-runtime prototype.
+
+For REAP-288, normal chat uses generic MLX for Q4/G64 expert execution. Our
+custom G64 executor, G64 slabs, and expert-major stream packing remain opt-in
+research paths. You do not need to configure these paths for regular chat.
 
 ## Local API server
 
