@@ -9,6 +9,12 @@ TOOL_START = "<ifm|tool_calls>"
 TOOL_END = "</ifm|tool_calls>"
 CALL = re.compile(r"<ifm\|tool_call>\s*(.*?)\s*</ifm\|tool_call>", re.S)
 NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+XML_CALL = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(?=\s|<|$)(.*)", re.S)
+XML_ARGUMENT = re.compile(
+    r"\s*<ifm\|arg_key>\s*([A-Za-z_][A-Za-z0-9_]*)\s*</ifm\|arg_key>"
+    r"\s*(?:<ifm\|arg_type>[^<]*</ifm\|arg_type>\s*)?"
+    r"<ifm\|arg_value>(.*?)</ifm\|arg_value>", re.S,
+)
 MARKERS = {
     "<ifm|think>": "<think>",
     "<ifm|think_fast>": "<think>",
@@ -35,12 +41,33 @@ def _tool_value(value) -> str:
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
+def _parse_xml_call(raw: str):
+    match = XML_CALL.fullmatch(raw.strip())
+    if match is None:
+        return None
+    name, body = match.groups()
+    arguments = {}
+    position = 0
+    while body[position:].strip():
+        argument = XML_ARGUMENT.match(body, position)
+        if argument is None:
+            return None
+        key, value = argument.groups()
+        if key in arguments:
+            return None
+        arguments[key] = value.strip()
+        position = argument.end()
+    return {"name": name, "arguments": arguments}
+
+
 def _render_calls(block: str) -> str:
     calls = []
     for raw in CALL.findall(block):
         try:
             value = json.loads(raw)
         except (TypeError, ValueError):
+            value = _parse_xml_call(raw)
+        if not isinstance(value, dict):
             continue
         name = value.get("name")
         arguments = value.get("arguments", {})
