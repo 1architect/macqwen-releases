@@ -5,7 +5,8 @@ This directory supports the active
 [`handoff.md`](../handoff.md).
 
 This is our results index for the 2026-09-16 K2-Horizon 7B memory and decode
-check. We used the installed Q8/G64 checkpoint, BF16 KV, one fresh child
+check, plus our product profiling diagnostic and Metal diagnostic. We used
+the installed Q8/G64 checkpoint, BF16 KV, one fresh child
 process per arm, three forward/reverse/forward rounds (`AB, BA, AB` for the
 two-condition comparisons), and 32-token arrival windows. Greedy arms required exact token
 digests. The retained artifacts record the complete source/checkpoint
@@ -49,6 +50,7 @@ Memory is shown in decimal GB; KV values are useful payload / allocated bytes.
 `active/peak/pool` are MLX values; footprint is the process physical
 footprint. VM entries are median deltas per arm (`pagein`, `swapin`,
 `swapout`). A dash means the metric is not applicable to that horizon.
+Throughput shows median with arm range in parentheses where present.
 
 | Run (raw artifact) | Prompt → output; chunk | Allocator / cache-growth / residency | Useful / allocated KV | MLX active / peak / pool; footprint | Prefill / first token | Overall / window / tail tok/s | Reads; VM deltas | Paired result; correctness |
 | --- | --- | --- | ---: | --- | --- | --- | --- | --- |
@@ -100,7 +102,7 @@ documentation handoff.
 
 ## Product profiling diagnostic
 
-We retain six fresh-process arms in `k2-profile-product.jsonl`, with
+We retain six fresh-process arms in [`k2-profile-product.jsonl`](k2-profile-product.jsonl), with
 AB/BA/AB ordering, 2,731 prompt tokens, and 256 greedy output tokens.
 All arms preserve the product digest. We use the project `.venv` interpreter.
 The following command reproduces the run configuration:
@@ -111,12 +113,16 @@ The following command reproduces the run configuration:
 
 The original invocation calls `run_comparison` with these same options.
 Each profile record references separate prefill and decode `.pstats` files.
+We retain all six files in this directory:
+`k2-profile-product-round-1-cprofile-*.pstats`,
+`k2-profile-product-round-2-cprofile-*.pstats`, and
+`k2-profile-product-round-3-cprofile-*.pstats` (prefill and decode each).
 Our control median is 11.314 tok/s. The paired +0.620% difference measures
 instrumentation effects, not a runtime improvement. Text decoding and protocol
 translation account for 0.100% of pooled profiled decode time.
 We do not compare these rates directly with the historical baseline.
 
-Our separate `k2-metal-diagnostic.jsonl` records one unprofiled backend arm
+Our separate [`k2-metal-diagnostic.jsonl`](k2-metal-diagnostic.jsonl) records one unprofiled backend arm
 under Xcode-beta's Metal System Trace. We used this command:
 
 ```bash
