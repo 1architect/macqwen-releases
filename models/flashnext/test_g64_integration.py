@@ -42,7 +42,7 @@ class G64IntegrationTests(unittest.TestCase):
                 layer_id=1,
             )
 
-    def test_g64_stays_reference_by_default(self):
+    def test_g64_reference_requires_explicit_opt_out(self):
         with mock.patch.dict(
             expert_cache.os.environ,
             {
@@ -57,16 +57,16 @@ class G64IntegrationTests(unittest.TestCase):
         self.assertFalse(switch.metal_combines_scores)
         self.assertIsNone(switch.slab_pack)
 
-    def test_g64_custom_runtime_requires_explicit_opt_in(self):
+    def test_g64_custom_runtime_is_the_default(self):
         with mock.patch.dict(
             expert_cache.os.environ,
             {
                 "FLASHNEXT_METAL_RUNTIME": "1",
-                "FLASHNEXT_METAL_G64": "1",
                 "FLASHNEXT_SLAB_PACK": "0",
                 "FLASHNEXT_SLAB_GLOBAL": "0",
             }, clear=False,
         ):
+            expert_cache.os.environ.pop("FLASHNEXT_METAL_G64", None)
             switch = self._make()
             self.assertTrue(switch.metal_runtime_capable)
             self.assertTrue(switch.metal_combines_scores)

@@ -46,8 +46,12 @@ class G64BenchmarkTests(unittest.TestCase):
         self.assertEqual(set(comparison), {"g64-reference", "g64-metal"})
         for env in comparison.values():
             self.assertEqual(env["FLASHNEXT_METAL_RUNTIME"], "1")
-            self.assertEqual(env["FLASHNEXT_SLAB_G64"], "0")
-            self.assertEqual(env["FLASHNEXT_SLAB_PACK"], "1")
+            for key in ("FLASHNEXT_SLAB", "FLASHNEXT_SLAB_GLOBAL", "FLASHNEXT_SLAB_PACK",
+                        "FLASHNEXT_SLAB_G64", "FLASHNEXT_STREAM_PACK"):
+                self.assertEqual(env[key], "0")
+                self.assertIn(key, LOAD_TIME_SETTINGS)
+        self.assertEqual(comparison["g64-reference"]["FLASHNEXT_METAL_G64"], "0")
+        self.assertEqual(comparison["g64-metal"]["FLASHNEXT_METAL_G64"], "1")
         self.assertIn("FLASHNEXT_METAL_G64", LOAD_TIME_SETTINGS)
 
     def test_status_reports_verification_until_executor_gate(self):

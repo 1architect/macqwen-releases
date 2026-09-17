@@ -19,7 +19,11 @@ QSA_DENSE_MASK_MAX_BYTES = int(os.environ.get(
     "FLASHNEXT_QSA_DENSE_MASK_MAX_BYTES", str(512 * 1024 * 1024)
 ))
 
+QSA_CACHE_POOLED_KEYS = os.environ.get("FLASHNEXT_QSA_CACHE_POOLED_KEYS", "0") == "1"
+QSA_SCATTER_DECODE = os.environ.get("FLASHNEXT_QSA_SCATTER_DECODE", "0") == "1"
+
 _ORIGINAL_CALL = None
+_ORIGINAL_INDEXER_CALL = None
 
 
 def _dense_mask_bytes(batch, query, past, block_topk) -> int:
@@ -27,9 +31,46 @@ def _dense_mask_bytes(batch, query, past, block_topk) -> int:
     return int(batch) * int(query) * int(block_topk) * (int(past) + int(query))
 
 
+def _pool_keys(indexer, raw_keys, position_ids, start, end):
+    pooled_keys = raw_keys[
+        :, start * indexer.compress_ratio : end * indexer.compress_ratio
+    ].reshape(raw_keys.shape[0], end - start, indexer.compress_ratio, indexer.head_dim)
+    pooled_keys = mx.expand_dims(
+        indexer.k_layernorm(
+            mx.mean(pooled_keys.astype(mx.float32), axis=2).astype(raw_keys.dtype)
+        ),
+        axis=1,
+    )
+    block_starts = mx.arange(start, end) * indexer.compress_ratio
+    return indexer._apply_rope(pooled_keys, position_ids[..., block_starts])
+
+
+def _reusable_pool(indexer, cache):
+    from mlx_vlm.models.qwen4_exp.language import QSAKVCache, QSAQuantizedKVCache
+
+    if type(cache) not in (QSAKVCache, QSAQuantizedKVCache):
+        return None
+    saved = getattr(cache, "_flashnext_pooled_keys", None)
+    if saved is None:
+        return None
+    owner, keys, positions, ratio, pooled = saved
+    if (
+        owner is indexer
+        and keys is cache.index_keys
+        and positions is cache.index_position_ids
+        and ratio == indexer.compress_ratio
+        and cache.offset == keys.shape[1]
+    ):
+        return pooled
+    return None
+
+
 def _prepare_indexer(indexer, hidden_states, cache, position_ids):
     batch, seq_len, _ = hidden_states.shape
-    past_len = int(cache.offset)
+    past_len = int(cache.offset) if cache is not None else 0
+    pooled_keys = None
+    if QSA_CACHE_POOLED_KEYS:
+        pooled_keys = _reusable_pool(indexer, cache)
     if position_ids is None:
         position_ids = indexer._default_position_ids(batch, past_len, seq_len)
 
@@ -42,27 +83,29 @@ def _prepare_indexer(indexer, hidden_states, cache, position_ids):
     query = qk[:, :, : indexer.n_heads]
     raw_keys = qk[:, :, indexer.n_heads :].squeeze(2)
     query = indexer.q_layernorm(query).transpose(0, 2, 1, 3)
-    raw_keys, full_position_ids = cache.update_indexer(raw_keys, position_ids)
+    if cache is not None:
+        raw_keys, full_position_ids = cache.update_indexer(raw_keys, position_ids)
+    else:
+        full_position_ids = position_ids
 
     key_len = int(raw_keys.shape[1])
     max_complete_blocks = key_len // indexer.compress_ratio
+    if max_complete_blocks <= indexer.block_topk:
+        return query, None, key_len, past_len, max_complete_blocks
     query = indexer._apply_rope(query, position_ids)
-    complete_key_len = max_complete_blocks * indexer.compress_ratio
-    pooled_keys = raw_keys[:, :complete_key_len].reshape(
-        batch,
-        max_complete_blocks,
-        indexer.compress_ratio,
-        indexer.head_dim,
-    )
-    pooled_keys = mx.expand_dims(
-        indexer.k_layernorm(
-            mx.mean(pooled_keys.astype(mx.float32), axis=2).astype(raw_keys.dtype)
-        ),
-        axis=1,
-    )
-    block_starts = mx.arange(max_complete_blocks) * indexer.compress_ratio
-    block_position_ids = full_position_ids[..., block_starts]
-    pooled_keys = indexer._apply_rope(pooled_keys, block_position_ids)
+    completed = 0 if pooled_keys is None else pooled_keys.shape[2]
+    if completed < max_complete_blocks:
+        new_keys = _pool_keys(
+            indexer, raw_keys, full_position_ids, completed, max_complete_blocks
+        )
+        pooled_keys = (
+            new_keys if pooled_keys is None
+            else mx.concatenate([pooled_keys, new_keys], axis=2)
+        )
+    if QSA_CACHE_POOLED_KEYS and cache is not None:
+        cache._flashnext_pooled_keys = (
+            indexer, raw_keys, full_position_ids, indexer.compress_ratio, pooled_keys
+        )
     return query, pooled_keys, key_len, past_len, max_complete_blocks
 
 
@@ -75,6 +118,7 @@ def _chunk_mask(
     max_complete_blocks: int,
     start: int,
     end: int,
+    scatter: bool = True,
 ):
     query_chunk = query[:, :, start:end]
     scores = query_chunk @ pooled_keys.transpose(0, 1, 3, 2)
@@ -93,6 +137,22 @@ def _chunk_mask(
         kth=-indexer.block_topk,
         axis=-1,
     )[..., -indexer.block_topk :]
+
+    if not scatter:
+        token_indices = mx.arange(key_len)
+        token_blocks = token_indices // indexer.compress_ratio
+        selected_tokens = mx.any(
+            token_blocks[None, None, None, :] == selected_blocks[..., None], axis=2
+        )
+        tail_starts = complete_counts * indexer.compress_ratio
+        tail = (token_indices[None, None, :] >= tail_starts[None, :, None]) & (
+            token_indices[None, None, :] < query_ends[None, :, None]
+        )
+        causal = token_indices[None, None, :] < query_ends[None, :, None]
+        use_sparse = complete_counts > indexer.block_topk
+        return mx.where(
+            use_sparse[None, :, None], selected_tokens | tail, causal
+        )[:, None]
 
     offsets = mx.arange(indexer.compress_ratio)
     selected_indices = (
@@ -137,6 +197,26 @@ def _chunk_mask(
         selected_tokens,
         causal,
     )[:, None]
+
+
+def _indexer_call(self, hidden_states, cache, position_ids):
+    if not (QSA_CACHE_POOLED_KEYS or QSA_SCATTER_DECODE):
+        return _ORIGINAL_INDEXER_CALL(self, hidden_states, cache, position_ids)
+    if (
+        (not QSA_CACHE_POOLED_KEYS and hidden_states.shape[1] != 1)
+        or (cache is not None and not isinstance(cache.offset, int))
+    ):
+        return _ORIGINAL_INDEXER_CALL(self, hidden_states, cache, position_ids)
+    query, pooled_keys, key_len, past_len, complete_blocks = _prepare_indexer(
+        self, hidden_states, cache, position_ids
+    )
+    if complete_blocks <= self.block_topk:
+        return None
+    return _chunk_mask(
+        self, query, pooled_keys, key_len, past_len, complete_blocks,
+        0, hidden_states.shape[1],
+        scatter=QSA_SCATTER_DECODE and hidden_states.shape[1] == 1,
+    )
 
 
 def _chunked_call(
@@ -229,8 +309,8 @@ def _chunked_call(
 
 def apply() -> bool:
     """Patch only QSA calls whose dense mask would approach Metal limits."""
-    global _ORIGINAL_CALL
-    from mlx_vlm.models.qwen4_exp.language import Qwen4ExpAttention
+    global _ORIGINAL_CALL, _ORIGINAL_INDEXER_CALL
+    from mlx_vlm.models.qwen4_exp.language import Qwen4ExpAttention, Qwen4ExpQSAIndexer
 
     if getattr(Qwen4ExpAttention, "_flashnext_chunked_qsa", False):
         return False
@@ -239,6 +319,8 @@ def apply() -> bool:
     if QSA_DENSE_MASK_MAX_BYTES < 1:
         raise ValueError("QSA dense mask byte budget must be positive")
     _ORIGINAL_CALL = Qwen4ExpAttention.__call__
+    _ORIGINAL_INDEXER_CALL = Qwen4ExpQSAIndexer.__call__
+    Qwen4ExpQSAIndexer.__call__ = _indexer_call
     Qwen4ExpAttention.__call__ = _chunked_call
     Qwen4ExpAttention._flashnext_chunked_qsa = True
     return True

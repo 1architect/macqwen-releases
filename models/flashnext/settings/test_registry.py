@@ -111,6 +111,19 @@ class SettingsRegistryTests(unittest.TestCase):
         defaults = registry.defaults("flashnext")
         self.assertEqual(defaults["routing"], "exact-quality")
         self.assertEqual(defaults["swap-epsilon"], 0.02)
+        self.assertEqual(defaults["metal-g64"], "1")
+
+    def test_metal_g64_default_is_active_without_environment(self):
+        registry = get_registry()
+        setting = registry.get("flashnext", "metal-g64")
+        saved = os.environ.pop("FLASHNEXT_METAL_G64", None)
+        try:
+            self.assertEqual(setting.value(None), "1")
+            self.assertTrue(setting.is_active(None))
+            self.assertEqual(setting.source_for(None), "default")
+        finally:
+            if saved is not None:
+                os.environ["FLASHNEXT_METAL_G64"] = saved
 
     def test_production_environment_controls_are_registered(self):
         registry = get_registry()

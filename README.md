@@ -64,7 +64,8 @@ Model weights are not included in this repository.
 The production runtime does not use the MTP weights included with oQ3-MTP.
 Our recorded SketchUp API test passed on oQ4 and failed on oQ3-MTP, so prefer
 oQ4 for code that depends on exact third-party APIs. REAP-288 support is
-available, but its complete quality and performance gates remain open.
+available. We promote its G64 executor on short controlled speed evidence,
+but general quality and long-turn equivalence remain unverified.
 
 Download oQ4:
 
@@ -175,9 +176,12 @@ needs from SSD. Flash-Next is a good fit because its experts are small enough
 to stream selectively. The normal launcher uses MLX and Metal; it does not use
 our abandoned native-runtime prototype.
 
-For REAP-288, normal chat uses generic MLX for Q4/G64 expert execution. Our
-custom G64 executor, G64 slabs, and expert-major stream packing remain opt-in
-research paths. You do not need to configure these paths for regular chat.
+For REAP-288, we default to the G64 Metal executor (`FLASHNEXT_METAL_G64=1`).
+We retain generic MLX execution as an explicit rollback: `FLASHNEXT_METAL_G64=0`.
+G64 slabs, expert-major stream packing, and QSA optimization flags remain off.
+We request this promotion on the 2026-09-17 short benchmark evidence and skip
+the long-turn quality gate at our request. We do not claim general quality
+or long-turn equivalence. See our [handoff](docs/flashnext/handoff.md) for evidence.
 
 ## Local API server
 

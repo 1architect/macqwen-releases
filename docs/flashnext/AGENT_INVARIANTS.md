@@ -6,18 +6,23 @@ changes or experiments.
 
 ## Runtime invariants
 
-- Keep the canonical control path unchanged unless a measured result promotes
-  an opt-in path.
+- Keep the canonical control path unchanged unless we explicitly approve
+  promotion with recorded evidence.
 - Make every optimization opt-in until it passes the promotion rules below.
-- `chat.sh` defaults to the MLX-backed Metal runtime. For REAP Q4/G64, keep
-  generic MLX expert execution unless `FLASHNEXT_METAL_G64=1` explicitly opts
-  into the experimental executor.
-- Preserve the generic MLX Q4/G64 path as the current REAP control. The
-  60-slot Q4/G32 Frontier 8A profiles are checkpoint-specific historical
-  controls and must not be presented as the current REAP runtime.
-- Keep the G64 Metal executor, G64 packed residency, Frontier 8B, and streamed
-  expert-major records disabled by default. G64 slabs and stream-pack stay off
-  with `FLASHNEXT_SLAB_G64=0` and `FLASHNEXT_STREAM_PACK=0`.
+  Our requested G64 default promotion on 2026-09-17 is a specific exception:
+  we accept short speed and exact-digest evidence and skip long-turn quality
+  validation at our request. We do not treat that gate as passed or general
+  quality as proven. This exception does not authorize other promotions.
+- `chat.sh` defaults to the MLX-backed Metal runtime. For REAP Q4/G64, we use
+  the G64 Metal executor by default with `FLASHNEXT_METAL_G64=1`.
+- Preserve generic MLX Q4/G64 as our comparison reference and explicit rollback
+  with `FLASHNEXT_METAL_G64=0`. The 60-slot Q4/G32 Frontier 8A profiles remain
+  checkpoint-specific historical controls, not the current REAP runtime.
+- Keep G64 packed residency, Frontier 8B, and streamed expert-major records
+  disabled by default. G64 slabs and stream-pack stay off with
+  `FLASHNEXT_SLAB_G64=0` and `FLASHNEXT_STREAM_PACK=0`.
+- Keep QSA optimization flags off: `FLASHNEXT_QSA_CACHE_POOLED_KEYS=0` and
+  `FLASHNEXT_QSA_SCATTER_DECODE=0`. The existing allocation guard remains active.
 - Preserve the exact token digest. Any digest change rejects the optimization.
 - Preserve BF16 rounding boundaries. A small numerical difference is not an
   acceptable quality result.
@@ -110,13 +115,13 @@ enablement, promotion, and defaults.
 
 ## Current next-work order
 
-1. Keep the generic MLX Q4/G64 path as the REAP control.
-2. Validate long and cached behavior on that control.
-3. Complete the cached tool-result QSA/prefill check, then test completed-block
-   QSA key caching and the existing scatter mask separately; claim no speed
-   gain until measured.
-4. Run the existing paired G64 comparison under the predeclared-seed,
-   completed-output protocol before considering executor promotion.
+1. Keep G64 Metal as our requested default and generic MLX as the explicit
+   rollback and comparison reference.
+2. Leave long and cached behavior validation open until we authorize it.
+3. Keep QSA optimization flags off. Complete the cached tool-result QSA/prefill
+   check only with our permission; assess key caching and scatter masks separately.
+4. Retain the predeclared-seed, completed-output G64 quality protocol as pending
+   work. Our default promotion does not clear this gate or authorize a run.
 5. Compare 32 versus 8 REAP expert pins without changing routes or arithmetic.
 6. Evaluate last-row-only prefill below 2,048 tokens as a TTFT/memory change.
 7. Profile the current reference path before deciding whether another
