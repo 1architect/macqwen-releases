@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/1architect/macqwen-releases/actions/workflows/ci.yml/badge.svg)](https://github.com/1architect/macqwen-releases/actions/workflows/ci.yml)
 
-MACQWEN runs large Qwen models locally on low-memory Apple Silicon Macs.
-It keeps the core model in unified memory and streams selected data from SSD.
+MACQWEN runs language models locally on Apple Silicon Macs. We support the
+SSD-streamed Qwen Flash-Next family and the resident K2-Horizon 7B MLX model.
 
 The tested system is an M4 Mac with 16 GB of unified memory and a 256 GB SSD.
 The project includes no model weights.
@@ -64,7 +64,8 @@ Model weights are not included in this repository.
 The production runtime does not use the MTP weights included with oQ3-MTP.
 Our recorded SketchUp API test passed on oQ4 and failed on oQ3-MTP, so prefer
 oQ4 for code that depends on exact third-party APIs. REAP-288 support is
-available, but its complete quality and performance gates remain open.
+available. We promote its G64 executor on short controlled speed evidence,
+but general quality and long-turn equivalence remain unverified.
 
 Download oQ4:
 
@@ -91,6 +92,32 @@ automatically. Otherwise, select it by alias or full path:
 
 Set `MACQWEN_MODEL_ROOT` when checkpoints are outside `~/models`.
 Set `MACQWEN_FLASHNEXT_PYTHON` when the Python environment uses another path.
+
+## K2-Horizon 7B
+
+K2-Horizon is a dense 7B alternative that uses about 9.6 GB of disk space. It
+runs through MLX-LM and does not use the Flash-Next streaming or routing modes.
+
+Download the official 8-bit MLX checkpoint:
+
+```bash
+hf download abenzerps/K2-Horizon-7B-MLX-8bit \
+  --local-dir "$HOME/models/K2-Horizon-7B-MLX-8bit"
+```
+
+Start it with the `k2` checkpoint alias:
+
+```bash
+./chat.sh --model k2-horizon --checkpoint k2
+```
+
+K2-Horizon supplies its MLX model implementation in `model.py`. Loading this
+checkpoint executes that local file, so only use a checkpoint source we trust.
+Set `MACQWEN_K2_HORIZON_PYTHON` if it needs a different Python environment.
+
+Read the [K2-Horizon brief](docs/k2_horizon/brief.md) for current status, the
+[research record](docs/k2_horizon/research.md) for measured decisions, and the
+[handoff](docs/k2_horizon/handoff.md) before changing or benchmarking it.
 
 ## Daily use
 
@@ -149,9 +176,12 @@ needs from SSD. Flash-Next is a good fit because its experts are small enough
 to stream selectively. The normal launcher uses MLX and Metal; it does not use
 our abandoned native-runtime prototype.
 
-For REAP-288, normal chat uses generic MLX for Q4/G64 expert execution. Our
-custom G64 executor, G64 slabs, and expert-major stream packing remain opt-in
-research paths. You do not need to configure these paths for regular chat.
+For REAP-288, we default to the G64 Metal executor (`FLASHNEXT_METAL_G64=1`).
+We retain generic MLX execution as an explicit rollback: `FLASHNEXT_METAL_G64=0`.
+G64 slabs, expert-major stream packing, and QSA optimization flags remain off.
+We request this promotion on the 2026-09-17 short benchmark evidence and skip
+the long-turn quality gate at our request. We do not claim general quality
+or long-turn equivalence. See our [handoff](docs/flashnext/handoff.md) for evidence.
 
 ## Local API server
 
@@ -211,6 +241,7 @@ Key input does not echo.
 | Preferences | `~/.macqwen/preferences.json` |
 | API keys | `~/Library/Application Support/MACQWEN/api_keys.json` |
 | Flash-Next sessions | `~/.cache/flashnext/sessions/` |
+| K2-Horizon sessions | `~/.cache/k2-horizon/sessions/` |
 | Qwen3.8-27B sessions | `~/.frankenstein/sessions/` |
 
 Session files can contain private prompts and model state.
@@ -234,6 +265,8 @@ Read the [Qwen3.8-27B handoff](docs/qwen27b/handoff.md) for setup and validation
 - If the checkpoint is incomplete, resume the `hf download` command.
 - If generation becomes slower, close memory-heavy apps and retry.
 - If multiple checkpoints exist, select `oq4`, `oq3`, or a full path.
+- For K2-Horizon, include `--model k2-horizon`; the no-argument launcher keeps
+  Flash-Next as its default.
 - If a command changed, run `/help` for the active command list.
 
 The loader checks the checkpoint configuration, index, and required shard files.
@@ -245,10 +278,12 @@ macqwen/                 Shared chat, commands, settings, and tools
 models/flashnext/        Flash-Next runtime and benchmarks
 models/flashnext/settings/ FlashNext setting registry and launch defaults
 models/flashnext/tests/  FlashNext interactive research test catalog
+models/k2_horizon/       K2-Horizon runtime, protocol adapter, settings, and tests
 models/qwen27b/          Qwen3.8-27B runtime and research utilities
 docs/                    Current guides, results, and historical records
 docs/MLX/               MLX Metal backend source notes
 docs/flashnext/graphics/ FlashNext trace screenshots and plots
+docs/k2_horizon/         K2-Horizon brief, research, handoff, and measurements
 ```
 
 `chat.sh` selects the model, checkpoint, and Python environment before loading the runtime.
@@ -267,6 +302,20 @@ Run Flash-Next tests:
 ```bash
 .venv/bin/python -m unittest discover \
   -s models/flashnext -p 'test_*.py' -q
+```
+
+Run Qwen3.8-27B tests:
+
+```bash
+.venv/bin/python -m unittest discover \
+  -s models/qwen27b -p 'test_*.py' -q
+```
+
+Run K2-Horizon adapter tests:
+
+```bash
+.venv/bin/python -m unittest discover \
+  -s models/k2_horizon -p 'test_*.py' -q
 ```
 
 ## Documentation
@@ -292,9 +341,10 @@ MACQWEN uses and builds on these third-party projects and platform tools:
   array operations, HTTP access, and checkpoint access.
 - Hugging Face hosts the public checkpoint files and model discussions used in
   this project and its evidence record.
-- The Qwen team provides the model architecture, tokenizer, sampling guidance,
-  and checkpoint family used by MACQWEN.
+- The Qwen team provides the Qwen model architecture, tokenizer, sampling
+  guidance, and checkpoint family used by MACQWEN.
 - Vontra provides the public FlashNext MLX checkpoints used in this work.
+- IFM provides K2-Horizon, and abenzerps provides its public MLX checkpoint.
 - Tavily and Context7 provide optional search and documentation tools for the
   repository-tool chat profile.
 - Python provides the runtime and standard-library components.

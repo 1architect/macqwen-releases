@@ -45,7 +45,9 @@ class ChatParityTests(unittest.TestCase):
             with patch("sys.argv", argv), \
                  patch.dict("os.environ", {"FLASHNEXT_PIN_CACHE": str(pins)}), \
                  patch.object(bench, "source_fingerprint", return_value="fixed"), \
-                 patch.object(bench, "capture_arm", return_value=(1, "", "NameError: missing")), \
+                 patch("macqwen.checkpoints.resolve_flashnext", return_value=Path("/reap")), \
+                 patch.object(bench, "checkpoint_runtime_capability", return_value={"group_size": 64}), \
+                 patch.object(bench, "capture_arm", return_value=(1, "raw output", "NameError: missing")), \
                  patch("builtins.print"):
                 with self.assertRaisesRegex(RuntimeError, "pins32 exited"):
                     bench.main()
@@ -54,6 +56,8 @@ class ChatParityTests(unittest.TestCase):
             self.assertEqual(result["planned_rounds"], 3)
             self.assertEqual(result["records"], [])
             self.assertEqual(result["child_failure"]["stderr_tail"], "NameError: missing")
+            self.assertEqual(result["child_failure"]["stdout"], "raw output")
+            self.assertTrue(result["benchmark_source_fingerprint"])
 
     @staticmethod
     def records():
@@ -227,6 +231,130 @@ class ChatParityTests(unittest.TestCase):
         records = self.records()
         del records[0]["vm_counters"]
         self.assertEqual(len(vm_warnings(records)), 1)
+
+    def pin_records(self, effects=(0.0, 0.0, 0.0), group_size=64):
+        records = []
+        for index, effect in enumerate(effects):
+            order = (32, 8) if index % 2 == 0 else (8, 32)
+            for count in order:
+                row = dict(self.records()[0])
+                row.update(condition=f"pins{count}", round=index + 1,
+                           resident_experts=count, pinned_mb=count * 100.0,
+                           profile_pins=False, gen_rate=2.0 + (effect if count == 8 else 0.0))
+                if group_size == 64:
+                    row.update(allocation_digest=None, allocated_slots=0, mlock_ok=False,
+                               slab_objects=0, executor_count=0,
+                               environment=bench.condition_environment(f"pins{count}", {"group_size": 64}))
+                records.append(row)
+        return records
+
+    def test_pin_controls_disable_all_slabs_only_for_g64(self):
+        original = dict(bench.CHAT_ENV)
+        for condition in bench.PIN_CONDITIONS:
+            controls = bench.condition_environment(condition, {"group_size": 64})
+            for key in ("FLASHNEXT_SLAB", "FLASHNEXT_SLAB_GLOBAL", "FLASHNEXT_SLAB_PACK",
+                        "FLASHNEXT_SLAB_G64", "FLASHNEXT_STREAM_PACK", "FLASHNEXT_METAL_G64"):
+                self.assertEqual(controls[key], "0")
+            self.assertEqual(bench.condition_environment(condition, {"group_size": 32}), original)
+        self.assertEqual(bench.condition_environment("rendered", {"group_size": 64}), original)
+        self.assertEqual(bench.CHAT_ENV, original)
+
+    def test_reap_pin_startup_and_exactness_gates(self):
+        capability = {"group_size": 64, "slab_mode": "reference", "allocated_slots": 0, "mlock_ok": False}
+        with patch.object(bench, "_runtime_capability", return_value=capability):
+            result = summarize(self.pin_records(), "pins", expected_runtime="checkpoint")
+            self.assertNotIn("60-slot", result["scope"])
+            for field, value in (("allocated_slots", 60), ("slab_objects", 1),
+                                 ("executor_count", 1), ("resident_experts", 16),
+                                 ("digest", "changed"), ("tokens", 31)):
+                records = self.pin_records()
+                records[0][field] = value
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    summarize(records, "pins", expected_runtime="checkpoint")
+            for key in ("FLASHNEXT_METAL_G64", "FLASHNEXT_SLAB", "FLASHNEXT_SLAB_GLOBAL",
+                        "FLASHNEXT_SLAB_PACK", "FLASHNEXT_SLAB_G64", "FLASHNEXT_STREAM_PACK"):
+                records = self.pin_records()
+                records[0]["environment"][key] = "1"
+                with self.subTest(key=key), self.assertRaisesRegex(ValueError, "runtime controls"):
+                    summarize(records, "pins", expected_runtime="checkpoint")
+
+    def test_pin_sign_test_is_two_sided_and_excludes_ties(self):
+        for effects, counts, p_value in (
+            ((1.0,) * 6, (6, 0, 0), 0.03125),
+            ((-1.0,) * 6, (0, 6, 0), 0.03125),
+            ((0.0,) * 6, (0, 0, 6), 1.0),
+            ((1.0, 1.0, 0.0), (2, 0, 1), 0.5),
+            ((1.0, -1.0, 0.0), (1, 1, 1), 1.0),
+        ):
+            with self.subTest(effects=effects):
+                result = summarize(self.pin_records(effects, group_size=32), "pins")
+                self.assertEqual(tuple(result[key] for key in ("pin_wins", "pin_losses", "pin_ties")), counts)
+                self.assertEqual(result["pin_sign_p"], p_value)
+                self.assertEqual(result["pin_non_tied_pairs"], counts[0] + counts[1])
+
+    def test_pin_main_preserves_raw_records_when_validation_fails(self):
+        for failure in ("tokens", "source"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                pins = root / "pins.json"
+                pins.write_text("{}")
+                result_path = root / "result.json"
+                rows = self.pin_records()
+                if failure == "tokens":
+                    for row in rows:
+                        if row["condition"] == "pins8":
+                            row["digest"] = "different"
+                captured = []
+
+                def capture(command, environment):
+                    captured.append((command, environment))
+                    row = dict(rows[len(captured) - 1], type="chat-parity")
+                    return 0, json.dumps(row), ""
+
+                argv = ["bench", "--mode", "pins", "--rounds", "3", "--prompt", "request",
+                        "--json", str(result_path)]
+                with patch("sys.argv", argv), \
+                     patch.dict("os.environ", {"FLASHNEXT_PIN_CACHE": str(pins), "FLASHNEXT_SLAB_PACK": "1"}), \
+                     patch.object(bench, "source_fingerprint", return_value="fixed"), \
+                     patch.object(bench, "require_unchanged_harness",
+                                  side_effect=[None, RuntimeError("harness changed")] if failure == "source" else None), \
+                     patch("macqwen.checkpoints.resolve_flashnext", return_value=Path("/oq4")), \
+                     patch.object(bench, "checkpoint_runtime_capability", return_value={
+                         "group_size": 64, "slab_mode": "reference", "allocated_slots": 0, "mlock_ok": False,
+                     }), \
+                     patch.object(bench, "capture_arm", side_effect=capture), \
+                     patch("builtins.print"):
+                    with self.assertRaises((ValueError, RuntimeError)):
+                        bench.main()
+                saved = json.loads(result_path.read_text())
+                self.assertEqual(saved["status"], "failed")
+                self.assertEqual(len(saved["records"]), len(captured))
+                self.assertEqual(len(captured), 1 if failure == "source" else 6)
+                self.assertTrue(saved["last_child"]["stdout"])
+                for command, environment in captured:
+                    self.assertIn("--exact-quality", command)
+                    self.assertEqual(environment["FLASHNEXT_SLAB_PACK"], "0")
+                    self.assertEqual(environment["FLASHNEXT_SLAB_GLOBAL"], "0")
+                    self.assertEqual(environment["FLASHNEXT_METAL_G64"], "0")
+                if failure == "tokens":
+                    self.assertEqual([row["condition"] for row in saved["records"]],
+                                     ["pins32", "pins8", "pins8", "pins32", "pins32", "pins8"])
+
+    def test_harness_fingerprint_covers_pin_driver_and_statistics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "models/flashnext"
+            folder.mkdir(parents=True)
+            driver = folder / "bench_chat_parity.py"
+            statistics_source = folder / "bench_production.py"
+            driver.write_text("driver")
+            statistics_source.write_text("statistics")
+            fingerprint = bench.benchmark_harness_fingerprint(root)
+            driver.write_text("changed driver")
+            self.assertNotEqual(bench.benchmark_harness_fingerprint(root), fingerprint)
+            driver.write_text("driver")
+            statistics_source.write_text("changed statistics")
+            self.assertNotEqual(bench.benchmark_harness_fingerprint(root), fingerprint)
 
     def test_pin_comparison_requires_real_memory_reduction_and_identical_tokens(self):
         records = []

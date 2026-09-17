@@ -376,12 +376,12 @@ def metal_runtime() -> bool:
 
 
 def set_metal_g64(enabled: bool) -> None:
-    """Enable the opt-in Q4/G64 custom executor variant."""
+    """Set the default Q4/G64 custom Metal executor variant."""
     os.environ["FLASHNEXT_METAL_G64"] = "1" if enabled else "0"
 
 
 def metal_g64() -> bool:
-    return os.environ.get("FLASHNEXT_METAL_G64") == "1"
+    return os.environ.get("FLASHNEXT_METAL_G64", "1") == "1"
 
 # Rows per read. A gather's throughput collapses once its output buffer gets
 # large: measured at 16 workers, 1027 MB/s for 10 rows, 1205 MB/s for 96, and

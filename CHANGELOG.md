@@ -1,5 +1,20 @@
 # Changelog
 
+## MACQWEN 0.4.2 - 2026-09-17
+
+### Added
+
+- Add an isolated `models/k2_horizon` package for K2-Horizon 7B MLX
+  checkpoint discovery, resident generation, sessions, protocol adaptation,
+  settings, and tests.
+- Add the `k2` checkpoint alias and `--model k2-horizon` launcher path.
+
+### Tests
+
+- Pass 251 checkpoint-free MACQWEN tests, 352 checkpoint-free FlashNext
+  tests (2 skipped), 41 K2-Horizon tests, and 1 Qwen27B test, plus
+  Python bytecode compilation and whitespace validation.
+
 ## MACQWEN 0.4.1 - 2026-09-16
 
 ### Added

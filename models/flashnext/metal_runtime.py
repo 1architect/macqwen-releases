@@ -29,7 +29,8 @@ MAX_WIDTH = 16_384
 GROUP_SIZE = 32
 SUPPORTED_GROUP_SIZES = (32, 64)
 # Full-model digest gate passed after the MLX score-combine correction on
-# 20260908. The path remains opt-in through FLASHNEXT_METAL_G64.
+# 20260908. The 20260917 paired comparison measured +13.4% decode speed with
+# identical digests, so FLASHNEXT_METAL_G64 defaults to on.
 G64_RUNTIME_READY = True
 BITS = 4
 

@@ -11,8 +11,14 @@ state.
 
 Our canonical backend is the MLX-backed `FlashNextBackend`. `chat.sh` defaults
 to the MLX-backed Metal runtime (`FLASHNEXT_METAL_RUNTIME=1`). For REAP Q4/G64,
-that means generic MLX expert execution unless the experimental executor is
-explicitly enabled with `FLASHNEXT_METAL_G64=1`.
+we now default to the G64 Metal executor (`FLASHNEXT_METAL_G64=1`).
+We retain generic MLX expert execution as the explicit rollback with
+`FLASHNEXT_METAL_G64=0`.
+
+We promote this default on 2026-09-17 at our explicit request, using the
+controlled 32-token speed and exact-digest evidence below. We skip the
+long-turn quality gate at our request for this decision. This is a specific
+promotion exception, not proof of general quality or long-turn equivalence.
 
 The current research checkpoint is:
 
@@ -21,38 +27,46 @@ sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit
 ```
 
 It uses generic MLX Q4/G64 expert weights and Q4/G32 n-gram weights. We keep
-the generic MLX Q4/G64 reference path for REAP. The custom G64 executor, G64
-slab pack, and expert-major stream-pack path are off for normal chat. G64 slabs
-remain off with `FLASHNEXT_SLAB_G64=0`, and stream-pack remains off with
-`FLASHNEXT_STREAM_PACK=0`. The native prototype was rejected and removed
-because it did not implement the complete model; MLX is canonical and no
-native runtime flag is needed.
+the generic MLX Q4/G64 reference path available for REAP comparisons and rollback.
+Only the G64 executor default changes. G64 slabs remain off with
+`FLASHNEXT_SLAB_G64=0`, and stream-pack remains off with
+`FLASHNEXT_STREAM_PACK=0`. We reject and remove the native prototype because
+it does not implement the complete model. MLX remains canonical; no native
+runtime flag is needed.
 
 The 60-slot Frontier 8A and corrected decode-only Q4/G32 controls are
 historical compatibility evidence. They are not the current REAP runtime and
 must not be presented as REAP results.
 
-REAP quality and throughput remain open. A short equality or sanity check does
-not clear the long-turn quality gate. We do not promote an optimization until
-the same checkpoint, prompt, sampling policy, token digest, and physical-I/O
-accounting support it.
+REAP general quality and long-turn equivalence remain open. Our short controlled
+speed result supports this requested default change only within its measured
+conditions. A matching short digest does not clear the long-turn quality gate.
+We retain the normal promotion protocol below for other optimizations.
 
-## Safe configuration
+## Default configuration and rollback
 
-For the current REAP reference path, use the MLX-backed Metal runtime and keep
-the experimental paths off:
+We use the MLX-backed Metal runtime with the G64 executor enabled:
 
 ```text
 FLASHNEXT_METAL_RUNTIME=1
-FLASHNEXT_METAL_G64=0
+FLASHNEXT_METAL_G64=1
 FLASHNEXT_SLAB_G64=0
 FLASHNEXT_STREAM_PACK=0
+FLASHNEXT_QSA_CACHE_POOLED_KEYS=0
+FLASHNEXT_QSA_SCATTER_DECODE=0
 ```
 
-The runtime flag selects the MLX-backed Metal path; it does not select the
-experimental G64 executor for a Q4/G64 checkpoint. The generic Q4/G32 slab
-settings remain available for compatible historical checkpoints, but they do
-not activate G64 slabs while `FLASHNEXT_SLAB_G64=0`.
+We roll back to generic MLX Q4/G64 execution with an explicit override:
+
+```bash
+FLASHNEXT_METAL_G64=0 ./chat.sh --checkpoint reap
+```
+
+The runtime flag selects the MLX-backed Metal path. The separate G64 flag
+selects the executor, and we preserve explicit `0` overrides. Generic Q4/G32
+slab settings remain available for compatible historical checkpoints. They do
+not activate G64 slabs while `FLASHNEXT_SLAB_G64=0`. QSA optimization flags
+remain off; the existing allocation guard remains active.
 
 `FLASHNEXT_NATIVE_PIPELINE` is obsolete because the native integration was
 removed. Do not add it to a launcher or use it as a control.
@@ -98,6 +112,15 @@ The following are the validation records we may use while resuming work:
   Seed 42 is a known regression case, not a representative quality seed. Both
   stayed inside reasoning and made the same language-identification error;
   this is short trajectory equality, not a completed quality or speed gate.
+- Our 2026-09-17 G64 comparison uses six reversed interleaved pairs of 32
+  greedy tokens. Reference median is 2.374 tok/s versus 2.665 tok/s for Metal.
+  The paired gain is +13.4% mean and +15.1% median, above the 5.0% resolution
+  band, with 6/6 wins and two-sided sign-test `p=0.031`. All digests match
+  `1a9abb4b5fdc523a7a2986fb62f2b63570af515a98cecde6f201e682580fa65d`.
+  Physical-read medians are 191.2 versus 191.1 MB/token. We retain the JSON
+  and log at `~/.cache/flashnext/exact-speed-20260917/g64.json` and `g64.log`
+  in that directory. This supports our requested executor default, not general
+  quality. We skip long-turn quality validation at our request.
 - oQ4 is the recorded quality baseline only. It is historical and is not the
   installed REAP checkpoint.
 
@@ -140,15 +163,16 @@ write the failed arm and available evidence to the result artifact before
 returning a failing status. Every artifact must bind the checkpoint identity,
 runtime-source fingerprint, and benchmark-harness fingerprint.
 
-For G64 or REAP experiments, first pass a short exact-quality gate, then the
-long-turn quality gate with the same agent prompt and explicit sampling seed.
-A short matching digest is necessary but not sufficient. Keep the G64 kernel,
-G64 slab pack, and stream-pack disabled unless both quality and controlled
-performance gates are clear.
+Our normal G64 or REAP experiment protocol first requires a short exact-quality
+gate, then long-turn quality with the same agent prompt and explicit sampling
+seed. A short matching digest is necessary but not sufficient. Our requested
+2026-09-17 G64 executor promotion is a specific exception: we skip long-turn
+validation without marking it passed. G64 slabs and stream-pack remain disabled
+until their separate quality and controlled performance gates are clear.
 
-The next G64 comparison is future work retained from Astra's recommendation.
-We predeclare exactly three seeds, 7, 19, and 73, and pair G64 off versus the
-experimental G64 executor on with `FLASHNEXT_METAL_RUNTIME=1`. We keep all
+Our pending long-turn G64 comparison retains Astra's recommendation and requires
+our permission before execution. We predeclare exactly three seeds, 7, 19,
+and 73, and pair G64 off versus on with `FLASHNEXT_METAL_RUNTIME=1`. We keep all
 slabs and stream-pack off in both arms (`FLASHNEXT_SLAB=0`,
 `FLASHNEXT_SLAB_GLOBAL=0`, `FLASHNEXT_SLAB_PACK=0`,
 `FLASHNEXT_SLAB_G64=0`, and `FLASHNEXT_STREAM_PACK=0`). Alternate arm order
@@ -196,11 +220,10 @@ user changes intact and do not reset or discard them implicitly.
 
 - REAP long-turn quality and trajectory are unverified; hard reasoning turns
   can loop or produce incomplete output.
-- The custom Q4/G64 kernel remains held out because the available long-turn
-  attempt was interrupted before a completed answer and was confounded by an
-  oversized `xhigh` allowance. It is an incomplete gate, not a quality
-  failure; its short equality evidence does not establish quality or speed,
-  and the incomplete attempt does not by itself disprove the architecture.
+- We enable the custom Q4/G64 executor at our request despite the open
+  long-turn quality gate. The earlier interrupted attempt also used an oversized
+  `xhigh` allowance. It remains incomplete, not a quality failure. The new short
+  speed evidence does not establish general quality or long-turn equivalence.
 - REAP checkpoint-specific RMSNorm and mixed Conv1d layout handling must remain
   shape-checked and fingerprint-aware; do not rewrite checkpoint tensors.
 - Issue #23 tracks the bit-exact RMSNorm compile gate.
@@ -212,14 +235,15 @@ user changes intact and do not reset or discard them implicitly.
 - Issue #48 tracks SSD DMA and GPU contention outside FlashNext.
 - Issue #49 tracks FlashNext prefill when opened for plain and agent profiles.
 
-The complete-model comparison remains unresolved when a candidate falls inside
-the measured resolution band. We keep the current control unchanged until a
-new result clears both the statistical and exact-quality gates.
+We keep a candidate's speed result unresolved when it falls inside its measured
+resolution band. Our 2026-09-17 G64 short result clears its reported band;
+our requested promotion does not resolve the separate long-turn quality gate.
 
 ## Next steps
 
-1. Keep REAP on generic MLX Q4/G64 with custom G64, G64 slabs, and stream-pack
-   off. Do not reintroduce the removed native prototype.
+1. Keep our requested G64 Metal default and the explicit generic MLX rollback.
+   Keep G64 slabs, stream-pack, and QSA optimization flags off. Do not
+   reintroduce the removed native prototype.
 2. Keep the corrected shared-total reasoning semantics, benchmark evidence,
    and checkpoint-bound pin profiles covered by non-model regression tests.
 3. Test QSA completed-block key caching and the scatter-based decode mask as
@@ -227,8 +251,8 @@ new result clears both the statistical and exact-quality gates.
    sessions, and positions.
 4. Complete the pending manual QSA/prefill validation without changing the
    benchmark protocol.
-5. Evaluate the existing corrected G64 executor with packed residency off in
-   both arms; do not start another fused-down rewrite first.
+5. Retain the pending long-turn G64 quality comparison with packed residency off
+   in both arms. Run it only with our permission; do not start a fused-down rewrite.
 6. Run a REAP-specific 32-versus-8 expert-pin comparison only with unchanged
    routes, arithmetic, and packed-residency policy.
 7. Treat last-row-only logits below the 2,048-token prefill threshold as a

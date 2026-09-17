@@ -16,6 +16,7 @@ MACQWEN keeps the same three active documents for each component.
 | Component | Brief | Research | Handoff |
 |---|---|---|---|
 | Shared chat | [Brief](chat/brief.md) | [Research](chat/research.md) | [Handoff](chat/handoff.md) |
+| K2-Horizon 7B | [Brief](k2_horizon/brief.md) | [Research](k2_horizon/research.md) | [Handoff](k2_horizon/handoff.md) |
 | Qwen3.8-27B | [Brief](qwen27b/brief.md) | [Research](qwen27b/research.md) | [Handoff](qwen27b/handoff.md) |
 | Flash-Next | [Brief](flashnext/brief.md) | [Research](flashnext/research.md) | [Handoff](flashnext/handoff.md) |
 
@@ -29,3 +30,4 @@ Active documents contain current instructions.
 | [`MLX/`](MLX/) | MLX 0.32.2 Metal backend source notes. The report contains file and line references. Treat it as reference material, not workflow instructions. |
 | [`flashnext/measurements/`](flashnext/measurements/) | Published FlashNext measurement records. |
 | [`flashnext/graphics/`](flashnext/graphics/) | FlashNext trace graphics, including the token trace view, Xcode capture view, and miss-sweep residual plot. |
+| [`k2_horizon/measurements/`](k2_horizon/measurements/) | Published K2-Horizon benchmark commands and raw records. |

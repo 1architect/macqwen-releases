@@ -15,6 +15,12 @@ For Flash-Next, use this order:
 The research record contains rejected approaches and prior measurements.
 Search it before starting an experiment.
 
+For K2-Horizon, use the equivalent active set:
+
+1. `docs/k2_horizon/handoff.md`
+2. `docs/k2_horizon/research.md`
+3. `docs/k2_horizon/brief.md`
+
 ## Documentation structure
 
 Each active component has three documents:

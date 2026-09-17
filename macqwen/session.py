@@ -385,8 +385,21 @@ def build_backend(name: str, args, prefs: dict):
         }
         mirror_preferences(backend, prefs, prefs["profile"])
         return backend
+    if name == "k2-horizon":
+        if not args.model_path:
+            raise SystemExit("--model-path is required for model 'k2-horizon'")
+        from models.k2_horizon.backend import K2HorizonBackend
+        from models.k2_horizon.settings import SESSION_DIR
+
+        backend = K2HorizonBackend(
+            model_path=args.model_path,
+            prefill_step_size=args.prefill_step_size,
+            session_dir=(args.session_dir or SESSION_DIR),
+        )
+        mirror_preferences(backend, prefs, prefs["profile"])
+        return backend
     raise SystemExit(
-        f"unknown model {name!r}. Use 'flashnext' or 'qwen27b'.")
+        f"unknown model {name!r}. Use 'flashnext', 'k2-horizon', or 'qwen27b'.")
 
 
 def _apply_seed(seed: int | None) -> None:
@@ -399,7 +412,10 @@ def _apply_seed(seed: int | None) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     from macqwen.model_settings import FLASHNEXT_DEFAULTS
-    parser.add_argument("--model", default=None, choices=("flashnext", "qwen27b"))
+    parser.add_argument(
+        "--model", default=None,
+        choices=("flashnext", "k2-horizon", "qwen27b"),
+    )
     parser.add_argument("--profile", default=None, choices=("plain", "agent"))
     parser.add_argument("--model-path", "--checkpoint", dest="model_path", default=None)
     parser.add_argument(
@@ -606,6 +622,17 @@ def main() -> int:
             parser.error(str(exc))
         if explicit_checkpoint or saved_only or not (environment_checkpoint or saved_checkpoint):
             prefs["flashnext_checkpoint"] = args.model_path
+    elif prefs["model"] == "k2-horizon":
+        from models.k2_horizon.checkpoint import resolve_k2_horizon
+        from models.k2_horizon.settings import CHECKPOINT_ENV
+
+        explicit_checkpoint = args.model_path
+        environment_checkpoint = os.environ.get(CHECKPOINT_ENV)
+        choice = explicit_checkpoint or environment_checkpoint or None
+        try:
+            args.model_path = str(resolve_k2_horizon(choice))
+        except ValueError as exc:
+            parser.error(str(exc))
     if benchmarking and prefs["profile"] != "plain":
         parser.error("benchmark mode requires --profile plain")
     if args.benchmark_chat_parity and prefs["model"] != "flashnext":

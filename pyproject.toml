@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "macqwen"
-version = "0.4.1"
-description = "Low-memory Apple Silicon runtime for local Qwen inference"
+version = "0.4.2"
+description = "Apple Silicon runtime for local language model inference"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"

@@ -70,6 +70,34 @@ def source_fingerprint(root: Path = ROOT) -> str:
     return digest.hexdigest()
 
 
+def benchmark_harness_fingerprint(root: Path = ROOT) -> str:
+    digest = hashlib.sha256(b"flashnext-chat-parity-benchmark-v1")
+    for name in ("bench_chat_parity.py", "bench_production.py"):
+        path = root / "models/flashnext" / name
+        digest.update(name.encode() + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def require_unchanged_harness(expected: str) -> None:
+    if benchmark_harness_fingerprint() != expected:
+        raise RuntimeError("Benchmark harness changed during the comparison")
+
+
+def condition_environment(condition: str, capability=None) -> dict[str, str]:
+    environment = dict(CHAT_ENV)
+    if condition in PIN_CONDITIONS and capability is not None and capability["group_size"] == 64:
+        environment.update({
+            "FLASHNEXT_METAL_G64": "0",
+            "FLASHNEXT_SLAB": "0",
+            "FLASHNEXT_SLAB_GLOBAL": "0",
+            "FLASHNEXT_SLAB_PACK": "0",
+            "FLASHNEXT_SLAB_G64": "0",
+            "FLASHNEXT_STREAM_PACK": "0",
+        })
+    return environment
+
+
 def require_unchanged_source(expected: str, root: Path = ROOT) -> None:
     if source_fingerprint(root) != expected:
         raise RuntimeError(
@@ -297,11 +325,18 @@ def run_chat_child(session, condition: str, prompt: str) -> None:
         ended = time.perf_counter()
         after_bytes = disk_bytes_read()
         after_vm = vm_counters()
-        if not start or start["bytes"] < 0 or after_bytes < start["bytes"]:
-            raise RuntimeError("decode-only physical-read measurement unavailable")
-        if not start["vm"] or not after_vm:
-            raise RuntimeError("VM measurement unavailable")
+        reads_valid = bool(start) and start["bytes"] >= 0 and after_bytes >= start["bytes"]
+        vm_valid = bool(start.get("vm")) and bool(after_vm)
         pack = getattr(backend.store, "_slab_pack", None)
+        switches = [
+            layer.mlp.switch_mlp for layer in backend.language.model.layers
+            if getattr(getattr(layer, "mlp", None), "switch_mlp", None) is not None
+        ]
+        slab_objects = sum(
+            getattr(projection, "slab", None) is not None
+            for switch in switches
+            for projection in (switch.gate_proj, switch.up_proj, switch.down_proj)
+        ) + sum(getattr(switch, "slab_pack", None) is not None for switch in switches)
         ids = backend.tape[-stats.tokens:] if stats.tokens else []
         result.update({
             "type": "chat-parity", "condition": condition,
@@ -315,15 +350,18 @@ def run_chat_child(session, condition: str, prompt: str) -> None:
             "resident_experts": backend.routing.resident_experts,
             "pin_warmup_tokens": backend.routing.warmup,
             "profile_pins": profile_pins, "pin_events": pin_events,
-            "decode_wall_seconds": ended - start["time"],
+            "decode_wall_seconds": ended - start["time"] if start else None,
             "callback_seconds": stats.ui_seconds,
             "prefill_seconds": stats.prefill_seconds,
             "physical_mb_token": (after_bytes - start["bytes"]) / 1e6 / stats.tokens
-            if stats.tokens else None,
+            if stats.tokens and reads_valid else None,
             "active_mb": mx.get_active_memory() / 1e6,
             "cache_mb": mx.get_cache_memory() / 1e6,
             "vm_counters": {key: after_vm[key] - start["vm"][key]
-                            for key in start["vm"].keys() & after_vm.keys()},
+                             for key in start.get("vm", {}).keys() & after_vm.keys()},
+            "slab_objects": slab_objects,
+            "executor_count": sum(len(getattr(switch, "_metal_executors", {})) for switch in switches),
+            "environment": {key: os.environ.get(key) for key in CHAT_ENV},
             "allocation_digest": getattr(pack, "allocation_digest", None),
             "allocated_slots": getattr(pack, "expert_count", 0),
             "mlock_ok": bool(pack and pack.is_locked),
@@ -337,6 +375,9 @@ def run_chat_child(session, condition: str, prompt: str) -> None:
             "stream_answers": session.preferences["stream_answers"],
             "render_tty": sys.stderr.isatty(),
         })
+        if not reads_valid or not vm_valid:
+            print(json.dumps(result), flush=True)
+            raise RuntimeError("decode-only physical-read or VM measurement unavailable")
         return text, stats
 
     backend.generate = measured_generate
@@ -362,9 +403,9 @@ def run_chat_child(session, condition: str, prompt: str) -> None:
         if profile_pins:
             backend.routing._pin_candidates = original_pin
     result["turn_wall_seconds"] = time.perf_counter() - began
+    print(json.dumps(result), flush=True)
     if not result.get("tokens"):
         raise RuntimeError("chat parity arm produced no measured tokens")
-    print(json.dumps(result), flush=True)
 
 
 def summarize(records: list[dict], mode: str = "parity", expected_runtime=None) -> dict:
@@ -412,6 +453,17 @@ def summarize(records: list[dict], mode: str = "parity", expected_runtime=None) 
                or "allocated_slots" not in row or row["allocated_slots"] != 0
                or "mlock_ok" not in row or row["mlock_ok"] for row in records):
             raise ValueError("reference-streaming evidence has mixed slab state")
+    if mode == "pins" and capability is not None and capability["group_size"] == 64:
+        controls = condition_environment("pins32", capability)
+        keys = ("FLASHNEXT_METAL_RUNTIME", "FLASHNEXT_METAL_G64", "FLASHNEXT_SLAB",
+                "FLASHNEXT_SLAB_GLOBAL", "FLASHNEXT_SLAB_PACK", "FLASHNEXT_SLAB_G64",
+                "FLASHNEXT_STREAM_PACK")
+        if any(row.get("environment", {}).get(key) != controls[key]
+               for row in records for key in keys):
+            raise ValueError("REAP pin runtime controls did not take effect")
+        if any(row.get("slab_objects") != 0 or row.get("executor_count") != 0
+               for row in records):
+            raise ValueError("REAP pin comparison requires reference execution without slabs")
     rendered_rows = [row for row in records
                      if row["condition"] in SETTINGS_CONDITIONS + WORKLOAD_CONDITIONS + PIN_CONDITIONS]
     if any(not row["render_tty"] for row in rendered_rows):
@@ -499,19 +551,28 @@ def summarize(records: list[dict], mode: str = "parity", expected_runtime=None) 
                 raise ValueError("pin performance comparison requires pin profiling off")
             effects.append((candidate["gen_rate"] / control["gen_rate"] - 1) * 100)
             physical_deltas.append(control["physical_mb_token"] - candidate["physical_mb_token"])
-        wins = sum(effect > 0 for effect in effects)
-        non_ties = sum(effect != 0 for effect in effects)
+        from models.flashnext.bench_production import _two_sided_sign_p
+
+        p_value, wins, losses, ties = _two_sided_sign_p(effects)
         result.update({
             "pin_mean_percent": statistics.mean(effects),
             "pin_median_percent": statistics.median(effects),
             "pin_two_se_percent": 2 * statistics.stdev(effects) / math.sqrt(len(effects)),
             "pin_paired_effects_percent": effects,
             "pin_wins": wins,
-            "pin_sign_p": sum(math.comb(non_ties, k) for k in range(wins, non_ties + 1)) / 2 ** non_ties,
+            "pin_losses": losses,
+            "pin_ties": ties,
+            "pin_non_tied_pairs": wins + losses,
+            "pin_sign_p": p_value,
             "paired_physical_reductions_mb_token": physical_deltas,
             "pinned_mb_medians": {name: statistics.median(row["pinned_mb"] for row in grouped[name])
                                   for name in PIN_CONDITIONS},
-            "scope": "Same-token comparison of 32 versus 8 pinned experts; 60-slot slab remains fixed.",
+            "scope": (
+                "Same-token comparison of 32 versus 8 pinned experts; "
+                + ("REAP slabs and G64 executor remain off."
+                   if capability is not None and capability["group_size"] == 64
+                   else "60-slot slab remains fixed.")
+            ),
             "attribution_status": (
                 "Pin amount changes memory pressure by design. VM deltas are an outcome "
                 "and remain system-wide. Inspect paired rates, reads, and VM activity together."
@@ -590,22 +651,36 @@ def main() -> int:
                   "workload": WORKLOAD_CONDITIONS, "pins": PIN_CONDITIONS}[args.mode]
     args.json.parent.mkdir(parents=True, exist_ok=True)
     fingerprint = source_fingerprint()
+    harness_fingerprint = benchmark_harness_fingerprint()
     payload = {
         "mode": args.mode, "planned_rounds": args.rounds, "status": "running",
-        "source_fingerprint": fingerprint, "records": records,
+        "source_fingerprint": fingerprint,
+        "benchmark_source_fingerprint": harness_fingerprint, "records": records,
     }
     write_evidence(args.json, payload)
     try:
+        capability = None
+        checkpoint = None
+        if args.mode == "pins":
+            from macqwen.checkpoints import resolve_flashnext
+
+            checkpoint = resolve_flashnext(os.environ.get("MACQWEN_FLASHNEXT_MODEL"))
+            capability = checkpoint_runtime_capability(checkpoint)
+            payload["checkpoint"] = str(checkpoint)
+            payload["runtime_capability"] = capability
         with tempfile.TemporaryDirectory(prefix="flashnext-chat-parity-") as folder:
             for index in range(args.rounds):
                 order = conditions if index % 2 == 0 else tuple(reversed(conditions))
                 for name in order:
                     payload["current_arm"] = {"round": index + 1, "condition": name}
                     require_unchanged_source(fingerprint)
+                    require_unchanged_harness(harness_fingerprint)
                     pin_path = Path(folder) / f"pins-{index}-{name}.json"
                     pin_path.write_bytes(pins)
                     environment = dict(os.environ)
-                    environment.update(CHAT_ENV)
+                    environment.update(condition_environment(name, capability))
+                    if checkpoint is not None:
+                        environment["MACQWEN_FLASHNEXT_MODEL"] = str(checkpoint)
                     environment.update({
                         "FLASHNEXT_PIN_CACHE": str(pin_path),
                         "FLASHNEXT_PROFILE_BOUNDARIES": "0",
@@ -622,10 +697,18 @@ def main() -> int:
                                "--benchmark-prompt", prompt]
                     if args.mode == "pins":
                         command.extend(("--resident-experts", "32" if name == "pins32" else "8"))
+                    payload["current_arm"]["environment"] = {
+                        key: environment.get(key) for key in CHAT_ENV
+                    }
+                    write_evidence(args.json, payload)
                     print(f"Round {index + 1}/{args.rounds}: {name}", flush=True)
                     returncode, stdout, stderr_tail = capture_arm(command, environment)
+                    payload["last_child"] = {
+                        "returncode": returncode, "stdout": stdout, "stderr_tail": stderr_tail,
+                    }
+                    write_evidence(args.json, payload)
                     if returncode:
-                        payload["child_failure"] = {"returncode": returncode, "stderr_tail": stderr_tail}
+                        payload["child_failure"] = payload["last_child"]
                         raise RuntimeError(f"{name} exited with {returncode}")
                     rows = []
                     for line in stdout.splitlines():
@@ -641,13 +724,16 @@ def main() -> int:
                     row["condition"] = name
                     row["round"] = index + 1
                     row["source_fingerprint"] = fingerprint
+                    row["benchmark_source_fingerprint"] = harness_fingerprint
                     row["source_verified"] = False
                     records.append(row)
                     require_unchanged_source(fingerprint)
+                    require_unchanged_harness(harness_fingerprint)
                     row["source_verified"] = True
                     print(json.dumps(row), flush=True)
                     write_evidence(args.json, payload)
         require_unchanged_source(fingerprint)
+        require_unchanged_harness(harness_fingerprint)
         summary = summarize(records, args.mode, expected_runtime="checkpoint")
     except BaseException as error:
         payload["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"

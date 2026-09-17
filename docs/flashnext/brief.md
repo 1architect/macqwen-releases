@@ -9,7 +9,8 @@ MACQWEN runtime.
 
 The current research checkpoint is `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
 It has 131 indexed shard files, 288 routed experts per layer, Q4/G64 expert
-weights, and Q4/G32 n-gram weights. Its quality and speed gates remain open.
+weights, and Q4/G32 n-gram weights. Our 2026-09-17 short benchmark supports
+G64 executor promotion. General quality and long-turn equivalence remain unverified.
 
 `Vontra/Qwen3.8-Flash-Next-MLX-oQ4` remains the recorded quality baseline. It
 has 111.7 GB of model weights across 22 safetensors shards, quantised from the
@@ -23,15 +24,21 @@ quality section below.
 REAP compatibility accepts both n-gram shard naming conventions, selects the
 RMSNorm convention per model, sanitizes mixed Conv1d layouts, and filters stale
 expert IDs from old pin history. `chat.sh` defaults to the MLX-backed Metal
-runtime. REAP Q4/G64 uses streamed expert weights through generic MLX unless
-the experimental G64 executor is explicitly enabled with
-`FLASHNEXT_METAL_G64=1`. G64 slabs and stream-pack remain disabled.
+runtime (`FLASHNEXT_METAL_RUNTIME=1`). We default to the G64 Metal executor
+with `FLASHNEXT_METAL_G64=1`. We retain generic MLX expert execution as the
+explicit rollback with `FLASHNEXT_METAL_G64=0`. G64 slabs and stream-pack remain
+off with `FLASHNEXT_SLAB_G64=0` and `FLASHNEXT_STREAM_PACK=0`.
 
-The corrected 32-token G64 equality gate passes. The available long-turn
-SketchUp attempt was interrupted before a completed answer and used an
-enlarged `xhigh` allowance; it is an incomplete gate, not a quality failure.
-REAP speed, quality, and packed-residency results remain unpromoted, and the
-attempt neither promotes nor disproves the experimental G64 architecture.
+We request this promotion on 2026-09-17 after six reversed interleaved pairs
+of 32 tokens. Reference median is 2.374 tok/s; Metal median is 2.665 tok/s.
+Our paired gain is +13.4% mean and +15.1% median, with 6/6 wins and
+two-sided sign-test `p=0.031`. All output digests match. Our
+[`research.md`](research.md) records the artifacts and controls.
+
+We skip the long-turn quality gate at our request for this promotion.
+The earlier interrupted SketchUp attempt remains an incomplete gate, not a
+quality failure. We do not claim general quality or long-turn equivalence.
+Packed residency remains unpromoted.
 
 The runtime saves an explicit `--checkpoint` choice and otherwise selects the sole complete compatible local checkpoint.
 
@@ -159,16 +166,19 @@ Our leading quality-preserving candidate is eliminating repeated QSA work in
 long conversations: cache completed pooled indexer keys and separately test the
 existing scatter-based decode mask. Neither path has a measured speed result.
 
-The next G64 comparison is future work only. Following Astra's recommendation,
-we will predeclare seeds 7, 19, and 73, pair the MLX-backed Metal runtime
+Our long-turn G64 quality comparison remains pending despite the requested
+default promotion. Following Astra's recommendation, we retain seeds 7, 19,
+and 73 and pair the MLX-backed Metal runtime
 G64-off versus G64-on, alternate arm order, and keep slabs and stream-pack off
 in both arms. We will score completed outputs blind to arm labels against the
 functional SketchUp `.rb` criteria. Seed 42 is a known regression case from a
 short equality check, not a representative quality seed. Interrupted
 generations are incomplete gates, not quality failures.
 
-Next, evaluate the corrected G64 executor already present, with packed
-residency disabled in both arms. Residency is a separate policy question: a
+We require our permission before any new quality or performance run.
+We keep `FLASHNEXT_QSA_CACHE_POOLED_KEYS=0` and
+`FLASHNEXT_QSA_SCATTER_DECODE=0`; the existing allocation guard remains active.
+Residency is a separate policy question: a
 REAP-specific 32-versus-8 pin comparison must preserve routing and arithmetic
 and win on physical reads or sustained throughput. Extending last-row-only
 logits below the current 2,048-token threshold is a prefill latency and memory
@@ -193,11 +203,11 @@ Threshold `1.0` keeps the shipped router selection.
 
 ## Status
 
-The text runtime, six routing profiles, exact sessions, and shared chat
-integration are active. `chat.sh` keeps the REAP control on generic MLX Q4/G64
-expert execution through the MLX-backed Metal runtime; the experimental G64
-executor, G64 slabs, and stream-pack remain off. Cache-aware is optional, and
-the production backend keeps the included MTP weights disabled. REAP quality
-and speed remain open. The QSA cache/mask, existing G64 comparison, 32-versus-8
-residency comparison, and last-row-only prefill extension are future
-opportunities; we claim no speed gain for them.
+Our text runtime, six routing profiles, exact sessions, and shared chat
+integration are active. We default to G64 Metal execution for REAP and retain
+`FLASHNEXT_METAL_G64=0` as the generic MLX rollback. G64 slabs, stream-pack,
+and QSA optimization flags remain off. Cache-aware stays optional; MTP stays
+disabled. Our requested promotion uses short controlled speed and exact-digest
+evidence. We skip long-turn quality validation at our request and leave general
+quality unverified. Residency and last-row-only prefill remain separate
+opportunities, not promoted gains.

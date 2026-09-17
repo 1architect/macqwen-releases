@@ -50,6 +50,123 @@ class ConditionTests(unittest.TestCase):
                     with self.subTest(comparison=name, condition=label, key=key):
                         self.assertIn(key, known, f"{key} would silently do nothing")
 
+    def test_qsa_live_flags_change_independently_without_reload(self):
+        from models.flashnext import qsa_chunk
+
+        with patch.object(qsa_chunk, "QSA_CACHE_POOLED_KEYS", False), patch.object(
+            qsa_chunk, "QSA_SCATTER_DECODE", False
+        ):
+            for name in ("qsa-cache", "qsa-scatter", "qsa"):
+                for condition in COMPARISONS[name].values():
+                    check_load_time(condition, fresh_arms=False)
+                    apply_condition(backend(), condition)
+                    self.assertEqual(qsa_chunk.QSA_CACHE_POOLED_KEYS,
+                                     condition["FLASHNEXT_QSA_CACHE_POOLED_KEYS"] == "1")
+                    self.assertEqual(qsa_chunk.QSA_SCATTER_DECODE,
+                                     condition["FLASHNEXT_QSA_SCATTER_DECODE"] == "1")
+            for key in COMPARISONS["qsa"]["baseline"]:
+                with self.assertRaises(ValueError):
+                    apply_condition(backend(), {key: "invalid"})
+
+    def test_prompt_file_preserves_bytes_and_default(self):
+        import hashlib
+
+        prompt, metadata = bench.load_prompt()
+        self.assertEqual(prompt, bench.PROMPT)
+        self.assertEqual(metadata["prompt_source"], "PROMPT")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "prompt.txt"
+            data = "Real text.\r\nÁrvore\n".encode("utf-8")
+            path.write_bytes(data)
+            prompt, metadata = bench.load_prompt(path)
+            self.assertEqual(prompt.encode("utf-8"), data)
+            self.assertEqual(metadata["prompt_sha256"], hashlib.sha256(data).hexdigest())
+            path.write_text(" \n")
+            with self.assertRaises(ValueError):
+                bench.load_prompt(path)
+
+    def test_source_freeze_rejects_changes(self):
+        with patch.object(bench, "runtime_source_fingerprints", return_value={"runtime": "new"}):
+            with self.assertRaisesRegex(RuntimeError, "before model execution"):
+                bench.require_source_freeze({"source_fingerprints": {"runtime": "old"}})
+            bench.require_source_freeze({"source_fingerprints": {"runtime": "new"}})
+
+    def test_qsa_probe_counts_actual_arrays_and_rejects_stale_pool(self):
+        import mlx.core as mx
+        from mlx_vlm.models.qwen4_exp.language import QSAKVCache
+        from models.flashnext import qsa_chunk
+
+        indexer = SimpleNamespace(compress_ratio=4, block_topk=2)
+        cache = QSAKVCache()
+        cache.index_keys = mx.zeros((1, 12, 2))
+        cache.index_position_ids = mx.arange(12)[None]
+        cache.offset = 12
+        pooled = mx.zeros((1, 1, 3, 2))
+        cache._flashnext_pooled_keys = (
+            indexer, cache.index_keys, cache.index_position_ids, 4, pooled,
+        )
+        target = SimpleNamespace(cache=[cache], language=SimpleNamespace(
+            model=SimpleNamespace(layers=[SimpleNamespace(self_attn=SimpleNamespace(indexer=indexer))])
+        ))
+        with patch.object(qsa_chunk, "QSA_CACHE_POOLED_KEYS", True):
+            state = bench.qsa_runtime_state(target)
+            self.assertEqual(state["derived_bytes"], pooled.nbytes)
+            self.assertTrue(state["layers"][0]["pool_reusable"])
+            state.update(patch_installed=True, scatter_decode=False)
+            condition = COMPARISONS["qsa"]["cache-only"]
+            bench.validate_qsa_state(state, condition)
+            cache.index_keys = mx.zeros((1, 12, 2))
+            stale = bench.qsa_runtime_state(target)
+            stale.update(patch_installed=True, scatter_decode=False)
+            with self.assertRaisesRegex(RuntimeError, "reusable arrays"):
+                bench.validate_qsa_state(stale, condition)
+            with self.assertRaisesRegex(RuntimeError, "inherited"):
+                bench.validate_qsa_state(state, condition, phase="before")
+            state["layers"][0]["sparse_active"] = False
+            with self.assertRaisesRegex(RuntimeError, "longer prompt"):
+                bench.validate_qsa_state(state, condition)
+
+    def test_arm_records_separate_prefill_vm_and_memory_without_g64_probe(self):
+        class Meter:
+            def reset(self):
+                pass
+
+            def bytes_since(self):
+                return 4096
+
+        class Backend:
+            tape = [11, 12]
+            pending = [1, 2, 3]
+
+            def reset(self):
+                pass
+
+            def append_text(self, prompt):
+                self.prompt = prompt
+
+            def generate(self, max_tokens, on_prefilled):
+                on_prefilled()
+                return "", SimpleNamespace(tokens=2, rate=1)
+
+        target = Backend()
+        memory = {"rss_mb": 100, "mlx_process_peak_mb": 200, "active_mb": 150}
+        with patch.object(bench, "memory_snapshot", return_value=memory), patch(
+            "models.flashnext.diskio.vm_counters",
+            side_effect=[{"swapin": 10}, {"swapin": 14}, {"swapin": 16}],
+        ), patch("models.flashnext.diskio.free_memory_mb", return_value=100), patch.object(
+            bench, "inspect_g64_runtime"
+        ) as g64:
+            row = arm(target, 2, Meter(), 0, prompt="custom prompt")
+        g64.assert_not_called()
+        self.assertEqual(target.prompt, "custom prompt")
+        self.assertEqual(row["prefill_vm_counters"], {"swapin": 4})
+        self.assertEqual(row["vm_counters"], {"swapin": 2})
+        self.assertEqual(row["prompt_tokens"], 3)
+        self.assertEqual(row["rss_mb"], 100)
+        self.assertEqual(row["mlx_process_peak_mb"], 200)
+        self.assertEqual(row["prefill_read_bytes"], 4096)
+        self.assertEqual(row["decode_read_bytes"], 4096)
+
     def test_a_live_setting_actually_changes_the_store(self):
         target = backend()
         apply_condition(target, {"FLASHNEXT_TRACK_RESIDENT": "1"})
@@ -193,32 +310,35 @@ class ConditionTests(unittest.TestCase):
                 raise SystemExit("post-generation path validation failed")
             return {"capable_layers": 0, "paths": []}
 
-        published = []
-        with patch(
-            "models.flashnext.diskio.free_memory_mb", return_value=1000,
-        ), patch(
-            "models.flashnext.bench_production.apply_condition",
-        ), patch(
-            "models.flashnext.bench_production.inspect_metal_runtime",
-            side_effect=probe,
-        ):
-            with self.assertRaises(SystemExit):
-                arm(
-                    Backend(), 2, Meter(), 0.0,
-                    condition={"FLASHNEXT_METAL_RUNTIME": "1"},
-                    validate_metal_runtime=True,
-                    on_raw_result=published.append,
-                    provenance={
-                        "checkpoint_identity": "checkpoint-a",
-                        "runtime_source_fingerprint": "runtime-a",
-                    },
-                )
+        for g64 in (False, True):
+            published = []
+            with self.subTest(g64=g64), patch(
+                "models.flashnext.diskio.free_memory_mb", return_value=1000,
+            ), patch(
+                "models.flashnext.bench_production.apply_condition",
+            ), patch.object(
+                bench, "inspect_g64_runtime" if g64 else "inspect_metal_runtime",
+                side_effect=probe,
+            ):
+                with self.assertRaises(SystemExit):
+                    arm(
+                        Backend(), 2, Meter(), 0.0,
+                        condition=COMPARISONS["g64-kernel"]["g64-metal"] if g64
+                        else {"FLASHNEXT_METAL_RUNTIME": "1"},
+                        validate_metal_runtime=not g64,
+                        validate_g64_runtime=g64,
+                        on_raw_result=published.append,
+                        provenance={
+                            "checkpoint_identity": "checkpoint-a",
+                            "runtime_source_fingerprint": "runtime-a",
+                        },
+                    )
 
-        self.assertEqual(len(published), 1)
-        self.assertEqual(published[0]["ids"], (201, 202))
-        self.assertEqual(published[0]["gen_tokens"], 2)
-        self.assertEqual(published[0]["mb_per_token"], 4096 / 2 / 1e6)
-        self.assertEqual(published[0]["checkpoint_identity"], "checkpoint-a")
+            self.assertEqual(len(published), 1)
+            self.assertEqual(published[0]["ids"], (201, 202))
+            self.assertEqual(published[0]["gen_tokens"], 2)
+            self.assertEqual(published[0]["mb_per_token"], 4096 / 2 / 1e6)
+            self.assertEqual(published[0]["checkpoint_identity"], "checkpoint-a")
 
     def test_benchmark_provenance_is_checkpoint_and_runtime_bound(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -12,7 +12,24 @@ This file is the single active research record for Flash-Next. It preserves the 
 - Repacking, prefetch, weight caches, and in-process overlap failed controls.
 - Exact MTP and speculative paths did not improve the complete runtime.
 
-## Current operational correction, 2026-09-12
+## Current operational decision, 2026-09-17
+
+We promote the REAP Q4/G64 Metal executor to our default at our explicit
+request: `FLASHNEXT_METAL_RUNTIME=1` and `FLASHNEXT_METAL_G64=1`.
+We retain `FLASHNEXT_METAL_G64=0` as the explicit generic MLX rollback.
+G64 slabs, stream-pack, and QSA optimization flags remain off.
+
+Our six reversed interleaved 32-token pairs measure 2.374 tok/s reference
+median versus 2.665 tok/s Metal median. The paired gain is +13.4% mean and
++15.1% median, with 6/6 wins, two-sided sign-test `p=0.031`, and identical
+digests. We skip long-turn quality validation at our request for this
+promotion. We do not claim general quality or long-turn equivalence.
+The final dated section records the evidence and this specific exception.
+
+## Historical operational correction, 2026-09-12
+
+We preserve the findings below as dated history. Our 2026-09-17 decision
+supersedes their default and promotion status, not their quality limitations.
 
 Our production backend remains MLX-backed. `chat.sh` defaults to the
 MLX-backed Metal runtime (`FLASHNEXT_METAL_RUNTIME=1`), but REAP Q4/G64 still
@@ -3955,3 +3972,43 @@ effective budget. Set `MACQWEN_REAP_XHIGH_THINK_BUDGET` to a positive value to
 tune the cap, or set `MACQWEN_ALLOW_REAP_XHIGH=1` for an explicit diagnostic
 comparison without the cap. Lower budgets and non-REAP checkpoints remain
 unchanged.
+
+## Requested G64 Metal default promotion, 2026-09-17
+
+We promote the existing corrected G64 Metal executor at our explicit request.
+Our normal default is `FLASHNEXT_METAL_G64=1` with
+`FLASHNEXT_METAL_RUNTIME=1`. We preserve `FLASHNEXT_METAL_G64=0` as the
+explicit rollback to generic MLX. We skip the long-turn quality gate at our
+request for this decision. This is a specific promotion exception, not a
+passed quality gate or proof of general quality or long-turn equivalence.
+
+Our evidence is `~/.cache/flashnext/exact-speed-20260917/g64.json` and
+`~/.cache/flashnext/exact-speed-20260917/g64.log`. The completed `g64-kernel`
+comparison uses REAP-288, six reversed interleaved pairs, fresh backends, and
+32 greedy tokens per arm. We retain all six arms per condition.
+Both arms use the same preformatted photosynthesis prompt with closed thinking,
+16 I/O workers, chunk 2, and no I/O profiling. We keep all slabs and
+stream-pack off in both arms; only `FLASHNEXT_METAL_G64` differs.
+
+| Metric | Generic MLX reference | G64 Metal |
+|---|---:|---:|
+| Generation median | 2.374 tok/s | 2.665 tok/s |
+| Tail median | 2.231 tok/s | 2.357 tok/s |
+| Physical reads median | 191.2 MB/token | 191.1 MB/token |
+
+Our paired gain is +13.4% mean and +15.1% median, above the reported 5.0%
+resolution band. Metal wins 6/6 non-tied pairs, with two-sided sign-test
+`p=0.031`. The difference between condition medians is +12.3%; it is not
+the paired mean. All arms keep digest
+`1a9abb4b5fdc523a7a2986fb62f2b63570af515a98cecde6f201e682580fa65d`.
+The JSON retains checkpoint identity, runtime and harness fingerprints,
+actual executor paths, token arrays, memory, and physical-I/O counters.
+We limit the speed claim to this checkpoint, prompt, horizon, and measured
+conditions. Reversed ordering mitigates drift; it does not eliminate it.
+
+We keep `FLASHNEXT_SLAB_G64=0`, `FLASHNEXT_STREAM_PACK=0`,
+`FLASHNEXT_QSA_CACHE_POOLED_KEYS=0`, and `FLASHNEXT_QSA_SCATTER_DECODE=0`.
+The existing QSA allocation guard remains active. We promote neither packed
+residency nor QSA optimizations. The sampled, completed-output quality
+comparison with seeds 7, 19, and 73 remains pending and requires our permission.
+We run no new inference or benchmark for this documentation update.

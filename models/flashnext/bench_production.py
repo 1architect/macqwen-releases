@@ -217,6 +217,33 @@ ROUTING_ALTERING_COMPARISONS = {
 
 COMPARISONS = {
     "none": {"baseline": {}},
+    "qsa-cache": {
+        "baseline": {
+            "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "0", "FLASHNEXT_QSA_SCATTER_DECODE": "0",
+        },
+        "cache-only": {
+            "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "1", "FLASHNEXT_QSA_SCATTER_DECODE": "0",
+        },
+    },
+    "qsa-scatter": {
+        "baseline": {
+            "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "0", "FLASHNEXT_QSA_SCATTER_DECODE": "0",
+        },
+        "scatter-only": {
+            "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "0", "FLASHNEXT_QSA_SCATTER_DECODE": "1",
+        },
+    },
+    "qsa": {
+        "baseline": {
+            "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "0", "FLASHNEXT_QSA_SCATTER_DECODE": "0",
+        },
+        "cache-only": {
+            "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "1", "FLASHNEXT_QSA_SCATTER_DECODE": "0",
+        },
+        "scatter-only": {
+            "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "0", "FLASHNEXT_QSA_SCATTER_DECODE": "1",
+        },
+    },
     "wired": {
         "wired0": {"FLASHNEXT_WIRED_GB": "0"},
         "wired2": {"FLASHNEXT_WIRED_GB": "2"},
@@ -302,14 +329,20 @@ COMPARISONS = {
         "g64-reference": {
             "FLASHNEXT_METAL_RUNTIME": "1",
             "FLASHNEXT_METAL_G64": "0",
+            "FLASHNEXT_SLAB": "0",
+            "FLASHNEXT_SLAB_GLOBAL": "0",
+            "FLASHNEXT_SLAB_PACK": "0",
             "FLASHNEXT_SLAB_G64": "0",
-            "FLASHNEXT_SLAB_PACK": "1",
+            "FLASHNEXT_STREAM_PACK": "0",
         },
         "g64-metal": {
             "FLASHNEXT_METAL_RUNTIME": "1",
             "FLASHNEXT_METAL_G64": "1",
+            "FLASHNEXT_SLAB": "0",
+            "FLASHNEXT_SLAB_GLOBAL": "0",
+            "FLASHNEXT_SLAB_PACK": "0",
             "FLASHNEXT_SLAB_G64": "0",
-            "FLASHNEXT_SLAB_PACK": "1",
+            "FLASHNEXT_STREAM_PACK": "0",
         },
     },
     "slab-global": {
@@ -412,7 +445,35 @@ COMPARISONS = {
 # by writing the environment, so each one is applied explicitly and then read
 # back. The read-back is the point: a comparison that silently measured the
 # same thing twice already produced one wrong result in this project.
+def _qsa_bool(value):
+    if value not in ("0", "1"):
+        raise ValueError("QSA flags must be 0 or 1")
+    return value == "1"
+
+
+def _set_qsa_flag(name, value):
+    from models.flashnext import qsa_chunk
+
+    setattr(qsa_chunk, name, _qsa_bool(value))
+
+
+def _get_qsa_flag(name):
+    from models.flashnext import qsa_chunk
+
+    return getattr(qsa_chunk, name)
+
+
 LIVE_SETTINGS = {
+    "FLASHNEXT_QSA_CACHE_POOLED_KEYS": (
+        lambda backend, value: _set_qsa_flag("QSA_CACHE_POOLED_KEYS", value),
+        lambda backend: _get_qsa_flag("QSA_CACHE_POOLED_KEYS"),
+        _qsa_bool,
+    ),
+    "FLASHNEXT_QSA_SCATTER_DECODE": (
+        lambda backend, value: _set_qsa_flag("QSA_SCATTER_DECODE", value),
+        lambda backend: _get_qsa_flag("QSA_SCATTER_DECODE"),
+        _qsa_bool,
+    ),
     "FLASHNEXT_READ": (
         lambda backend, value: setattr(backend.store, "_read_mode", value),
         lambda backend: backend.store._read_mode,
@@ -556,6 +617,7 @@ LOAD_TIME_SETTINGS = {
     "FLASHNEXT_METAL_G64",
     "FLASHNEXT_SLAB_G64",
     "FLASHNEXT_SLAB_PACK",
+    "FLASHNEXT_STREAM_PACK",
     # Each arm gets a fresh backend so stale executor objects from the other
     # arm cannot make a live flip look like a distinct runtime comparison.
     "FLASHNEXT_METAL_RUNTIME",
@@ -755,10 +817,119 @@ def check_load_time(env: dict, fresh_arms: bool) -> None:
         )
 
 
+def load_prompt(path=None):
+    if path is None:
+        prompt = PROMPT
+        source = "PROMPT"
+    else:
+        source = str(Path(path).expanduser().resolve())
+        prompt = Path(source).read_bytes().decode("utf-8")
+        if not prompt.strip():
+            raise ValueError("prompt file must not be empty")
+    return prompt, {
+        "prompt_source": source,
+        "prompt": prompt,
+        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "chat_template": "preformatted; no additional template",
+        "sampling": "greedy",
+        "seed_policy": "deterministic argmax; no sampling seed",
+    }
+
+
+def require_source_freeze(provenance):
+    expected = provenance.get("source_fingerprints") if provenance else None
+    if expected is not None and runtime_source_fingerprints() != expected:
+        raise RuntimeError("runtime source or benchmark harness changed before model execution")
+
+
+def memory_snapshot():
+    import resource
+    import subprocess
+
+    state = {"rss_mb": None, "rss_process_peak_mb": None,
+             "active_mb": None, "mlx_process_peak_mb": None, "mlx_cache_mb": None}
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(os.getpid())],
+            capture_output=True, text=True, check=True, timeout=5,
+        )
+        state["rss_mb"] = int(result.stdout.strip()) * 1024 / 1e6
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        state["rss_process_peak_mb"] = peak * (1 if sys.platform == "darwin" else 1024) / 1e6
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    try:
+        import mlx.core as mx
+        for key, getter in (("active_mb", "get_active_memory"),
+                            ("mlx_process_peak_mb", "get_peak_memory"),
+                            ("mlx_cache_mb", "get_cache_memory")):
+            method = getattr(mx, getter, None)
+            if method is not None:
+                state[key] = float(method()) / 1e6
+    except (AttributeError, ImportError, TypeError):
+        pass
+    return state
+
+
+def qsa_runtime_state(backend):
+    from models.flashnext import qsa_chunk
+    from mlx_vlm.models.qwen4_exp.language import Qwen4ExpAttention, Qwen4ExpQSAIndexer
+
+    rows = []
+    caches = getattr(backend, "cache", ())
+    layers = getattr(getattr(getattr(backend, "language", None), "model", None), "layers", ())
+    for index, layer in enumerate(layers):
+        indexer = getattr(getattr(layer, "self_attn", None), "indexer", None)
+        if indexer is None:
+            continue
+        cache = caches[index] if index < len(caches) else None
+        saved = getattr(cache, "_flashnext_pooled_keys", None)
+        pooled = saved[4] if saved is not None else None
+        offset = int(getattr(cache, "offset", 0))
+        rows.append({
+            "layer": index, "context_tokens": offset,
+            "sparse_active": offset // indexer.compress_ratio > indexer.block_topk,
+            "pooled_shape": list(pooled.shape) if pooled is not None else None,
+            "pooled_bytes": int(pooled.nbytes) if pooled is not None else 0,
+            "pool_reusable": pooled is not None and qsa_chunk._reusable_pool(indexer, cache) is pooled,
+        })
+    return {
+        "cache_pooled_keys": qsa_chunk.QSA_CACHE_POOLED_KEYS,
+        "scatter_decode": qsa_chunk.QSA_SCATTER_DECODE,
+        "patch_installed": Qwen4ExpQSAIndexer.__call__ is qsa_chunk._indexer_call
+        and Qwen4ExpAttention.__call__ is qsa_chunk._chunked_call,
+        "layers": rows,
+        "derived_bytes": sum(row["pooled_bytes"] for row in rows),
+    }
+
+
+def validate_qsa_state(state, condition, phase="after"):
+    for name, key in (("cache_pooled_keys", "FLASHNEXT_QSA_CACHE_POOLED_KEYS"),
+                      ("scatter_decode", "FLASHNEXT_QSA_SCATTER_DECODE")):
+        if state[name] != _qsa_bool(condition[key]):
+            raise RuntimeError(f"QSA flag mismatch: {name}")
+    if not state["patch_installed"] or not state["layers"]:
+        raise RuntimeError("QSA runtime patch or layers are missing")
+    if phase == "before":
+        if state["derived_bytes"] or any(row["context_tokens"] for row in state["layers"]):
+            raise RuntimeError("QSA arm inherited cache state")
+        return
+    if not all(row["sparse_active"] for row in state["layers"]):
+        raise RuntimeError("QSA comparison requires a longer prompt to activate sparse attention")
+    if state["cache_pooled_keys"]:
+        if not all(row["pooled_bytes"] > 0 and row["pool_reusable"] for row in state["layers"]):
+            raise RuntimeError("QSA pooled cache did not retain reusable arrays on every layer")
+    elif state["derived_bytes"]:
+        raise RuntimeError("QSA cache-off arm retained pooled arrays")
+
+
 def arm(backend, tokens, meter, run_began, condition=None,
         validate_metal_runtime: bool = False, on_raw_result=None,
-        provenance: dict | None = None):
-    from models.flashnext.diskio import free_memory_mb
+        provenance: dict | None = None, prompt: str = PROMPT,
+        validate_g64_runtime: bool = False):
+    from models.flashnext.diskio import free_memory_mb, vm_counters
+
+    require_source_freeze(provenance)
 
     free = free_memory_mb()
     backend.reset()
@@ -770,16 +941,37 @@ def arm(backend, tokens, meter, run_began, condition=None,
             inspect_metal_runtime(
                 backend, condition["FLASHNEXT_METAL_RUNTIME"] == "1", phase="before"
             )
-        elif "FLASHNEXT_METAL_G64" in condition:
+        elif validate_g64_runtime and "FLASHNEXT_METAL_G64" in condition:
             inspect_g64_runtime(
                 backend, condition["FLASHNEXT_METAL_G64"] == "1", phase="before"
             )
-    backend.append_text(PROMPT)
+    qsa_condition = condition and "FLASHNEXT_QSA_CACHE_POOLED_KEYS" in condition
+    if qsa_condition:
+        validate_qsa_state(qsa_runtime_state(backend), condition, phase="before")
+    backend.append_text(prompt)
+    prompt_ids = tuple(getattr(backend, "pending", ()))
+    if qsa_condition:
+        for layer in backend.language.model.layers:
+            indexer = getattr(getattr(layer, "self_attn", None), "indexer", None)
+            if indexer is not None and len(prompt_ids) // indexer.compress_ratio <= indexer.block_topk:
+                raise RuntimeError("QSA comparison needs a prompt above the sparse attention threshold")
+        if backend.resident_experts != 32 or backend.routing_profile != "exact-quality":
+            raise RuntimeError("QSA comparison requires exact-quality with 32 resident experts")
+    memory_before = memory_snapshot()
+    vm_before = vm_counters()
+    vm_prefilled = {}
+    prefill_memory = {}
+    prefill_read = -1
+    prefill_wall = None
     meter.reset()
     prefilled = False
 
     def on_prefilled():
-        nonlocal prefilled
+        nonlocal prefilled, vm_prefilled, prefill_memory, prefill_read, prefill_wall
+        prefill_wall = time.perf_counter() - began
+        prefill_read = meter.bytes_since()
+        vm_prefilled = vm_counters()
+        prefill_memory = memory_snapshot()
         # Generation counters must exclude prompt reads. The backend invokes
         # this callback after prefill and before the first decoded token.
         meter.reset()
@@ -797,12 +989,8 @@ def arm(backend, tokens, meter, run_began, condition=None,
     tail_tokens = int(getattr(stats, "tail_tokens", 0) or 0)
     tail_seconds = float(getattr(stats, "tail_seconds", 0.0) or 0.0)
     tail = tail_tokens / tail_seconds if tail_seconds else 0.0
-    active_mb = None
-    try:
-        import mlx.core as mx
-        active_mb = float(mx.get_active_memory()) / 1e6
-    except (AttributeError, ImportError, TypeError):
-        pass
+    vm_after = vm_counters()
+    memory_after = memory_snapshot()
 
     # Preserve the measurements before any post-generation validation.  In
     # particular, inspect_* can reject a path after generation has produced
@@ -817,7 +1005,24 @@ def arm(backend, tokens, meter, run_began, condition=None,
             if generated_tokens and read >= 0 else -1.0
         ),
         "pinned_gb": getattr(stats, "pinned_bytes", 0) / 1e9,
-        "active_mb": active_mb,
+        **memory_after,
+        "memory_before": memory_before,
+        "memory_prefilled": prefill_memory,
+        "vm_before": vm_before,
+        "vm_prefilled": vm_prefilled,
+        "vm_after": vm_after,
+        "vm_counters": {key: vm_after[key] - value
+                        for key, value in vm_prefilled.items() if key in vm_after},
+        "prefill_vm_counters": {key: vm_prefilled[key] - value
+                                for key, value in vm_before.items() if key in vm_prefilled},
+        "prefill_wall_s": prefill_wall,
+        "prefill_seconds": float(getattr(stats, "prefill_seconds", 0.0) or 0.0),
+        "prefill_read_bytes": prefill_read,
+        "decode_read_bytes": read,
+        "prompt_tokens": int(getattr(stats, "prompt_tokens", len(prompt_ids)) or 0),
+        "prompt_token_sha256": hashlib.sha256(str(prompt_ids).encode("utf-8")).hexdigest(),
+        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "token_sha256": hashlib.sha256(str(ids).encode("utf-8")).hexdigest(),
         "capable_layers": None,
         "actual_path": [],
         "free_mb_before": free,
@@ -828,6 +1033,9 @@ def arm(backend, tokens, meter, run_began, condition=None,
         raw.update(provenance)
     if on_raw_result is not None:
         on_raw_result(raw)
+    if qsa_condition:
+        raw["qsa"] = qsa_runtime_state(backend)
+        raw["qsa_derived_bytes"] = raw["qsa"]["derived_bytes"]
 
     # Only after the raw snapshot is published do we reject malformed or
     # incomplete measurements and validate the concrete executor path.
@@ -840,12 +1048,14 @@ def arm(backend, tokens, meter, run_began, condition=None,
         )
     if read < 0:
         raise RuntimeError("physical read telemetry is unavailable")
+    if qsa_condition:
+        validate_qsa_state(raw["qsa"], condition)
     state = None
     if validate_metal_runtime and condition and "FLASHNEXT_METAL_RUNTIME" in condition:
         state = inspect_metal_runtime(
             backend, condition["FLASHNEXT_METAL_RUNTIME"] == "1"
         )
-    elif condition and "FLASHNEXT_METAL_G64" in condition:
+    elif validate_g64_runtime and condition and "FLASHNEXT_METAL_G64" in condition:
         state = inspect_g64_runtime(
             backend, condition["FLASHNEXT_METAL_G64"] == "1"
         )
@@ -1064,6 +1274,7 @@ def main() -> None:
     parser.add_argument("--drop", type=int, default=2,
                         help="cold arms discarded per condition")
     parser.add_argument("--tokens", type=int, default=60)
+    parser.add_argument("--prompt-file", help="UTF-8 preformatted prompt; used verbatim")
     parser.add_argument("--compare", choices=sorted(COMPARISONS), default="none")
     parser.add_argument("--fresh-arms", action="store_true",
                         help="reload the model for every arm in reversed rounds; "
@@ -1074,7 +1285,18 @@ def main() -> None:
     conditions = COMPARISONS[args.compare]
     routing_altering = args.compare in ROUTING_ALTERING_COMPARISONS
     effective_environment = effective_chat_environment()
+    if args.compare in {"qsa", "qsa-cache", "qsa-scatter"}:
+        effective_environment.update({
+            "FLASHNEXT_METAL_RUNTIME": "1", "FLASHNEXT_METAL_G64": "0",
+            "FLASHNEXT_SLAB": "0", "FLASHNEXT_SLAB_GLOBAL": "0",
+            "FLASHNEXT_SLAB_PACK": "0", "FLASHNEXT_SLAB_G64": "0",
+            "FLASHNEXT_STREAM_PACK": "0", "FLASHNEXT_PREWARM": "0",
+        })
+    prompt, prompt_provenance = load_prompt(args.prompt_file)
     evidence = {
+        **prompt_provenance,
+        "token_limit": args.tokens,
+        "quality_gate": "not run; exact token equality only",
         "status": "running",
         "comparison": args.compare,
         "fresh_arms": args.fresh_arms,
@@ -1225,6 +1447,7 @@ def main() -> None:
                         pass
                     # Import after the first condition environment is active.
                     from macqwen.backends.flashnext import FlashNextBackend
+                    require_source_freeze(provenance)
                     backend = FlashNextBackend()
                     def preserve_raw(row, arm_name=name, arm_round=round_index):
                         collected[arm_name].append(row)
@@ -1233,7 +1456,8 @@ def main() -> None:
                         row = arm(
                             backend, args.tokens, meter, run_began, condition=env,
                             validate_metal_runtime=args.compare == "metal-runtime",
-                            on_raw_result=preserve_raw, provenance=provenance,
+                            validate_g64_runtime=args.compare == "g64-kernel",
+                            on_raw_result=preserve_raw, provenance=provenance, prompt=prompt,
                         )
                     finally:
                         store = backend.store
@@ -1278,6 +1502,7 @@ def main() -> None:
         set_condition_environment(next(iter(conditions.values())))
         from macqwen.backends.flashnext import FlashNextBackend
 
+        require_source_freeze(provenance)
         backend = FlashNextBackend()
         cond_keys = list(conditions.keys())
         print(f"  system load average before: {os.getloadavg()}", flush=True)
@@ -1297,7 +1522,8 @@ def main() -> None:
                     backend, args.tokens, meter, run_began,
                     condition=conditions[name],
                     validate_metal_runtime=args.compare == "metal-runtime",
-                    on_raw_result=preserve_raw, provenance=provenance,
+                    validate_g64_runtime=args.compare == "g64-kernel",
+                    on_raw_result=preserve_raw, provenance=provenance, prompt=prompt,
                 )
                 # ``arm`` already published this same dict before its
                 # post-generation checks. Persist once more after validation.
@@ -1355,14 +1581,13 @@ def main() -> None:
             print(f"    token digest ({name}): {h}", flush=True)
     print(f"  system load average after: {os.getloadavg()}", flush=True)
 
-    report_paired(results, args.drop)
-    report_drift(results)
-
-    if len(results) == 2:
-        base, other = results
+    pairs = ([results[0], candidate] for candidate in results[1:])
+    for base, other in pairs:
+        report_paired([base, other], args.drop)
         change = (other["gen_median"] - base["gen_median"]) / base["gen_median"] * 100
         print(f"\n  {other['condition']} vs {base['condition']}: {change:+.1f}% gen median")
         print(f"  {resolution_note(base, other, args.drop)}")
+    report_drift(results)
 
     if args.json:
         payload = _ACTIVE_EVIDENCE["payload"]

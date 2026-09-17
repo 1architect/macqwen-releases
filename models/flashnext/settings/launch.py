@@ -4,9 +4,9 @@ from __future__ import annotations
 
 CHAT_ENV = {
     "FLASHNEXT_METAL_RUNTIME": "1",
-    # The short G64 equality gate passed. The available long-turn run was
-    # confounded by an enlarged xhigh budget, so it cannot promote G64.
-    "FLASHNEXT_METAL_G64": "0",
+    # The 20260917 comparison measured +13.4% paired mean decode speed with
+    # identical token digests, so the Metal executor is the default now.
+    "FLASHNEXT_METAL_G64": "1",
     "FLASHNEXT_SLAB_G64": "0",
     "FLASHNEXT_SLAB": "0",
     "FLASHNEXT_SLAB_GLOBAL": "60",

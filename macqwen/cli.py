@@ -15,14 +15,21 @@ sys.path.insert(0, str(ROOT))
 
 from macqwen import preferences
 from macqwen.checkpoints import resolve_qwen27b
+from models.k2_horizon.settings import (
+    MODEL_NAME as K2_HORIZON,
+    PYTHON_ENV as K2_HORIZON_PYTHON_ENV,
+    REQUIRED_MODULES as K2_HORIZON_MODULES,
+)
 
 
 PYTHON_ENV = {
     "flashnext": "MACQWEN_FLASHNEXT_PYTHON",
+    K2_HORIZON: K2_HORIZON_PYTHON_ENV,
     "qwen27b": "MACQWEN_QWEN27B_PYTHON",
 }
 REQUIRED_MODULES = {
     "flashnext": ("mlx", "mlx_vlm", "transformers"),
+    K2_HORIZON: K2_HORIZON_MODULES,
     "qwen27b": ("mlx",),
 }
 
@@ -131,7 +138,7 @@ def command(argv: list[str]) -> tuple[list[str], dict[str, str]]:
     argv = ["--server" if value == "/server" else value for value in argv]
     build, argv = _split_build(list(argv))
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--model", choices=("flashnext", "qwen27b"))
+    parser.add_argument("--model", choices=("flashnext", K2_HORIZON, "qwen27b"))
     parser.add_argument("--profile", choices=("plain", "agent"))
     parser.add_argument("--model-path", "--checkpoint", dest="model_path")
     parser.add_argument("--preferences-file", default=preferences.DEFAULT_PATH)

@@ -5,12 +5,18 @@
 ```bash
 ./chat.sh --model flashnext --profile plain
 ./chat.sh --model flashnext --profile agent
+./chat.sh --model k2-horizon --checkpoint k2 --profile plain
+./chat.sh --model k2-horizon --checkpoint k2 --profile agent
 ./chat.sh BUILD --profile plain
 ./chat.sh BUILD --profile agent
 ./chat.sh /server
 ```
 
 `BUILD` is a Qwen27B V4 directory suffix.
+
+The `k2` alias resolves to `~/models/K2-Horizon-7B-MLX-8bit` under the current
+model root. K2-Horizon loads its checkpoint-supplied `model.py` through MLX-LM,
+so we only use checkpoints from sources we trust.
 
 ## Main files
 
@@ -27,6 +33,8 @@
 | `macqwen/profiles/` | Define plain and repository-tool behavior |
 | `macqwen/tools/` | Provide repository, API, code, and search tools |
 | `macqwen/backends/` | Adapt each model runtime to the session loop |
+| `models/k2_horizon/` | Own K2 loading, settings, protocol adaptation, and tests |
+| `docs/k2_horizon/` | Hold K2 status, research decisions, operation, and measurements |
 
 ## Commands
 
@@ -70,7 +78,8 @@ extend a short validation run.
 
 ## Terminal state flow
 
-Prefill starts at zero and waits for backend progress callbacks. Flash-Next uses completed streamed MoE layers. Qwen27B forwards native
+Prefill starts at zero and waits for backend progress callbacks. Flash-Next
+uses completed streamed MoE layers. K2-Horizon and Qwen27B forward native
 chunk progress.
 
 The tool UI starts when streamed protocol begins. The label changes when the function name and arguments become available. Actual timing
@@ -93,7 +102,7 @@ Changing the profile resets the conversation and rebuilds the toolbox.
 
 ## Output rules
 
-- Do not show `<tool_call>` or function protocol markup.
+- Do not show `<tool_call>`, `<ifm|tool_call>`, or function protocol markup.
 - Do not show a success emoji, icon, or green status word.
 - Show an explicit label for tool failure.
 - Use only `█` and `░` inside the progress bar.
@@ -127,7 +136,10 @@ Run the shared suite:
 
 ```bash
 python3 -m unittest discover -s macqwen -p 'test_*.py'
-python3 -m compileall -q macqwen models/flashnext
+python3 -m unittest discover -s models/flashnext -p 'test_*.py'
+python3 -m unittest discover -s models/qwen27b -p 'test_*.py'
+python3 -m unittest discover -s models/k2_horizon -p 'test_*.py'
+python3 -m compileall -q macqwen models/flashnext models/qwen27b models/k2_horizon
 git diff --check
 ```
 
@@ -136,7 +148,9 @@ Run model-specific tests in the matching environment. See each model handoff.
 ## Invariants
 
 - Shared modules do not import MLX at module load time.
-- Model-exclusive code stays under `models/`.
+- Repository-owned model-exclusive runtime code stays under `models/`.
+- Checkpoint-supplied runtime code is accepted only through an explicit,
+  compatible backend and a documented trusted-code boundary.
 - Every persistent chat setting has one schema entry.
 - Model runtime defaults live in `macqwen/model_settings.py`.
 - Every command has one table entry.

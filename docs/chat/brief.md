@@ -7,12 +7,14 @@ system has 16 GB of unified memory.
 
 ## Current scope
 
-The chat supports two runtimes:
+The chat supports three runtimes:
 
 - `flashnext` runs Qwen3.8-Flash-Next with SSD-streamed sparse tensors.
+- `k2-horizon` runs the dense K2-Horizon 7B MLX checkpoint through MLX-LM.
 - `qwen27b` runs the Qwen3.8-27B V4 runtime with a custom MLX build.
 
-Each runtime uses a separate Python environment. The launcher selects it before model loading.
+Each runtime selects a compatible Python environment before model loading.
+Flash-Next and K2-Horizon can use the same project environment.
 
 ## Profiles
 
@@ -69,10 +71,13 @@ Answer allowance and reasoning capacity use separate settings. Request statistic
 | Repository-tool system prompt | `~/.macqwen/system-prompt-agent.txt` |
 | API keys | `~/Library/Application Support/MACQWEN/api_keys.json` |
 | Flash-Next sessions | `~/.cache/flashnext/sessions/` |
+| K2-Horizon sessions | `~/.cache/k2-horizon/sessions/` |
 | Qwen27B sessions | `~/.frankenstein/sessions/` |
 
 The API key directory uses mode `0700`. The key file uses mode `0600`.
 
 ## Status
 
-The shared package is active. Flash-Next is the primary runtime. Qwen27B remains available for research.
+The shared package is active. Flash-Next remains our primary optimization
+target. K2-Horizon provides a resident 7B option, and Qwen27B remains available
+for research.

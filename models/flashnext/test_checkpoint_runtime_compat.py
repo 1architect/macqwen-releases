@@ -64,7 +64,7 @@ class CheckpointRuntimeCompatibilityTests(unittest.TestCase):
         self.assertEqual(submit.call_count, 3)
         self.assertEqual(submit.call_args_list[0].args[3], [2, 0])
 
-    def test_reap_g64_uses_reference_path_with_default_metal_setting(self):
+    def test_reap_g64_uses_reference_path_with_explicit_opt_out(self):
         prefix = "language_model.model.layers.1.mlp.switch_mlp"
         shapes = {
             f"{prefix}.gate_proj.weight": (288, 640, 320),
@@ -86,6 +86,7 @@ class CheckpointRuntimeCompatibilityTests(unittest.TestCase):
             expert_cache.os.environ,
             {
                 "FLASHNEXT_METAL_RUNTIME": "1",
+                "FLASHNEXT_METAL_G64": "0",
                 "FLASHNEXT_SLAB": "0",
                 "FLASHNEXT_SLAB_GLOBAL": "60",
                 "FLASHNEXT_SLAB_PACK": "1",
