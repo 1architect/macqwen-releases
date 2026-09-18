@@ -24,6 +24,7 @@ range where present.
 | Allocator cap at 2k product ([JSONL](20260918-allocator-2k.jsonl)) | Pool 774 → ~300 MB, decode medians identical. Promote to default after 16k confirmation. |
 | Wired limit at 2k product ([JSONL](20260918-wired-2k.jsonl)) | No resolved benefit; keep off. |
 | Post-generation clear at 2k product ([JSONL](20260918-clear-cache-2k.jsonl)) | Pool → ~1 MB, steady-state rates identical. Opt-in diagnostic. |
+| Fused FWHT at 2k short ([JSONL](20260919-fused-fwht-short.jsonl)) | Exact: all 6 digests `d2004e2ef089e76f` match. Speed unresolved (−13.3%, +5.6%, +1.5%). Flag stays off. |
 
 ## Decisions and scope
 

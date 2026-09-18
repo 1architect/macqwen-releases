@@ -116,6 +116,24 @@ the default. Digests match across all three sizes.
   rates. Keep as an opt-in diagnostic; combine with the allocator cap only
   after the 16k confirmation.
 
+### Fused FWHT kernel (exact, speed-unresolved)
+
+`models/bonsai2/ternary_kernel.py` folds the per-module sign multiply,
+Hadamard transform, and downcast into one Metal dispatch. Two bugs fell out
+during validation: the launch grid counts total threads, not threadgroups,
+and signs index by last-dim position, not flat offset (3D grouped inputs
+read out of bounds otherwise). Both are fixed with regression tests.
+
+The kernel is bit-exact against the stock path on production shapes and the
+full-module level with real weights. The six-arm `fused-fwht` comparison
+keeps digest `d2004e2ef089e76f` on all arms: exactness gate passes. Speed is
+unresolved: paired effects are −13.3%, +5.6%, +1.5% (mean −2.1%, median
++1.5%), inside any honest band on this machine's ±15% arm noise. Isolated
+module timing favors the kernel (−25% per call), but that includes sync
+costs the model amortizes, and the complete runtime absorbs the launch
+saving. The flag stays off. The recommended follow-up is folding the
+transform into the quantized matmul itself (memory traffic, not launches).
+
 ### Decode micro-probes (no model runs beyond unit scope)
 
 - Greedy `logsumexp` costs 0.5 ms against ~190 ms/token (0.3%). Skipping it

@@ -29,6 +29,7 @@ COMPARISONS = {
     "cache-step": {"step-256": {"cache_step": 256}, "step-1024": {"cache_step": 1024}},
     "prefill": {"prefill-512": {"prefill_step_size": 512}, "prefill-256": {"prefill_step_size": 256}},
     "prefill-wide": {"prefill-512": {"prefill_step_size": 512}, "prefill-1024": {"prefill_step_size": 1024}, "prefill-2048": {"prefill_step_size": 2048}},
+    "fused-fwht": {"control": {}, "fused": {"fused_fwht": True}},
 }
 DIAGNOSTIC_COMPARISONS = {"profile"}
 _ANALYSIS_REQUEST = "Using the numbered records, write a detailed neutral analysis of at least 300 words covering the observed patterns and exceptions."
@@ -97,7 +98,7 @@ def checkpoint_info(requested: str) -> dict[str, Any]:
     return {"requested": requested, **identity,
             "identity": hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()}
 def source_fingerprints() -> dict[str, str | None]:
-    names = ("models/bonsai2/backend.py", "models/bonsai2/cache.py", "models/bonsai2/checkpoint.py", "models/bonsai2/protocol.py", "models/bonsai2/settings.py")
+    names = ("models/bonsai2/backend.py", "models/bonsai2/cache.py", "models/bonsai2/checkpoint.py", "models/bonsai2/protocol.py", "models/bonsai2/settings.py", "models/bonsai2/ternary_kernel.py")
     return {name: sha256(ROOT / name) for name in names}
 def _module_origin(name: str) -> Path | None:
     try:

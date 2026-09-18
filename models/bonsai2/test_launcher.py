@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from macqwen import cli
@@ -25,6 +26,22 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(command[2], str(python))
         self.assertEqual(command[command.index("--model") + 1], "bonsai2")
         self.assertEqual(command[command.index("--model-path") + 1], "b2")
+
+    def test_chat_construction_caps_the_allocator_cache(self):
+        from macqwen import preferences
+        from macqwen.session import build_backend
+
+        args = SimpleNamespace(
+            model_path="/models/b2",
+            prefill_step_size=512,
+            session_dir=None,
+        )
+        with patch(
+            "models.bonsai2.backend.BonsaiBackend"
+        ) as backend_class:
+            build_backend("bonsai2", args, dict(preferences.DEFAULTS))
+        _, options = backend_class.call_args
+        self.assertEqual(options["allocator_cache_mb"], 256.0)
 
 
 if __name__ == "__main__":

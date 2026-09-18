@@ -30,6 +30,7 @@ default on our English, code, Portuguese, and tag probes.
 | Setting | Retained value |
 |---|---|
 | Prefill step | 512 |
+| Allocator cache cap | 256 MB in chat (backend default off; bench control is uncapped) |
 | Generation | Text-only, vision unloaded |
 | Context retention | Full |
 

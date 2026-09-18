@@ -177,6 +177,7 @@ class BonsaiBackend(Conversation):
         allocator_cache_mb: float | None = None,
         clear_cache_after_generate: bool = False,
         wired_limit_enabled: bool = False,
+        fused_fwht: bool = False,
         session_dir: str = SESSION_DIR,
     ):
         prefill_step_size = int(prefill_step_size)
@@ -202,6 +203,11 @@ class BonsaiBackend(Conversation):
                 sys.path.insert(0, str(candidate))
         from vision_artifact import load_vl_model
 
+        if fused_fwht:
+            os.environ["BONSAI2_FUSED_FWHT"] = "1"
+            from .ternary_kernel import install_packed_hook
+
+            install_packed_hook()
         vl_model, _processor, _pack_config = load_vl_model(str(path), load_processor=False)
         model = vl_model.language_model
         with _transformers_import_environment():

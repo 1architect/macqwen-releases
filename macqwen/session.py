@@ -394,6 +394,7 @@ def build_backend(name: str, args, prefs: dict):
         backend = BonsaiBackend(
             model_path=args.model_path,
             prefill_step_size=args.prefill_step_size,
+            allocator_cache_mb=256.0,
             session_dir=(args.session_dir or SESSION_DIR),
         )
         mirror_preferences(backend, prefs, prefs["profile"])
