@@ -126,6 +126,12 @@ class Sampler:
             kept = mx.argpartition(row, kth=-s.top_k, axis=-1)[-s.top_k:]
             floor = mx.min(mx.take(row, kept, axis=-1))
             row = mx.where(row < floor, -mx.inf, row)
+            # Shrink the remaining sorts and reductions to the survivor set.
+            # Masked entries are -inf, so they never enter the nucleus; the
+            # kept-first-crossing rule below still guarantees a non-empty set.
+            kept = mx.sort(kept, axis=-1)
+            small = mx.take(row, kept, axis=-1)
+            return self._finish(small, kept)
 
         probabilities = mx.softmax(row, axis=-1)
 
@@ -146,4 +152,29 @@ class Sampler:
             row = mx.where(allowed, row, -mx.inf)
 
         token = mx.random.categorical(row)
+        return token.reshape(1).astype(mx.uint32)
+
+    def _finish(self, small, kept):
+        """Sample from the top-k survivor set and map the index back."""
+        import mlx.core as mx
+
+        s = self.settings
+        probabilities = mx.softmax(small, axis=-1)
+
+        if s.min_p > 0.0:
+            floor = s.min_p * mx.max(probabilities)
+            small = mx.where(probabilities < floor, -mx.inf, small)
+            probabilities = mx.softmax(small, axis=-1)
+
+        if 0.0 < s.top_p < 1.0:
+            order = mx.argsort(-probabilities, axis=-1)
+            ordered = mx.take(probabilities, order, axis=-1)
+            carried = mx.cumsum(ordered, axis=-1)
+            keep = carried - ordered < s.top_p
+            allowed = mx.zeros(small.shape[0], dtype=mx.bool_)
+            allowed = allowed.at[order].add(keep)
+            small = mx.where(allowed, small, -mx.inf)
+
+        drawn = mx.random.categorical(small)
+        token = mx.take(kept, drawn, axis=-1)
         return token.reshape(1).astype(mx.uint32)

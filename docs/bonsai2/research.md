@@ -175,6 +175,22 @@ trajectory survives. KV allocation halves from 593 MB to 280 MB at 2k plus
 opt-in; it is the leading candidate for long context, where halved KV
 directly extends the fitting ceiling. Quality validation stays manual.
 
+### Further speed avenues (measured)
+
+- Vision weights: the backend keeps only `language_model` and drops the
+  parent VL model after load, so the 0.92 GB tower never stays resident.
+  Verified by construction; no saving left to take.
+- `lm_head` prefill skip: full-vocab logits cost about 1.6 GB of traffic
+  over a 124 s prefill, around 0.1%. Rejected; it needs a vendored
+  generate loop for nothing measurable.
+- Sampled sampler: the chat path ran full-vocab softmax, argsort, and
+  reductions per token (3.5 ms). The survivor path gathers top-k first and
+  runs the identical mask sequence over 20 elements (2.1 ms), saving about
+  1.4 ms per token. Masked entries are exactly `-inf`, so the nucleus
+  matches up to fp summation order; greedy decoding is untouched and
+  benchmarks stay greedy. Unit-pinned for shape, determinism under seed,
+  and top-k membership.
+
 ### Allocator cap at 16k (not run)
 
 A first 16k attempt was killed twice by tool timeouts (each 16k arm needs

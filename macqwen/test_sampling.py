@@ -8,6 +8,7 @@ from __future__ import annotations
 import unittest
 
 import mlx.core as mx
+import numpy as np
 
 from macqwen.sampling import INSTRUCT, THINKING, Sampler, Sampling
 
@@ -99,6 +100,22 @@ class SamplerTests(unittest.TestCase):
         sampler.observe(1)
         picks = {int(sampler(row).item()) for _ in range(20)}
         self.assertNotIn(1, picks)
+
+    def test_top_k_survivor_path_stays_inside_top_k(self):
+        settings = Sampling(temperature=1.0, top_p=0.95, top_k=20,
+                            min_p=0.0, presence_penalty=0.0)
+        sampler = Sampler(settings)
+        values = np.random.default_rng(7).normal(size=1000).tolist()
+        row = mx.array([values], dtype=mx.float32)
+        scaled = values
+        order = sorted(range(len(scaled)), key=scaled.__getitem__,
+                       reverse=True)[:20]
+        mx.random.seed(11)
+        first = int(sampler(row).item())
+        mx.random.seed(11)
+        second = int(sampler(row).item())
+        self.assertEqual(first, second)
+        self.assertIn(first, order)
 
     def test_reset_forgets_what_was_seen(self):
         sampler = Sampler(Sampling(presence_penalty=1.0))
