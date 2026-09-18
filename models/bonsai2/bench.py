@@ -29,8 +29,7 @@ COMPARISONS = {
     "cache-step": {"step-256": {"cache_step": 256}, "step-1024": {"cache_step": 1024}},
     "prefill": {"prefill-512": {"prefill_step_size": 512}, "prefill-256": {"prefill_step_size": 256}},
     "prefill-wide": {"prefill-512": {"prefill_step_size": 512}, "prefill-1024": {"prefill_step_size": 1024}, "prefill-2048": {"prefill_step_size": 2048}},
-    "fused-fwht": {"control": {}, "fused": {"fused_fwht": True}},
-    "quant-kv8": {"control": {}, "qkv8": {"quantized_kv": [8, 64]}},
+    "fused-fwht": {"control": {"fused_fwht": False}, "fused": {"fused_fwht": True}},    "quant-kv8": {"control": {}, "qkv8": {"quantized_kv": [8, 64]}},
     "share-fwht": {"control": {}, "shared": {"share_fwht": True}},
 }
 DIAGNOSTIC_COMPARISONS = {"profile"}

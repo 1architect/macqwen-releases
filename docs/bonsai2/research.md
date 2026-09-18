@@ -133,8 +133,9 @@ is unresolved: paired effects are −13.3%, +5.6%, +1.5% (mean −2.1%, median
 A directional prefill probe (same 776-token prompt, one run each side)
 shows 29.1 tok/s control versus 33.4 tok/s fused with matching digests
 `0e6dfb5ba42ce281`, consistent with prefill multiplying every launch by
-batch width. Directional only, not promotion evidence. The flag stays off
-pending a full prefill-focused comparison.
+batch width. Directional only, not promotion evidence. Promoted to default
+on this prefill evidence with decode digests matching on all arms; the
+stock path remains available via `fused_fwht=False`.
 
 ### NPU re-probe (single ternary layer, closed)
 

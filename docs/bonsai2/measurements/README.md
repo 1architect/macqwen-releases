@@ -24,7 +24,7 @@ range where present.
 | Allocator cap at 2k product ([JSONL](20260918-allocator-2k.jsonl)) | Pool 774 → ~300 MB, decode medians identical. Promote to default after 16k confirmation. |
 | Wired limit at 2k product ([JSONL](20260918-wired-2k.jsonl)) | No resolved benefit; keep off. |
 | Post-generation clear at 2k product ([JSONL](20260918-clear-cache-2k.jsonl)) | Pool → ~1 MB, steady-state rates identical. Opt-in diagnostic. |
-| Fused FWHT at 2k short ([JSONL](20260919-fused-fwht-short.jsonl)) | Exact: all 6 digests `d2004e2ef089e76f` match. Speed unresolved (−13.3%, +5.6%, +1.5%). Flag stays off. |
+| Fused FWHT at 2k short ([JSONL](20260919-fused-fwht-short.jsonl)) | Exact: all 6 digests match. Decode unresolved; directional prefill probe 29.1 → 33.4 tok/s. Promoted to default; `fused_fwht=False` rolls back. |
 | Quantized KV 8-bit at 2k short ([JSONL](20260919-quant-kv8-short.jsonl)) | Digest-equal: all 6 digests `d2004e2ef089` match. KV 593 → 280 MB. Speed unresolved. Opt-in. |
 | Shared transforms screen ([JSONL](20260919-share-fwht-screen.jsonl)) | Digest-equal: all 4 digests `730c92bf` match, rates tied. Screen only; full comparison pending. |
 

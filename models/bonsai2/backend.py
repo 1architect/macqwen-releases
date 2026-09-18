@@ -322,7 +322,7 @@ class BonsaiBackend(Conversation):
         allocator_cache_mb: float | None = None,
         clear_cache_after_generate: bool = False,
         wired_limit_enabled: bool = False,
-        fused_fwht: bool = False,
+        fused_fwht: bool = True,
         share_fwht: bool = False,
         retain_stop: bool = False,
         quantized_kv: tuple | list | None = None,

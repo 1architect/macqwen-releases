@@ -10,8 +10,8 @@
 - Add the `b2` checkpoint alias and `--model bonsai2` launcher path.
 - Add an opt-in fused sign+Hadamard+downcast Metal kernel for Bonsai-2
   ternary projections. It is bit-exact on production shapes and keeps
-  greedy digests on all comparison arms; it stays off while its speed
-  effect remains inside machine noise.
+  greedy digests on all comparison arms. Promoted to default on prefill
+  evidence; `fused_fwht=False` rolls back to the stock path.
 
 ### Changed
 

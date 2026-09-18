@@ -32,8 +32,9 @@ Milestone 1 is text-only. The vision tower stays unloaded.
 - Allocator cap 256 MB is the chat default: it saves about 470 MB of pool
   with identical rates and digests at 2k. Wired limit and
   post-generation clear change no default yet.
-- The fused FWHT kernel is bit-exact and digest-equal on all arms but
-  speed-unresolved; it stays off.
+- The fused FWHT kernel is bit-exact and digest-equal on all arms. It is
+  on by default on prefill evidence with matching decode digests;
+  `fused_fwht=False` is the explicit stock rollback.
 - Greedy comparison arms retained identical token digests.
 - Exact-only context reaches about 32k on 16 GB; 262K needs 16.8 GB of KV
   payload alone and stays out of scope without a quality-gated design.

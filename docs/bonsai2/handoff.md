@@ -31,6 +31,7 @@ default on our English, code, Portuguese, and tag probes.
 |---|---|
 | Prefill step | 512 |
 | Allocator cache cap | 256 MB in chat (backend default off; bench control is uncapped) |
+| Fused FWHT | On by default; `fused_fwht=False` is the explicit stock rollback |
 | Generation | Text-only, vision unloaded |
 | Context retention | Full |
 
