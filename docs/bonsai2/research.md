@@ -191,6 +191,25 @@ directly extends the fitting ceiling. Quality validation stays manual.
   benchmarks stay greedy. Unit-pinned for shape, determinism under seed,
   and top-k membership.
 
+### Shared transforms (memoized, digest-equal on screen)
+
+Same-width sign vectors are byte-identical per loaded checkpoint (3 distinct
+vectors across 402 modules, verified by hash), and the backend proves it at
+construction before arming the memo. An instrumented forward shows 144 of
+402 transforms eliminated, matching the predicted table. A four-arm smoke
+screen keeps digest `730c92bf` on all arms with rates tied (+0.1%, +0.7%).
+Screening never promotes; the full comparison remains future work.
+
+### Stop retention (kept, with a recorded boundary difference)
+
+Retained `<|im_end|>` continuations do not match replay references
+token-for-token: the first generated token flips between the two turn
+boundary markers while the following prose is identical, deterministically
+on both sides. Prefill-path and decode-path batching round differently at
+the boundary race. The prose equality is verified by inspection; the
+trajectory gate stays manual. Other stops and interruptions keep the replay
+recovery path.
+
 ### Allocator cap at 16k (not run)
 
 A first 16k attempt was killed twice by tool timeouts (each 16k arm needs

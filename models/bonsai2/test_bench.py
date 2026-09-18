@@ -70,8 +70,13 @@ class BenchTests(unittest.TestCase):
              (1, "c"), (1, "b"), (1, "a"),
              (2, "a"), (2, "b"), (2, "c")],
         )
+        # Two rounds screen; promotion still needs three arms per condition.
+        self.assertEqual(
+            bench.ordered_conditions(["a", "b"], 2),
+            [(0, "a"), (0, "b"), (1, "b"), (1, "a")],
+        )
         with self.assertRaises(ValueError):
-            bench.ordered_conditions(["a", "b"], 2)
+            bench.ordered_conditions(["a", "b"], 1)
 
     def test_paired_stats_labels_each_direction(self):
         control = [{"round": i, "status": "raw", "stats": {"rate_tps": 10}}

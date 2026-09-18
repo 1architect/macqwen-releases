@@ -31,6 +31,7 @@ COMPARISONS = {
     "prefill-wide": {"prefill-512": {"prefill_step_size": 512}, "prefill-1024": {"prefill_step_size": 1024}, "prefill-2048": {"prefill_step_size": 2048}},
     "fused-fwht": {"control": {}, "fused": {"fused_fwht": True}},
     "quant-kv8": {"control": {}, "qkv8": {"quantized_kv": [8, 64]}},
+    "share-fwht": {"control": {}, "shared": {"share_fwht": True}},
 }
 DIAGNOSTIC_COMPARISONS = {"profile"}
 _ANALYSIS_REQUEST = "Using the numbered records, write a detailed neutral analysis of at least 300 words covering the observed patterns and exceptions."
@@ -40,6 +41,12 @@ def _context_fixture(records: int) -> tuple[str, str, None, None]:
 FIXTURES = {
     "context-2k": _context_fixture(128), "context-8k": _context_fixture(384),
     "context-16k": _context_fixture(768),
+    "smoke": (
+        "Answer from the records.",
+        "Record 0001: category 5; value 42; status stable.\n\n"
+        "Summarize the single record in one sentence.",
+        None, None,
+    ),
     "cached-tool-result": ("Use tool results as context.", _ANALYSIS_REQUEST, '{"setting":"example","value":42}', None),
     "repeated-turn": ("Keep prior context.", _ANALYSIS_REQUEST, None, "Now repeat the recorded value with a detailed analysis of at least 300 words."),
 }
@@ -460,8 +467,8 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
         except OSError:
             pass
 def ordered_conditions(names: list[str], rounds: int) -> list[tuple[int, str]]:
-    if not names or rounds < 3:
-        raise ValueError("need at least three reverse-interleaved rounds")
+    if not names or rounds < 2:
+        raise ValueError("need at least two reverse-interleaved rounds")
     return [(r, name) for r in range(rounds)
             for name in (names if r % 2 == 0 else names[::-1])]
 def sign_test(values: list[float]) -> dict[str, Any]:
@@ -501,7 +508,7 @@ def run_comparison(*, checkpoint: str, comparison: str, record_path: str, fixtur
                    thinking=False, effort="medium", sampling="greedy", prefill_step_size=512, seed=SEED, runner=None) -> dict[str, Any]:
     if comparison not in COMPARISONS or fixture not in FIXTURES:
         raise ValueError("unknown comparison or fixture")
-    if horizon <= 0 or window <= 0 or horizon % window or rounds < 3:
+    if horizon <= 0 or window <= 0 or horizon % window or rounds < 2:
         raise ValueError("invalid horizon, window, or rounds")
     conditions, meta = COMPARISONS[comparison], metadata(
         checkpoint, comparison, fixture, horizon, window, thinking, effort,

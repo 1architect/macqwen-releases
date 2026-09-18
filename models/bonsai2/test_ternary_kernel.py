@@ -96,6 +96,51 @@ class FusedFwhtTests(unittest.TestCase):
                     del fake._bonsai2_fused
         self.assertEqual(calls, [(1024, False), (1024, True)])
 
+    def test_share_hook_reuses_identical_calls(self):
+        from models.bonsai2 import ternary_kernel as module
+        from models.bonsai2.ternary_kernel import (
+            arm_memo,
+            disarm_memo,
+            install_share_hook,
+        )
+
+        calls = []
+        fake = types.ModuleType("runtime")
+
+        def stock(x, block, signs, inverse=False):
+            calls.append((id(x), id(signs), block, inverse))
+            return ("computed", block)
+
+        fake.fwht = stock
+        try:
+            with patch.dict(sys.modules, {"runtime": fake}):
+                with patch.dict(os.environ, {"BONSAI2_SHARE_FWHT": "1"}):
+                    self.assertTrue(install_share_hook())
+                    arm_memo()
+                    try:
+                        x = mx.zeros((1, 2048))
+                        s = mx.zeros((2048,))
+                        t = mx.zeros((2048,))
+                        first = fake.fwht(x, 1024, s)
+                        second = fake.fwht(x, 1024, s)
+                        third = fake.fwht(x, 1024, t)
+                        fourth = fake.fwht(x, 1024, s, inverse=True)
+                    finally:
+                        disarm_memo()
+            # One shared computation; same-width signs share the memo entry
+            # because the backend verifies their bytes match per checkpoint.
+            # Inverse transforms bypass the memo.
+            self.assertIs(first, second)
+            self.assertIs(first, third)
+            self.assertEqual(len(calls), 2)
+            # Disarmed hook passes straight through.
+            self.assertEqual(fake.fwht(x, 1024, s), fake.fwht(x, 1024, s))
+            self.assertEqual(len(calls), 4)
+        finally:
+            del fake.fwht
+            del fake._bonsai2_shared
+            module._MEMO = None
+
     def test_hook_stays_off_without_the_flag(self):
         fake = types.ModuleType("runtime")
         fake.fwht = lambda *args, **kwargs: "stock"

@@ -69,6 +69,10 @@ harness. Use fresh child processes, at least three arms per condition, and
 forward/reverse/forward ordering. Do not add thermal warmup loops on the
 fanless reference Mac.
 
+Screening runs may use the `smoke` fixture with two rounds for directional
+evidence only. Screens never promote; promotion keeps the three-arm rule
+with a production fixture.
+
 ## Correctness invariants
 
 - The bundled `runtime/` loader must be active on every arm; stock-loader runs

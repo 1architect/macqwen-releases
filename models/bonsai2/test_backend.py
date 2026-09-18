@@ -104,9 +104,9 @@ class BackendTests(unittest.TestCase):
         )
         self.assertEqual(tokenizer.messages[1]["think"], "")
 
-    def test_stop_discards_cache_for_replay_on_hybrid_state(self):
-        # KV rewind alone leaves the 48 offset-free GDN states one step
-        # ahead, so a stop must drop the whole cache and replay the tape.
+    def test_im_end_stop_is_retained_with_the_live_cache(self):
+        # The close token is already consumed into every cache layer, so
+        # retaining it keeps tape and cache identical with no replay.
         backend, _tokenizer = self.backend()
         backend.pending = [10, 11]
         backend.cache = [KVCache()]
@@ -125,9 +125,31 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(text, "AB")
         self.assertEqual(stats.finish, "stop")
         self.assertEqual(stats.tokens, 2)
-        self.assertEqual(backend.tape, [10, 11, 65, 66])
-        self.assertTrue(backend._replay_needed)
+        self.assertEqual(backend.tape, [10, 11, 65, 66, 999])
+        self.assertTrue(backend.turn_closed)
+        self.assertFalse(backend._replay_needed)
+        self.assertTrue(backend.check_invariant())
+
+    def test_other_stops_keep_the_replay_recovery_path(self):
+        backend, _tokenizer = self.backend()
+        backend.pending = [10, 11]
+        backend.cache = [KVCache()]
+        backend.cache[0].offset = 0
+
+        def generate_step(prompt, _model, **options):
+            backend.cache[0].offset += len(prompt)
+            options["prompt_progress_callback"](len(prompt), len(prompt))
+            for value in (65, 1):
+                backend.cache[0].offset += 1
+                yield value, None
+
+        with patch("mlx_lm.generate.generate_step", generate_step):
+            _text, stats = backend.generate(3)
+
+        self.assertEqual(stats.finish, "stop")
+        self.assertEqual(backend.tape, [10, 11, 65])
         self.assertFalse(backend.turn_closed)
+        self.assertTrue(backend._replay_needed)
 
     def test_cache_invariant_checks_every_layer_offset(self):
         backend, _tokenizer = self.backend()
@@ -159,8 +181,10 @@ class BackendTests(unittest.TestCase):
         with patch("mlx_lm.generate.generate_step", generate_step):
             backend.generate(2)
 
-        self.assertEqual(backend.tape, [10, 11, 65])
-        self.assertTrue(backend._replay_needed)
+        self.assertEqual(backend.tape, [10, 11, 65, 999])
+        self.assertTrue(backend.turn_closed)
+        self.assertFalse(backend._replay_needed)
+        self.assertTrue(backend.check_invariant())
 
     def test_synchronous_generation_setup_failure_replays_tape(self):
         backend, _tokenizer = self.backend()

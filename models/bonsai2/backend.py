@@ -100,6 +100,34 @@ def _quantize_kv_caches(cache, bits: int, group_size: int):
     return cache
 
 
+def _verify_shared_signs(model) -> None:
+    """Prove same-width sign vectors are byte-identical in this checkpoint.
+
+    The share hook keys the memo by input width, which is exact only when
+    every module of that width carries the same signs. Refuse to run shared
+    otherwise instead of risking cross-wired transforms.
+    """
+    import hashlib
+
+    import mlx.core as mx
+    import numpy as np
+
+    seen: dict[int, str] = {}
+    for _name, module in model.named_modules():
+        signs = getattr(module, "signs", None)
+        if signs is None:
+            continue
+        width = int(signs.shape[0])
+        mx.eval(signs)
+        digest = hashlib.sha256(bytes(np.asarray(signs).tobytes())).hexdigest()
+        if width in seen and seen[width] != digest:
+            raise RuntimeError(
+                f"Bonsai-2 sign vectors differ at width {width}; "
+                "refusing shared transforms"
+            )
+        seen[width] = digest
+
+
 class _TextModelWrapper:
     """Expose the VL language model as a plain logits module.
 
@@ -112,7 +140,13 @@ class _TextModelWrapper:
         self._language_model = language_model
 
     def __call__(self, inputs, cache=None, **options):
-        return self._language_model(inputs, cache=cache, **options).logits
+        from .ternary_kernel import arm_memo, disarm_memo
+
+        arm_memo()
+        try:
+            return self._language_model(inputs, cache=cache, **options).logits
+        finally:
+            disarm_memo()
 
     def __getattr__(self, name):
         return getattr(self.__dict__["_language_model"], name)
@@ -193,6 +227,7 @@ class BonsaiBackend(Conversation):
         clear_cache_after_generate: bool = False,
         wired_limit_enabled: bool = False,
         fused_fwht: bool = False,
+        share_fwht: bool = False,
         quantized_kv: tuple | list | None = None,
         session_dir: str = SESSION_DIR,
     ):
@@ -224,8 +259,15 @@ class BonsaiBackend(Conversation):
             from .ternary_kernel import install_packed_hook
 
             install_packed_hook()
+        if share_fwht:
+            os.environ["BONSAI2_SHARE_FWHT"] = "1"
         vl_model, _processor, _pack_config = load_vl_model(str(path), load_processor=False)
         model = vl_model.language_model
+        if share_fwht:
+            from .ternary_kernel import install_share_hook
+
+            _verify_shared_signs(model)
+            install_share_hook()
         with _transformers_import_environment():
             from transformers import AutoTokenizer
 
@@ -270,6 +312,7 @@ class BonsaiBackend(Conversation):
             eos = (eos,)
         self.stops = {int(value) for value in (eos or ()) if value is not None}
         end = tokenizer.convert_tokens_to_ids(IM_END)
+        self._im_end_id = int(end) if end is not None else None
         if end is not None:
             self.stops.add(int(end))
 
@@ -460,7 +503,23 @@ class BonsaiBackend(Conversation):
                                 if value in self.stops:
                                     stop_seen = True
                                     finish = "stop"
-                                    self.turn_closed = False
+                                    if (
+                                        self._im_end_id is not None
+                                        and value == self._im_end_id
+                                    ):
+                                        # The close token is already consumed
+                                        # into every cache layer through the
+                                        # one-ahead lookahead. Retain it in
+                                        # the tape and close the turn: the
+                                        # next-turn builders omit a second
+                                        # close, so the combined sequence is
+                                        # identical while the live cache
+                                        # survives. Other stops keep the
+                                        # replay recovery path below.
+                                        self.tape.append(value)
+                                        self.turn_closed = True
+                                    else:
+                                        self.turn_closed = False
                                     break
                                 self.tape.append(value)
                                 produced.append(value)
@@ -496,13 +555,14 @@ class BonsaiBackend(Conversation):
                 cleanup_steps()
             steps = None
             try:
-                if stop_seen:
+                if stop_seen and not self.turn_closed:
                     # Rewinding KV offsets is not enough: the 48 GDN linear
                     # states have no offset and already absorbed the stop
                     # token through the one-ahead lookahead. Continuing from
                     # them contaminates the next turn, so drop the whole
-                    # cache and replay the tape instead. Measured as its own
-                    # arm; replay costs a prefill on the following turn.
+                    # cache and replay the tape instead. A retained
+                    # <|im_end|> close leaves turn_closed true and skips
+                    # this path with the live cache intact.
                     self._mark_replay_needed()
             finally:
                 if interrupted:
@@ -609,6 +669,9 @@ class BonsaiBackend(Conversation):
         from mlx_lm.models.cache import make_prompt_cache
 
         self.cache = make_prompt_cache(self.model)
+        if self.quantized_kv is not None:
+            bits, group_size = self.quantized_kv
+            _quantize_kv_caches(self.cache, bits, group_size)
         self._validate_cache(self.cache)
         self.tape = []
         self.pending = []

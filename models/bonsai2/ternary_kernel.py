@@ -74,6 +74,64 @@ def fused_fwht_enabled() -> bool:
 
 
 _STOCK_FWHT = None
+_MEMO = None
+
+
+def share_fwht_enabled() -> bool:
+    return os.environ.get("BONSAI2_SHARE_FWHT") == "1"
+
+
+def arm_memo() -> None:
+    """Open a call-scoped transform cache. The wrapper arms before each model
+    forward and disarms after it returns; entries hold their inputs alive so
+    object ids cannot be reused while cached, and clearing per forward bounds
+    memory. Hits return the identical computed array, so shared calls are
+    bit-identical by construction."""
+    global _MEMO
+    _MEMO = {}
+
+
+def disarm_memo() -> None:
+    global _MEMO
+    _MEMO = None
+
+
+def install_share_hook() -> bool:
+    """Memoize forward transforms across modules sharing one input object.
+
+    Same-width modules carry byte-identical sign vectors, so a shared input
+    means a shared result. The memo consults whatever transform sits
+    underneath (fused kernel when enabled, stock otherwise).
+    """
+    import sys
+
+    if not share_fwht_enabled():
+        return False
+    module = sys.modules.get("runtime")
+    if module is None:
+        return False
+    if getattr(module, "_bonsai2_shared", False):
+        return True
+    inner = module.fwht
+
+    def shared(x, block, signs, inverse=False):
+        memo = _MEMO
+        if memo is None or inverse:
+            return inner(x, block, signs, inverse=inverse)
+        # Same-width sign vectors are byte-identical (verified per loaded
+        # model in the backend), so width identifies the signs. Inputs are
+        # held alive by their entries, so ids cannot be reused mid-forward.
+        key = (id(x), x.shape[-1], tuple(x.shape), block)
+        hit = memo.get(key)
+        if hit is not None:
+            return hit[2]
+        result = inner(x, block, signs, inverse=inverse)
+        memo[key] = (x, signs, result)
+        return result
+
+    module.fwht = shared
+    module._bonsai2_shared = True
+    return True
 
 
 def install_packed_hook() -> bool:
