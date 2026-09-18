@@ -21,6 +21,12 @@ For K2-Horizon, use the equivalent active set:
 2. `docs/k2_horizon/research.md`
 3. `docs/k2_horizon/brief.md`
 
+For Bonsai-2, use the equivalent active set:
+
+1. `docs/bonsai2/handoff.md`
+2. `docs/bonsai2/research.md`
+3. `docs/bonsai2/brief.md`
+
 ## Documentation structure
 
 Each active component has three documents:

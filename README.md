@@ -6,8 +6,9 @@ MACQWEN runs large language models on low-memory Apple Silicon Macs. Our focus
 is running LLMs that exceed available RAM by streaming selected data from SSD.
 
 We support the SSD-streamed Qwen Flash-Next family as our primary large-LLM
-runtime. We also support the resident K2-Horizon 7B MLX model as a dense
-alternative, and the Qwen3.8-27B V4 runtime for research.
+runtime. We also support the resident K2-Horizon 7B MLX model and the ternary
+Bonsai-2 27B model as dense alternatives, and the Qwen3.8-27B V4 runtime for
+research.
 
 The tested system is an M4 Mac with 16 GB of unified memory and a 256 GB SSD.
 The project includes no model weights.
@@ -181,6 +182,33 @@ Set `MACQWEN_K2_HORIZON_PYTHON` if it needs a different Python environment.
 Read the [K2-Horizon brief](docs/k2_horizon/brief.md) for current status, the
 [research record](docs/k2_horizon/research.md) for measured decisions, and the
 [handoff](docs/k2_horizon/handoff.md) before changing or benchmarking it.
+
+### Bonsai-2 27B (experimental, text-only)
+
+Bonsai-2 is a ternary-weight 27B alternative that uses about 8.6 GB of disk
+space. It runs through its bundled Hadamard runtime and does not use the
+Flash-Next streaming or routing modes.
+
+Download the 2-bit MLX checkpoint:
+
+```bash
+hf download prism-ml/Ternary-Bonsai-2-27B-mlx-2bit \
+  --local-dir "$HOME/models/Ternary-Bonsai-2-27B-mlx-2bit"
+```
+
+Start it with the `b2` checkpoint alias:
+
+```bash
+./chat.sh --model bonsai2 --checkpoint b2
+```
+
+Bonsai-2 requires its checkpoint-supplied `runtime/` loader. Loading this
+checkpoint executes that local code, so only use a checkpoint source we trust.
+Set `MACQWEN_BONSAI2_PYTHON` if it needs a different Python environment.
+
+Read the [Bonsai-2 brief](docs/bonsai2/brief.md) for current status, the
+[research record](docs/bonsai2/research.md) for measured decisions, and the
+[handoff](docs/bonsai2/handoff.md) before changing or benchmarking it.
 
 ### Qwen3.8-27B research runtime
 

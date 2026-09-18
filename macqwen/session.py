@@ -385,6 +385,19 @@ def build_backend(name: str, args, prefs: dict):
         }
         mirror_preferences(backend, prefs, prefs["profile"])
         return backend
+    if name == "bonsai2":
+        if not args.model_path:
+            raise SystemExit("--model-path is required for model 'bonsai2'")
+        from models.bonsai2.backend import BonsaiBackend
+        from models.bonsai2.settings import SESSION_DIR
+
+        backend = BonsaiBackend(
+            model_path=args.model_path,
+            prefill_step_size=args.prefill_step_size,
+            session_dir=(args.session_dir or SESSION_DIR),
+        )
+        mirror_preferences(backend, prefs, prefs["profile"])
+        return backend
     if name == "k2-horizon":
         if not args.model_path:
             raise SystemExit("--model-path is required for model 'k2-horizon'")
@@ -399,7 +412,7 @@ def build_backend(name: str, args, prefs: dict):
         mirror_preferences(backend, prefs, prefs["profile"])
         return backend
     raise SystemExit(
-        f"unknown model {name!r}. Use 'flashnext', 'k2-horizon', or 'qwen27b'.")
+        f"unknown model {name!r}. Use 'flashnext', 'bonsai2', 'k2-horizon', or 'qwen27b'.")
 
 
 def _apply_seed(seed: int | None) -> None:
@@ -414,7 +427,7 @@ def main() -> int:
     from macqwen.model_settings import FLASHNEXT_DEFAULTS
     parser.add_argument(
         "--model", default=None,
-        choices=("flashnext", "k2-horizon", "qwen27b"),
+        choices=("flashnext", "bonsai2", "k2-horizon", "qwen27b"),
     )
     parser.add_argument("--profile", default=None, choices=("plain", "agent"))
     parser.add_argument("--model-path", "--checkpoint", dest="model_path", default=None)
@@ -622,6 +635,17 @@ def main() -> int:
             parser.error(str(exc))
         if explicit_checkpoint or saved_only or not (environment_checkpoint or saved_checkpoint):
             prefs["flashnext_checkpoint"] = args.model_path
+    elif prefs["model"] == "bonsai2":
+        from models.bonsai2.checkpoint import resolve_bonsai2
+        from models.bonsai2.settings import CHECKPOINT_ENV
+
+        explicit_checkpoint = args.model_path
+        environment_checkpoint = os.environ.get(CHECKPOINT_ENV)
+        choice = explicit_checkpoint or environment_checkpoint or None
+        try:
+            args.model_path = str(resolve_bonsai2(choice))
+        except ValueError as exc:
+            parser.error(str(exc))
     elif prefs["model"] == "k2-horizon":
         from models.k2_horizon.checkpoint import resolve_k2_horizon
         from models.k2_horizon.settings import CHECKPOINT_ENV

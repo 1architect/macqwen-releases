@@ -10,6 +10,10 @@ checkpoint license before download, use, modification, or redistribution.
 K2-Horizon-7B-MLX-8bit is distributed separately by abenzerps and includes a
 checkpoint-supplied MLX model implementation. Its own license terms apply.
 
+Ternary-Bonsai-2-27B-mlx-2bit is distributed separately by prism-ml under
+Apache-2.0 and includes a checkpoint-supplied runtime loader. Its own license
+terms apply.
+
 MLX, MLX-LM, MLX-VLM, Transformers, NumPy, Requests, Hugging Face Hub, and
 other dependencies are separate projects. Their own license terms apply.
 

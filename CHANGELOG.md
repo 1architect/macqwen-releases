@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add an isolated `models/bonsai2` package for Bonsai-2 ternary 27B
+  checkpoint discovery, resident text-only generation, sessions, protocol
+  adaptation, settings, benchmark harness, and tests.
+- Add the `b2` checkpoint alias and `--model bonsai2` launcher path.
+
 ## MACQWEN 0.4.2 - 2026-09-17
 
 ### Added

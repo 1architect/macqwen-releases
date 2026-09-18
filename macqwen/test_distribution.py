@@ -33,6 +33,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("models/flashnext", workflow)
         self.assertIn("models/qwen27b", workflow)
         self.assertIn("models/k2_horizon", workflow)
+        self.assertIn("models/bonsai2", workflow)
         self.assertIn("gh release create", workflow)
 
 

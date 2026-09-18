@@ -7,6 +7,8 @@
 ./chat.sh --model flashnext --profile agent
 ./chat.sh --model k2-horizon --checkpoint k2 --profile plain
 ./chat.sh --model k2-horizon --checkpoint k2 --profile agent
+./chat.sh --model bonsai2 --checkpoint b2 --profile plain
+./chat.sh --model bonsai2 --checkpoint b2 --profile agent
 ./chat.sh BUILD --profile plain
 ./chat.sh BUILD --profile agent
 ./chat.sh /server
@@ -17,6 +19,11 @@
 The `k2` alias resolves to `~/models/K2-Horizon-7B-MLX-8bit` under the current
 model root. K2-Horizon loads its checkpoint-supplied `model.py` through MLX-LM,
 so we only use checkpoints from sources we trust.
+
+The `b2` alias resolves to `~/models/Ternary-Bonsai-2-27B-mlx-2bit` under the
+current model root. Bonsai-2 requires its checkpoint-supplied `runtime/`
+loader, text-only in milestone 1, so we only use checkpoints from sources we
+trust.
 
 ## Main files
 
@@ -34,7 +41,9 @@ so we only use checkpoints from sources we trust.
 | `macqwen/tools/` | Provide repository, API, code, and search tools |
 | `macqwen/backends/` | Adapt each model runtime to the session loop |
 | `models/k2_horizon/` | Own K2 loading, settings, protocol adaptation, and tests |
+| `models/bonsai2/` | Own Bonsai-2 loading, settings, protocol adaptation, and tests |
 | `docs/k2_horizon/` | Hold K2 status, research decisions, operation, and measurements |
+| `docs/bonsai2/` | Hold Bonsai-2 status, research decisions, operation, and measurements |
 
 ## Commands
 
@@ -139,7 +148,8 @@ python3 -m unittest discover -s macqwen -p 'test_*.py'
 python3 -m unittest discover -s models/flashnext -p 'test_*.py'
 python3 -m unittest discover -s models/qwen27b -p 'test_*.py'
 python3 -m unittest discover -s models/k2_horizon -p 'test_*.py'
-python3 -m compileall -q macqwen models/flashnext models/qwen27b models/k2_horizon
+python3 -m unittest discover -s models/bonsai2 -p 'test_*.py'
+python3 -m compileall -q macqwen models/flashnext models/qwen27b models/k2_horizon models/bonsai2
 git diff --check
 ```
 

@@ -17,6 +17,7 @@ MACQWEN keeps the same three active documents for each component.
 |---|---|---|---|
 | Shared chat | [Brief](chat/brief.md) | [Research](chat/research.md) | [Handoff](chat/handoff.md) |
 | K2-Horizon 7B | [Brief](k2_horizon/brief.md) | [Research](k2_horizon/research.md) | [Handoff](k2_horizon/handoff.md) |
+| Bonsai-2 27B | [Brief](bonsai2/brief.md) | [Research](bonsai2/research.md) | [Handoff](bonsai2/handoff.md) |
 | Qwen3.8-27B | [Brief](qwen27b/brief.md) | [Research](qwen27b/research.md) | [Handoff](qwen27b/handoff.md) |
 | Flash-Next | [Brief](flashnext/brief.md) | [Research](flashnext/research.md) | [Handoff](flashnext/handoff.md) |
 
@@ -31,3 +32,4 @@ Active documents contain current instructions.
 | [`flashnext/measurements/`](flashnext/measurements/) | Published FlashNext measurement records. |
 | [`flashnext/graphics/`](flashnext/graphics/) | FlashNext trace graphics, including the token trace view, Xcode capture view, and miss-sweep residual plot. |
 | [`k2_horizon/measurements/`](k2_horizon/measurements/) | Published K2-Horizon benchmark commands and raw records. |
+| [`bonsai2/measurements/`](bonsai2/measurements/) | Bonsai-2 benchmark commands and raw records. |
