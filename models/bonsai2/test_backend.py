@@ -289,6 +289,33 @@ class BackendTests(unittest.TestCase):
         self.assertIn("strict=True", source)
         self.assertNotIn("strict=False", source)
 
+    def test_weight_loader_merges_shards_and_rejects_duplicates(self):
+        import json
+        import tempfile
+
+        from models.bonsai2.backend import _load_weight_tensors
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "model.safetensors.index.json").write_text(json.dumps({
+                "weight_map": {"a": "s1.safetensors", "b": "s2.safetensors"},
+            }))
+            shard_a = {"a": "tensor-a"}
+            shard_b = {"b": "tensor-b"}
+
+            def fake_load(name):
+                return dict(shard_a if name.endswith("s1.safetensors") else shard_b)
+
+            with patch("mlx.core.load", side_effect=fake_load):
+                merged = _load_weight_tensors(path)
+            self.assertEqual(merged, {"a": "tensor-a", "b": "tensor-b"})
+
+            with patch(
+                "mlx.core.load", side_effect=[{"a": 1}, {"a": 2}]
+            ):
+                with self.assertRaisesRegex(ValueError, "Duplicate tensor"):
+                    _load_weight_tensors(path)
+
     def test_rotating_cache_is_rejected_on_reset(self):
         backend, _tokenizer = self.backend()
         with patch(

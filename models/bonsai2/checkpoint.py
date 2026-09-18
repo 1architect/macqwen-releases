@@ -26,12 +26,19 @@ def runtime_available(path: Path) -> bool:
     Bonsai-2 declares ``model_type: prism_hadamard_qwen35`` and requires the
     loader bundled in its ``runtime/`` directory. Stock MLX loaders skip the
     activation Hadamard transform and return wrong output silently, so the
-    backend must refuse to run when these files are absent.
+    backend must refuse to run when these files are absent. A requirements
+    file or an unrelated script is not enough: both entry points our loader
+    imports must exist, and the transform module must define Packed.
     """
     runtime = path / "runtime"
-    return (runtime / "requirements.txt").is_file() or any(
-        runtime.glob("*.py")
-    )
+    if not (runtime / "runtime.py").is_file():
+        return False
+    if not (runtime / "vision_artifact.py").is_file():
+        return False
+    try:
+        return "class Packed" in (runtime / "runtime.py").read_text()
+    except OSError:
+        return False
 
 
 def compatible(path: Path) -> bool:

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from models.bonsai2.checkpoint import installed, resolve_bonsai2
+from models.bonsai2.checkpoint import installed, resolve_bonsai2, runtime_available
 
 
 def checkpoint(root: Path, name: str = "Ternary-Bonsai-2-27B-mlx-2bit") -> Path:
@@ -28,7 +28,7 @@ def checkpoint(root: Path, name: str = "Ternary-Bonsai-2-27B-mlx-2bit") -> Path:
 
 
 class CheckpointTests(unittest.TestCase):
-    def test_alias_and_discovery_require_all_runtime_files(self):
+    def test_alias_and_discovery_require_all_checkpoint_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             expected = checkpoint(root)
@@ -42,7 +42,26 @@ class CheckpointTests(unittest.TestCase):
                 (expected / "tokenizer.json").unlink()
                 self.assertEqual(installed(), [])
 
+    def test_runtime_requires_both_entry_points_and_packed(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertFalse(runtime_available(root))
+            runtime = root / "runtime"
+            runtime.mkdir()
+            (runtime / "requirements.txt").write_text("mlx")
+            (runtime / "unrelated.py").write_text("x = 1\n")
+            self.assertFalse(runtime_available(root))
+            (runtime / "runtime.py").write_text("VALUE = 1\n")
+            (runtime / "vision_artifact.py").write_text("VALUE = 2\n")
+            self.assertFalse(runtime_available(root))
+            (runtime / "runtime.py").write_text("class Packed:\n    pass\n")
+            self.assertTrue(runtime_available(root))
+
     def test_single_safetensors_without_index_is_compatible(self):
+        import tempfile
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / "Ternary-Bonsai-2-27B-mlx-2bit"

@@ -90,7 +90,8 @@ def checkpoint_info(requested: str) -> dict[str, Any]:
             path = Path(os.environ.get("MACQWEN_MODEL_ROOT", "~/models")) / path
         path = path.resolve()
     files = {}
-    for name in ("config.json", "model.py", "model.safetensors.index.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja"):
+    for name in ("config.json", "model.py", "model.safetensors.index.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja",
+                 "hadamard.json", "runtime/runtime.py", "runtime/artifact.py", "runtime/vision_artifact.py", "runtime/codec.py"):
         item = path / name
         try:
             files[name] = {"bytes": item.stat().st_size, "sha256": sha256(item)}

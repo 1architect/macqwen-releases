@@ -322,11 +322,13 @@ models/flashnext/        Flash-Next runtime and benchmarks
 models/flashnext/settings/ FlashNext setting registry and launch defaults
 models/flashnext/tests/  FlashNext interactive research test catalog
 models/k2_horizon/       K2-Horizon runtime, protocol adapter, settings, and tests
+models/bonsai2/          Bonsai-2 runtime, ternary kernels, settings, and tests
 models/qwen27b/          Qwen3.8-27B runtime and research utilities
 docs/                    Current guides, results, and historical records
 docs/MLX/               MLX Metal backend source notes
 docs/flashnext/graphics/ FlashNext trace screenshots and plots
 docs/k2_horizon/         K2-Horizon brief, research, handoff, and measurements
+docs/bonsai2/            Bonsai-2 brief, research, handoff, and measurements
 ```
 
 `chat.sh` selects the model, checkpoint, and Python environment before loading the runtime.
@@ -359,6 +361,13 @@ Run K2-Horizon adapter tests:
 ```bash
 .venv/bin/python -m unittest discover \
   -s models/k2_horizon -p 'test_*.py' -q
+```
+
+Run Bonsai-2 adapter tests:
+
+```bash
+.venv/bin/python -m unittest discover \
+  -s models/bonsai2 -p 'test_*.py' -q
 ```
 
 ## Documentation

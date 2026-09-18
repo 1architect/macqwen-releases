@@ -211,12 +211,13 @@ trajectory gate stays manual. Other stops and interruptions keep the replay
 recovery path.
 
 ## Status: landed versus open
-
-Landed on this branch: stop-token retention with live cache, shared
-transforms per projection group, cache-growth repair targeting the real
-classes, allocator cap as chat default, opt-in 8-bit KV with digest-equal
-short evidence, bit-exact fused FWHT kernel kept off, chat sampler over
-top-k survivors, text-only materialization, and the smoke screening path.
+Landed on this branch: gated stop-token retention, shared transforms per
+projection group with per-backend enablement, cache-growth repair targeting
+the real classes, allocator cap as chat default, opt-in 8-bit KV with
+digest-equal short evidence, bit-exact fused FWHT kernel kept off, chat
+sampler over top-k survivors, text-only materialization with strict
+language-subtree loading, hardened runtime entry-point checks, runtime
+fingerprinting in benchmark identity, and sharded weight loading.
 
 Open: the 16k allocator confirmation and the full shared-transform
 comparison still await affordable machine time.

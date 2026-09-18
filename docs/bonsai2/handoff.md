@@ -78,11 +78,14 @@ with a production fixture.
 - The bundled `runtime/` loader must be active on every arm; stock-loader runs
   are invalid because they skip the activation transform silently.
 - Every completed cache layer offset must match the conversation token tape.
-- Stop-token rewind, EOS, token-limit completion, cancellation, callback
-  failure, reset, and replay must leave explicit recoverable state.
+- Stop-token handling, EOS, token-limit completion, cancellation, callback
+  failure, reset, and replay must leave explicit recoverable state. Stop
+  retention stays experimental and off by default.
 - Exact candidates must retain intermediate values and complete greedy token
   digests. Output-changing candidates require the sampled quality gate from
   `CONTRIBUTING.md`.
+- One model runs per process. The transform hooks patch process-global
+  runtime state, so multi-model residency in one process is unsupported.
 
 ## Closed directions
 
@@ -93,7 +96,9 @@ Do not retry these without a new measured premise:
 
 ## Next work
 
-Next, establish the text-only baseline and quality gate, then attribute
-prefill and decode costs before selecting any optimization. Record evidence
-in [`research.md`](research.md) and raw arms under
+Baselines are established: 5.5 tok/s product at 2k with 10.43 GB peak, 4.0
+tok/s at 16k with 13.42 GB peak. Open items are the 16k allocator
+confirmation, the full shared-transform comparison, stop-retention
+continuation checks, and 8-bit KV quality validation. Record evidence in
+[`research.md`](research.md) and raw arms under
 [`measurements/`](measurements/).

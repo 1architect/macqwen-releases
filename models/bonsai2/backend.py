@@ -128,6 +128,32 @@ def _verify_shared_signs(model) -> None:
         seen[width] = digest
 
 
+def _load_weight_tensors(directory: Path) -> dict:
+    """Load every weight shard into one tensor map.
+
+    Single-file packs read `model.safetensors` directly. Sharded packs
+    follow the index weight map in file order and reject duplicate tensor
+    names across shards instead of silently keeping the last copy.
+    """
+    import mlx.core as mx
+
+    index_path = directory / "model.safetensors.index.json"
+    if not index_path.is_file():
+        return dict(mx.load(str(directory / "model.safetensors")))
+    index = json.loads(index_path.read_text())
+    weight_map = index.get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map:
+        raise ValueError("Shard index has no weight map")
+    shard_names = list(dict.fromkeys(weight_map.values()))
+    merged: dict = {}
+    for shard in shard_names:
+        for key, value in mx.load(str(directory / shard)).items():
+            if key in merged:
+                raise ValueError(f"Duplicate tensor across shards: {key}")
+            merged[key] = value
+    return merged
+
+
 def _load_text_model(path):
     """Load the language model without materializing the vision tower.
 
@@ -151,7 +177,7 @@ def _load_text_model(path):
     from mlx_vlm.models.qwen3_5 import Model, ModelConfig
 
     model = Model(ModelConfig.from_dict(config))
-    weights = mx.load(str(directory / "model.safetensors"))
+    weights = _load_weight_tensors(directory)
 
     from runtime import Packed
 
