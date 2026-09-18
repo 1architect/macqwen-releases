@@ -85,6 +85,21 @@ class Stats:
         return self.prompt_tokens / self.prefill_seconds if self.prefill_seconds else 0.0
 
 
+def _quantize_kv_caches(cache, bits: int, group_size: int):
+    """Replace full-attention caches with quantized versions in place.
+
+    GDN linear layers keep their fp32 recurrent state; only the 16 KVCache
+    layers quantize. Runs at construction and on every replay so restored
+    caches never silently return to fp32.
+    """
+    for index, item in enumerate(cache):
+        if type(item).__name__ == "KVCache":
+            cache[index] = item.to_quantized(
+                group_size=group_size, bits=bits
+            )
+    return cache
+
+
 class _TextModelWrapper:
     """Expose the VL language model as a plain logits module.
 
@@ -178,6 +193,7 @@ class BonsaiBackend(Conversation):
         clear_cache_after_generate: bool = False,
         wired_limit_enabled: bool = False,
         fused_fwht: bool = False,
+        quantized_kv: tuple | list | None = None,
         session_dir: str = SESSION_DIR,
     ):
         prefill_step_size = int(prefill_step_size)
@@ -224,6 +240,16 @@ class BonsaiBackend(Conversation):
         self._text_model = _TextModelWrapper(model)
         self.model_path = str(path)
         self.cache = make_prompt_cache(model)
+        self.quantized_kv = (
+            (int(quantized_kv[0]), int(quantized_kv[1]))
+            if quantized_kv is not None
+            else None
+        )
+        if self.quantized_kv is not None:
+            bits, group_size = self.quantized_kv
+            if bits not in (4, 8) or group_size <= 0:
+                raise ValueError("quantized_kv needs (bits, group_size) with bits 4 or 8")
+            _quantize_kv_caches(self.cache, bits, group_size)
         self._validate_cache(self.cache)
         self.prefill_step_size = prefill_step_size
         self.allocator_cache_mb = allocator_cache_mb
@@ -312,11 +338,11 @@ class BonsaiBackend(Conversation):
     @staticmethod
     def _validate_cache(cache) -> None:
         kinds = {type(item).__name__ for item in cache}
-        if not kinds <= {"ArraysCache", "KVCache"}:
+        if not kinds <= {"ArraysCache", "KVCache", "QuantizedKVCache"}:
             raise TypeError(
                 "Bonsai-2 requires ArraysCache/KVCache objects"
             )
-        if kinds and "KVCache" not in kinds:
+        if kinds and "KVCache" not in kinds and "QuantizedKVCache" not in kinds:
             raise TypeError("Bonsai-2 requires full-attention KVCache layers")
 
     def check_invariant(self) -> bool:
@@ -333,6 +359,9 @@ class BonsaiBackend(Conversation):
         from mlx_lm.models.cache import make_prompt_cache
 
         self.cache = make_prompt_cache(self.model)
+        if self.quantized_kv is not None:
+            bits, group_size = self.quantized_kv
+            _quantize_kv_caches(self.cache, bits, group_size)
         self._validate_cache(self.cache)
         self._replay_needed = bool(self.tape)
         self.turn_closed = False

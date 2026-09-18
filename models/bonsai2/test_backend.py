@@ -178,6 +178,43 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(backend._replay_needed)
         self.assertFalse(backend.turn_closed)
 
+    def test_quantized_kv_option_converts_full_attention_caches(self):
+        import sys
+        import types
+
+        tokenizer = FakeTokenizer()
+        fake_model = types.SimpleNamespace(language_model=object())
+        fake_artifact = types.ModuleType("vision_artifact")
+        fake_artifact.load_vl_model = lambda *args, **kwargs: (
+            fake_model, None, {"modules": []},
+        )
+        patches = (
+            patch(
+                "models.bonsai2.backend.resolve_bonsai2",
+                return_value=Path("/models/b2"),
+            ),
+            patch(
+                "models.bonsai2.backend.runtime_available",
+                return_value=True,
+            ),
+            patch.dict(sys.modules, {"vision_artifact": fake_artifact}),
+            patch("transformers.AutoTokenizer.from_pretrained", return_value=tokenizer),
+            patch(
+                "mlx_lm.models.cache.make_prompt_cache",
+                return_value=[KVCache()],
+            ),
+        )
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        backend = BonsaiBackend("b2", quantized_kv=(8, 64))
+        self.assertEqual(
+            [type(item).__name__ for item in backend.cache],
+            ["QuantizedKVCache"],
+        )
+        with self.assertRaisesRegex(ValueError, "quantized_kv"):
+            BonsaiBackend("b2", quantized_kv=(2, 64))
+
     def test_rotating_cache_is_rejected_on_reset(self):
         backend, _tokenizer = self.backend()
         with patch(

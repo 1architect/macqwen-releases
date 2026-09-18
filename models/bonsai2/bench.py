@@ -30,6 +30,7 @@ COMPARISONS = {
     "prefill": {"prefill-512": {"prefill_step_size": 512}, "prefill-256": {"prefill_step_size": 256}},
     "prefill-wide": {"prefill-512": {"prefill_step_size": 512}, "prefill-1024": {"prefill_step_size": 1024}, "prefill-2048": {"prefill_step_size": 2048}},
     "fused-fwht": {"control": {}, "fused": {"fused_fwht": True}},
+    "quant-kv8": {"control": {}, "qkv8": {"quantized_kv": [8, 64]}},
 }
 DIAGNOSTIC_COMPARISONS = {"profile"}
 _ANALYSIS_REQUEST = "Using the numbered records, write a detailed neutral analysis of at least 300 words covering the observed patterns and exceptions."

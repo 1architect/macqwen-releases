@@ -134,18 +134,46 @@ costs the model amortizes, and the complete runtime absorbs the launch
 saving. The flag stays off. The recommended follow-up is folding the
 transform into the quantized matmul itself (memory traffic, not launches).
 
-### Full FWHT-into-matmul fusion (feasibility assessment, not implemented)
+### NPU re-probe (single ternary layer, closed)
 
-The wheel ships `quantized.h` with the `qmv` vector helpers, so the
-FlashNext header-extraction pattern applies directly. A full-fusion kernel
-would FWHT the input into threadgroup staging (4 KB per 1024-block, looped
-over up to 17 blocks for the widest projection) and run the Q2 reduction
-over it. The 7.6 GB weight traffic per pass is irreducible under exact
-semantics; fusable traffic is only the transformed activation (about 28 MB
-per token) plus remaining launches. Expected end-to-end gain is low single
-digits at best, against days of kernel tuning to match MLX's own Q2 path.
-We do not pursue it now. The paging-bound evidence below says memory
-pressure, not launches, is the binding constraint on this machine.
+We installed coremltools 9.0 and exported one layer-0 MLP to Core ML,
+dequantized to fp32 program with fp16 precision. Results close the line:
+
+- Single-layer package is 534.8 MB, projecting to about 34 GB for 64
+  layers against the archived 0.5–1.1 GB ANE resident limit. Capacity
+  alone rejects full-model offload again, by an order of magnitude.
+- Isolated ANE resident median is 6.1 ms against 4.4 ms for the Metal
+  packed path. No per-layer win even before correctness.
+- The ANE output mismatches completely (relative RMSE 1.25, cosine −0.03)
+  because the weights live rotated and the activation transform has no
+  in-graph equivalent. Correctness would need the FWHT staged in MIL ops,
+  more work for a path already rejected twice over.
+
+The 2026-08-24 verdict stands for Bonsai-2: sound idea, hardware cannot
+hold it. We spend no further machine time here.
+
+### Full FWHT-into-matmul fusion (assessed, not built)
+
+The wheel ships the Q2 `qmv` vector helpers, so the extraction pattern
+applies. But the fusable traffic is only the transformed activation,
+about 3–4 MB per token, worth about 0.04 ms against a 190 ms token
+(0.02%). The single-dispatch kernel already removed the launches and
+measured neutral end to end. Building the full fusion can only chase that
+0.02%, so we do not build it. The launch-level kernel stays as a
+bit-exact diagnostic.
+
+### KV quantization to 8-bit (opt-in, digest-equal)
+
+All cache state runs fp32: 48 GDN layers hold about 157 MB constant and the
+16 full-attention layers cost 131 KiB per token. The backend accepts
+`quantized_kv=(bits, group_size)` and converts the 16 KVCache layers at
+construction and on every replay; GDN state stays fp32. The six-arm
+`quant-kv8` comparison keeps digest `d2004e2e` on all arms: the greedy
+trajectory survives. KV allocation halves from 593 MB to 280 MB at 2k plus
+32 tokens. Speed is unresolved inside machine noise (paired −26%, −7%,
++7% while the control itself swings 5.1–7.8 tok/s across rounds). Q8 stays
+opt-in; it is the leading candidate for long context, where halved KV
+directly extends the fitting ceiling. Quality validation stays manual.
 
 ### Allocator cap at 16k (not run)
 
