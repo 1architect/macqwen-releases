@@ -116,7 +116,7 @@ the default. Digests match across all three sizes.
   rates. Keep as an opt-in diagnostic; combine with the allocator cap only
   after the 16k confirmation.
 
-### Fused FWHT kernel (exact, speed-unresolved)
+### Fused FWHT kernel (exact, speed-unresolved on decode)
 
 `models/bonsai2/ternary_kernel.py` folds the per-module sign multiply,
 Hadamard transform, and downcast into one Metal dispatch. Two bugs fell out
@@ -126,13 +126,15 @@ read out of bounds otherwise). Both are fixed with regression tests.
 
 The kernel is bit-exact against the stock path on production shapes and the
 full-module level with real weights. The six-arm `fused-fwht` comparison
-keeps digest `d2004e2ef089e76f` on all arms: exactness gate passes. Speed is
-unresolved: paired effects are −13.3%, +5.6%, +1.5% (mean −2.1%, median
-+1.5%), inside any honest band on this machine's ±15% arm noise. Isolated
-module timing favors the kernel (−25% per call), but that includes sync
-costs the model amortizes, and the complete runtime absorbs the launch
-saving. The flag stays off. The recommended follow-up is folding the
-transform into the quantized matmul itself (memory traffic, not launches).
+keeps digest `d2004e2e...` on all arms: exactness gate passes. Decode speed
+is unresolved: paired effects are −13.3%, +5.6%, +1.5% (mean −2.1%, median
++1.5%), inside any honest band on this machine's ±15% arm noise.
+
+A directional prefill probe (same 776-token prompt, one run each side)
+shows 29.1 tok/s control versus 33.4 tok/s fused with matching digests
+`0e6dfb5ba42ce281`, consistent with prefill multiplying every launch by
+batch width. Directional only, not promotion evidence. The flag stays off
+pending a full prefill-focused comparison.
 
 ### NPU re-probe (single ternary layer, closed)
 
