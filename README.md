@@ -2,27 +2,36 @@
 
 [![CI](https://github.com/1architect/macqwen-releases/actions/workflows/ci.yml/badge.svg)](https://github.com/1architect/macqwen-releases/actions/workflows/ci.yml)
 
-MACQWEN runs language models locally on Apple Silicon Macs. We support the
-SSD-streamed Qwen Flash-Next family and the resident K2-Horizon 7B MLX model.
+MACQWEN runs large language models on low-memory Apple Silicon Macs. Our focus
+is running LLMs that exceed available RAM by streaming selected data from SSD.
+
+We support the SSD-streamed Qwen Flash-Next family as our primary large-LLM
+runtime. We also support the resident K2-Horizon 7B MLX model as a dense
+alternative, and the Qwen3.8-27B V4 runtime for research.
 
 The tested system is an M4 Mac with 16 GB of unified memory and a 256 GB SSD.
 The project includes no model weights.
 
-## Reference performance
+## Reference performance (Flash-Next)
 
-| Operation | Result |
-|---|---:|
-| REAP terminal sanity, 32 tokens | 3.74 tok/s median, 3.45 tok/s tail, 193.3 MB/token |
-| Historical Q4/G32 60-slot control | 3.08 tok/s gen, 3.00 tok/s tail, 279.7 MB/token |
-| Long-prompt prefill near 5,000 tokens | About 40 to 50 tok/s; 62.19 tok/s synthetic result |
+| Model | Operation | Result |
+|---|---|---:|
+| Flash-Next | REAP terminal sanity, 32 tokens | 3.74 tok/s median, 3.45 tok/s tail, 193.3 MB/token |
+| Flash-Next | Historical Q4/G32 60-slot control | 3.08 tok/s gen, 3.00 tok/s tail, 279.7 MB/token |
+| Flash-Next | Long-prompt prefill near 5,000 tokens | About 40 to 50 tok/s; 62.19 tok/s synthetic result |
 
-These results come from the reference Mac. Speed changes with memory pressure,
+These results come from the reference Mac and cover Flash-Next only.
+K2-Horizon and Qwen3.8-27B have no published README rates.
+Speed changes with memory pressure,
 SSD state, and the macOS file cache. See the
 [measurement evidence](docs/flashnext/measurements/) for test conditions.
 
 The listed controlled results preserve token IDs.
 
-## Quick start
+## Quick start (Flash-Next)
+
+This path installs a Flash-Next checkpoint. For K2 see K2-Horizon 7B.
+For 27B see Qwen3.8-27B research runtime.
 
 You need an Apple Silicon Mac, Python 3.12, a fast SSD, and enough free space
 for one checkpoint. We test on an M4 Mac with 16 GB of unified memory.
@@ -35,30 +44,32 @@ cd macqwen-releases
 ./chat.sh setup
 ```
 
-For the smallest public setup, download oQ3-MTP:
+For the recommended first setup, download oQ4:
 
 ```bash
-hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP \
-  --local-dir "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ3-MTP"
+hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ4 \
+  --local-dir "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ4"
 ```
 
 Start chatting:
 
 ```bash
-./chat.sh --checkpoint oq3
+./chat.sh --checkpoint oq4
 ```
 
 MACQWEN remembers the selected checkpoint. After the first run, `./chat.sh` is
 enough.
 
-## Choose a checkpoint
+## Choose a Flash-Next checkpoint
 
 Model weights are not included in this repository.
 
+This table lists Flash-Next only. K2-Horizon and Qwen3.8-27B use their own sections.
+
 | Checkpoint | Disk size | Choose it when... |
 |---|---:|---|
-| oQ3-MTP | 86.2 GiB | You want the smallest public general-chat setup |
-| oQ4 | 111.7 GB | Code quality and accurate external API names matter most |
+| oQ4 | 111.7 GB | You want the recommended setup with passing code quality |
+| oQ3-MTP | 86.2 GiB | Not recommended: it failed our code quality gate; use only for disk-constrained testing |
 | REAP-288 | 73.5 GB | You are helping test the current research checkpoint |
 
 The production runtime does not use the MTP weights included with oQ3-MTP.
@@ -93,49 +104,9 @@ automatically. Otherwise, select it by alias or full path:
 Set `MACQWEN_MODEL_ROOT` when checkpoints are outside `~/models`.
 Set `MACQWEN_FLASHNEXT_PYTHON` when the Python environment uses another path.
 
-## K2-Horizon 7B
+## Flash-Next routing modes
 
-K2-Horizon is a dense 7B alternative that uses about 9.6 GB of disk space. It
-runs through MLX-LM and does not use the Flash-Next streaming or routing modes.
-
-Download the official 8-bit MLX checkpoint:
-
-```bash
-hf download abenzerps/K2-Horizon-7B-MLX-8bit \
-  --local-dir "$HOME/models/K2-Horizon-7B-MLX-8bit"
-```
-
-Start it with the `k2` checkpoint alias:
-
-```bash
-./chat.sh --model k2-horizon --checkpoint k2
-```
-
-K2-Horizon supplies its MLX model implementation in `model.py`. Loading this
-checkpoint executes that local file, so only use a checkpoint source we trust.
-Set `MACQWEN_K2_HORIZON_PYTHON` if it needs a different Python environment.
-
-Read the [K2-Horizon brief](docs/k2_horizon/brief.md) for current status, the
-[research record](docs/k2_horizon/research.md) for measured decisions, and the
-[handoff](docs/k2_horizon/handoff.md) before changing or benchmarking it.
-
-## Daily use
-
-Run `/help` inside the chat to see the current commands. The essentials are:
-
-```text
-/help [all]
-/new
-/session save|load|list|delete [name]
-/config [section] ...
-/status
-/quit
-```
-
-Use `/status` to inspect the model, routing mode, context, and memory. Use
-`/config display animate off` if you prefer output without the text animation.
-
-## Routing modes
+These modes apply to Flash-Next only. They have no effect on K2-Horizon or Qwen3.8-27B.
 
 The default `exact-quality` mode is the right choice for most users:
 
@@ -169,7 +140,7 @@ The fast modes trade output accuracy for speed.
 Read the [Flash-Next brief](docs/flashnext/brief.md) for current mode status.
 Read the [Flash-Next research record](docs/flashnext/research.md) for full results.
 
-## How it works
+## How Flash-Next works
 
 MACQWEN keeps the core model in unified memory and reads the routed experts it
 needs from SSD. Flash-Next is a good fit because its experts are small enough
@@ -182,6 +153,62 @@ G64 slabs, expert-major stream packing, and QSA optimization flags remain off.
 We request this promotion on the 2026-09-17 short benchmark evidence and skip
 the long-turn quality gate at our request. We do not claim general quality
 or long-turn equivalence. See our [handoff](docs/flashnext/handoff.md) for evidence.
+
+## Other models
+
+### K2-Horizon 7B
+
+K2-Horizon is a dense 7B alternative that uses about 9.6 GB of disk space. It
+runs through MLX-LM and does not use the Flash-Next streaming or routing modes.
+
+Download the official 8-bit MLX checkpoint:
+
+```bash
+hf download abenzerps/K2-Horizon-7B-MLX-8bit \
+  --local-dir "$HOME/models/K2-Horizon-7B-MLX-8bit"
+```
+
+Start it with the `k2` checkpoint alias:
+
+```bash
+./chat.sh --model k2-horizon --checkpoint k2
+```
+
+K2-Horizon supplies its MLX model implementation in `model.py`. Loading this
+checkpoint executes that local file, so only use a checkpoint source we trust.
+Set `MACQWEN_K2_HORIZON_PYTHON` if it needs a different Python environment.
+
+Read the [K2-Horizon brief](docs/k2_horizon/brief.md) for current status, the
+[research record](docs/k2_horizon/research.md) for measured decisions, and the
+[handoff](docs/k2_horizon/handoff.md) before changing or benchmarking it.
+
+### Qwen3.8-27B research runtime
+
+This runtime requires a custom MLX environment and a compatible local V4 checkpoint.
+The repository does not provide a ready V4 checkpoint.
+
+```bash
+MACQWEN_QWEN27B_PYTHON=/path/to/python \
+  ./chat.sh BUILD --profile plain
+```
+
+Read the [Qwen3.8-27B handoff](docs/qwen27b/handoff.md) for setup and validation details.
+
+## Daily use
+
+Run `/help` inside the chat to see the current commands. The essentials are:
+
+```text
+/help [all]
+/new
+/session save|load|list|delete [name]
+/config [section] ...
+/status
+/quit
+```
+
+Use `/status` to inspect the model, routing mode, context, and memory. Use
+`/config display animate off` if you prefer output without the text animation.
 
 ## Local API server
 
@@ -247,29 +274,17 @@ Key input does not echo.
 Session files can contain private prompts and model state.
 Do not publish session files, credentials, or custom system prompts.
 
-## Qwen3.8-27B research runtime
-
-This runtime requires a custom MLX environment and a compatible local V4 checkpoint.
-The repository does not provide a ready V4 checkpoint.
-
-```bash
-MACQWEN_QWEN27B_PYTHON=/path/to/python \
-  ./chat.sh BUILD --profile plain
-```
-
-Read the [Qwen3.8-27B handoff](docs/qwen27b/handoff.md) for setup and validation details.
-
 ## Troubleshooting
 
 - If no checkpoint appears, pass its full path with `--checkpoint`.
 - If the checkpoint is incomplete, resume the `hf download` command.
 - If generation becomes slower, close memory-heavy apps and retry.
-- If multiple checkpoints exist, select `oq4`, `oq3`, or a full path.
+- If multiple checkpoints exist, select `oq4` or a full path.
 - For K2-Horizon, include `--model k2-horizon`; the no-argument launcher keeps
   Flash-Next as its default.
 - If a command changed, run `/help` for the active command list.
 
-The loader checks the checkpoint configuration, index, and required shard files.
+The Flash-Next loader checks the checkpoint configuration, index, and required shard files.
 
 ## Repository layout
 
