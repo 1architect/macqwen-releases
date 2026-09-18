@@ -230,6 +230,30 @@ all schema, duplicate, shape, and sign validation. Load peak falls from
 invariant. Load wall time is unchanged at about 4.8 s: the file read
 dominates. This is a loading-memory improvement, not a decode gain.
 
+A first version loaded with `strict=False`, which could silently retain
+initialized values for missing auxiliary weights. The loader now drops the
+tower module first and loads the language subtree with `strict=True`, so
+every remaining parameter is validated. A unit test pins the strict call
+and the live strict load reproduces the 7.68 GB peak.
+
+### Stop retention (experimental, off by default)
+
+Retained `<|im_end|>` continuations do not match replay references
+token-for-token: the first generated token flips between the two turn
+boundary markers while the following prose is identical, deterministically
+on both sides. Identical prose in one probe does not clear the no-loss
+requirement for boundary control tokens, so retention ships behind
+`retain_stop=False` until user-turn and tool-turn continuation checks pass.
+Other stops and interruptions keep the replay recovery path regardless.
+
+### Shared transforms (per-backend enablement)
+
+The memo hook replaces a process-global function, so enablement now belongs
+to the backend instance: the wrapper arms the memo only for backends
+constructed with sharing on, after those backends verify same-width signs.
+A backend without the flag never consults the memo even when another
+backend installed the hook. Pinned by a two-backend unit test.
+
 ### GDN convolution profile (closed without specialization)
 
 The general-path depthwise convolution measures 0.17 ms per layer, or

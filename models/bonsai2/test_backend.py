@@ -111,7 +111,7 @@ class BackendTests(unittest.TestCase):
     def test_im_end_stop_is_retained_with_the_live_cache(self):
         # The close token is already consumed into every cache layer, so
         # retaining it keeps tape and cache identical with no replay.
-        backend, _tokenizer = self.backend()
+        backend, _tokenizer = self.backend(retain_stop=True)
         backend.pending = [10, 11]
         backend.cache = [KVCache()]
         backend.cache[0].offset = 0
@@ -133,6 +133,27 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(backend.turn_closed)
         self.assertFalse(backend._replay_needed)
         self.assertTrue(backend.check_invariant())
+
+    def test_retention_stays_off_by_default(self):
+        backend, _tokenizer = self.backend()
+        backend.pending = [10, 11]
+        backend.cache = [KVCache()]
+        backend.cache[0].offset = 0
+
+        def generate_step(prompt, _model, **options):
+            backend.cache[0].offset += len(prompt)
+            options["prompt_progress_callback"](len(prompt), len(prompt))
+            for value in (65, 999):
+                backend.cache[0].offset += 1
+                yield value, None
+
+        with patch("mlx_lm.generate.generate_step", generate_step):
+            _text, stats = backend.generate(2)
+
+        self.assertEqual(stats.finish, "stop")
+        self.assertEqual(backend.tape, [10, 11, 65])
+        self.assertFalse(backend.turn_closed)
+        self.assertTrue(backend._replay_needed)
 
     def test_other_stops_keep_the_replay_recovery_path(self):
         backend, _tokenizer = self.backend()
@@ -185,10 +206,9 @@ class BackendTests(unittest.TestCase):
         with patch("mlx_lm.generate.generate_step", generate_step):
             backend.generate(2)
 
-        self.assertEqual(backend.tape, [10, 11, 65, 999])
-        self.assertTrue(backend.turn_closed)
-        self.assertFalse(backend._replay_needed)
-        self.assertTrue(backend.check_invariant())
+        self.assertEqual(backend.tape, [10, 11, 65])
+        self.assertFalse(backend.turn_closed)
+        self.assertTrue(backend._replay_needed)
 
     def test_synchronous_generation_setup_failure_replays_tape(self):
         backend, _tokenizer = self.backend()
@@ -258,6 +278,16 @@ class BackendTests(unittest.TestCase):
             (path / "config.json").write_text(json.dumps({"model_type": "llama"}))
             with self.assertRaisesRegex(ValueError, "Unsupported packed model schema"):
                 _load_text_model(path)
+
+    def test_text_loader_validates_language_weights_strictly(self):
+        # The loader must never silently retain initialized values for
+        # missing weights. Pin the strict call by source contract: the live
+        # strict load against the real checkpoint is verified manually.
+        from models.bonsai2 import backend as backend_module
+
+        source = Path(backend_module.__file__).read_text()
+        self.assertIn("strict=True", source)
+        self.assertNotIn("strict=False", source)
 
     def test_rotating_cache_is_rejected_on_reset(self):
         backend, _tokenizer = self.backend()

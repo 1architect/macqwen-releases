@@ -184,8 +184,11 @@ def _load_text_model(path):
         key: value for key, value in weights.items()
         if not key.startswith("vision_tower")
     }
-    model.load_weights(list(text_weights.items()), strict=False)
+    # Drop the tower before loading so the strict call below validates every
+    # remaining parameter. A lenient load could silently retain initialized
+    # values for missing auxiliary weights.
     model.vision_tower = None
+    model.load_weights(list(text_weights.items()), strict=True)
     model.eval()
     mx.eval(model.parameters())
     mx.clear_cache()
@@ -200,12 +203,15 @@ class _TextModelWrapper:
     logit arrays, so unwrap ``.logits`` at this boundary.
     """
 
-    def __init__(self, language_model):
+    def __init__(self, language_model, share: bool = False):
         self._language_model = language_model
+        self._share = bool(share)
 
     def __call__(self, inputs, cache=None, **options):
         from .ternary_kernel import arm_memo, disarm_memo
 
+        if not self._share:
+            return self._language_model(inputs, cache=cache, **options).logits
         arm_memo()
         try:
             return self._language_model(inputs, cache=cache, **options).logits
@@ -292,6 +298,7 @@ class BonsaiBackend(Conversation):
         wired_limit_enabled: bool = False,
         fused_fwht: bool = False,
         share_fwht: bool = False,
+        retain_stop: bool = False,
         quantized_kv: tuple | list | None = None,
         session_dir: str = SESSION_DIR,
     ):
@@ -343,7 +350,7 @@ class BonsaiBackend(Conversation):
                 tokenizer = AutoTokenizer.from_pretrained(str(path))
         super().__init__(BonsaiTokenizer(tokenizer))
         self.model = model
-        self._text_model = _TextModelWrapper(model)
+        self._text_model = _TextModelWrapper(model, share=share_fwht)
         self.model_path = str(path)
         self.cache = make_prompt_cache(model)
         self.quantized_kv = (
@@ -361,6 +368,10 @@ class BonsaiBackend(Conversation):
         self.allocator_cache_mb = allocator_cache_mb
         self.clear_cache_after_generate = bool(clear_cache_after_generate)
         self.wired_limit_enabled = bool(wired_limit_enabled)
+        # Experimental: retain a consumed <|im_end|> close in the tape and
+        # continue on the live cache instead of replaying history. Off by
+        # default until user-turn and tool-turn continuation checks pass.
+        self.retain_stop = bool(retain_stop)
         self.session_dir = Path(session_dir).expanduser()
         self.thinking_enabled = False
         self.reasoning_effort = "medium"
@@ -568,7 +579,8 @@ class BonsaiBackend(Conversation):
                                     stop_seen = True
                                     finish = "stop"
                                     if (
-                                        self._im_end_id is not None
+                                        self.retain_stop
+                                        and self._im_end_id is not None
                                         and value == self._im_end_id
                                     ):
                                         # The close token is already consumed

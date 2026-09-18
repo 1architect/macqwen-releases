@@ -141,6 +141,31 @@ class FusedFwhtTests(unittest.TestCase):
             del fake._bonsai2_shared
             module._MEMO = None
 
+    def test_memo_belongs_to_the_backend_that_armed_it(self):
+        # A backend constructed without sharing must never consult the memo,
+        # even when another backend installed the global hook and verified
+        # its own signs.
+        from models.bonsai2.backend import _TextModelWrapper
+
+        calls = []
+
+        class Model:
+            def __call__(self, inputs, cache=None, **options):
+                from models.bonsai2 import ternary_kernel as module
+
+                calls.append(module._MEMO is not None)
+
+                class Out:
+                    logits = inputs
+
+                return Out()
+
+        shared = _TextModelWrapper(Model(), share=True)
+        plain = _TextModelWrapper(Model(), share=False)
+        shared("x")
+        plain("x")
+        self.assertEqual(calls, [True, False])
+
     def test_hook_stays_off_without_the_flag(self):
         fake = types.ModuleType("runtime")
         fake.fwht = lambda *args, **kwargs: "stock"
