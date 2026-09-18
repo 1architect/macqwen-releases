@@ -134,6 +134,47 @@ costs the model amortizes, and the complete runtime absorbs the launch
 saving. The flag stays off. The recommended follow-up is folding the
 transform into the quantized matmul itself (memory traffic, not launches).
 
+### Full FWHT-into-matmul fusion (feasibility assessment, not implemented)
+
+The wheel ships `quantized.h` with the `qmv` vector helpers, so the
+FlashNext header-extraction pattern applies directly. A full-fusion kernel
+would FWHT the input into threadgroup staging (4 KB per 1024-block, looped
+over up to 17 blocks for the widest projection) and run the Q2 reduction
+over it. The 7.6 GB weight traffic per pass is irreducible under exact
+semantics; fusable traffic is only the transformed activation (about 28 MB
+per token) plus remaining launches. Expected end-to-end gain is low single
+digits at best, against days of kernel tuning to match MLX's own Q2 path.
+We do not pursue it now. The paging-bound evidence below says memory
+pressure, not launches, is the binding constraint on this machine.
+
+### Allocator cap at 16k (not run)
+
+A first 16k attempt was killed twice by tool timeouts (each 16k arm needs
+15–25 minutes of prefill) and then aborted on request. Its 3 observed arms
+are cited here, not as results: round-1 control 3.46 tok/s with 1,458 s
+prefill against round-1 capped 4.16 tok/s with 801 s prefill, and round-2
+capped 4.16 tok/s with 823 s prefill, all digests matching. The gap
+confounds the cap effect with first-arm page-cache coldness, so it proves
+nothing alone. The 16k confirmation remains future work; until it lands, the
+chat default cap rests on the complete 2k evidence only.
+
+Two kernel bugs fell out during validation, both fixed with regression
+tests. The `metal_kernel` grid counts total threads, not threadgroups: our
+first launch ran one element per group and returned mostly zeros. Signs
+index by last-dim position, not flat offset: 3D grouped inputs read out of
+bounds otherwise, which surfaced as full-forward NaNs while 2D probes
+stayed exact. The full-forward probe now matches to 0.0036 maxabs with
+identical greedy digests.
+
+### Allocator cap promotion
+
+The 2k comparison showed pool memory falling from about 774 MB to about
+300 MB with identical decode medians and matching digests, so `session.py`
+now constructs the chat backend with a 256 MB cap. The backend library
+default stays off so bench controls remain valid references. A construction
+test pins the 256 MB value. The 16k confirmation run below decides whether
+the cap survives long-context prefill pressure.
+
 ### Decode micro-probes (no model runs beyond unit scope)
 
 - Greedy `logsumexp` costs 0.5 ms against ~190 ms/token (0.3%). Skipping it

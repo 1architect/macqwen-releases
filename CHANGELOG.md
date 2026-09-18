@@ -8,6 +8,16 @@
   checkpoint discovery, resident text-only generation, sessions, protocol
   adaptation, settings, benchmark harness, and tests.
 - Add the `b2` checkpoint alias and `--model bonsai2` launcher path.
+- Add an opt-in fused sign+Hadamard+downcast Metal kernel for Bonsai-2
+  ternary projections. It is bit-exact on production shapes and keeps
+  greedy digests on all comparison arms; it stays off while its speed
+  effect remains inside machine noise.
+
+### Changed
+
+- Cap the Bonsai-2 chat allocator cache at 256 MB. The six-arm comparison
+  shows pool memory falling from about 774 MB to about 300 MB with
+  identical decode rates and matching digests at 2k context.
 
 ## MACQWEN 0.4.2 - 2026-09-17
 
