@@ -210,6 +210,33 @@ the boundary race. The prose equality is verified by inspection; the
 trajectory gate stays manual. Other stops and interruptions keep the replay
 recovery path.
 
+## Status: landed versus open
+
+Landed on this branch: stop-token retention with live cache, shared
+transforms per projection group, cache-growth repair targeting the real
+classes, allocator cap as chat default, opt-in 8-bit KV with digest-equal
+short evidence, bit-exact fused FWHT kernel kept off, chat sampler over
+top-k survivors, text-only materialization, and the smoke screening path.
+
+Open: the 16k allocator confirmation and the full shared-transform
+comparison still await affordable machine time.
+
+### Text-only materialization (shipped)
+
+The backend now mirrors the bundled construction with vision tensors
+filtered out before loading and the tower module dropped afterward, keeping
+all schema, duplicate, shape, and sign validation. Load peak falls from
+8.6 GB to 7.68 GB with identical hello-smoke behavior and a true cache
+invariant. Load wall time is unchanged at about 4.8 s: the file read
+dominates. This is a loading-memory improvement, not a decode gain.
+
+### GDN convolution profile (closed without specialization)
+
+The general-path depthwise convolution measures 0.17 ms per layer, or
+8.1 ms per token across 48 GDN layers: about 4% of a token. An infinitely
+fast fp32 specialization could save at most that, so no custom kernel.
+The fp32 weights stay untouched per the no-loss requirement.
+
 ### Allocator cap at 16k (not run)
 
 A first 16k attempt was killed twice by tool timeouts (each 16k arm needs

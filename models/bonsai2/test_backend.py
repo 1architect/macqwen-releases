@@ -52,6 +52,10 @@ class BackendTests(unittest.TestCase):
                 "models.bonsai2.backend.runtime_available",
                 return_value=True,
             ),
+            patch(
+                "models.bonsai2.backend._load_text_model",
+                return_value=(fake_model, {"modules": []}),
+            ),
             patch.dict(sys.modules, {"vision_artifact": fake_artifact}),
             patch("transformers.AutoTokenizer.from_pretrained", return_value=tokenizer),
             patch("mlx_lm.models.cache.make_prompt_cache", return_value=[]),
@@ -221,6 +225,10 @@ class BackendTests(unittest.TestCase):
                 "models.bonsai2.backend.runtime_available",
                 return_value=True,
             ),
+            patch(
+                "models.bonsai2.backend._load_text_model",
+                return_value=(fake_model, {"modules": []}),
+            ),
             patch.dict(sys.modules, {"vision_artifact": fake_artifact}),
             patch("transformers.AutoTokenizer.from_pretrained", return_value=tokenizer),
             patch(
@@ -238,6 +246,18 @@ class BackendTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "quantized_kv"):
             BonsaiBackend("b2", quantized_kv=(2, 64))
+
+    def test_text_loader_rejects_foreign_schema(self):
+        import json
+        import tempfile
+
+        from models.bonsai2.backend import _load_text_model
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "config.json").write_text(json.dumps({"model_type": "llama"}))
+            with self.assertRaisesRegex(ValueError, "Unsupported packed model schema"):
+                _load_text_model(path)
 
     def test_rotating_cache_is_rejected_on_reset(self):
         backend, _tokenizer = self.backend()

@@ -128,6 +128,70 @@ def _verify_shared_signs(model) -> None:
         seen[width] = digest
 
 
+def _load_text_model(path):
+    """Load the language model without materializing the vision tower.
+
+    Mirrors the bundled ``vision_artifact.load_vl_model`` construction and
+    Packed validation, but filters vision tensors out before loading and
+    drops the tower module afterward. Text-only milestone: vision input
+    stays unsupported. Raises identically on schema, duplicate, shape, and
+    sign violations.
+    """
+    import json
+
+    import mlx.core as mx
+
+    directory = Path(path)
+    config = json.loads((directory / "config.json").read_text())
+    if config.get("model_type") != "prism_hadamard_qwen35":
+        raise ValueError("Unsupported packed model schema")
+    if config.get("base_model_type") != "qwen3_5":
+        raise ValueError("Unsupported base model type")
+
+    from mlx_vlm.models.qwen3_5 import Model, ModelConfig
+
+    model = Model(ModelConfig.from_dict(config))
+    weights = mx.load(str(directory / "model.safetensors"))
+
+    from runtime import Packed
+
+    lm = model.language_model
+    seen = set()
+    for record in config["modules"]:
+        path_ = record["path"]
+        if path_ in seen:
+            raise ValueError("Duplicate packed module")
+        seen.add(path_)
+        parts = path_.split(".")
+        parent = lm
+        for part in parts[:-1]:
+            parent = parent[int(part)] if part.isdigit() else getattr(parent, part)
+        key = "language_model." + path_
+        arrays = [weights[key + "." + s] for s in ("weight", "scales", "biases")]
+        if record["dtype"] != "float16":
+            raise ValueError("Unsupported activation dtype")
+        block = record["block"]
+        if block and block not in (512, 1024, 2048, 4096):
+            raise ValueError("Unsupported block size")
+        signs = weights.get(key + ".signs")
+        if block and signs is None:
+            raise ValueError("Missing sign vector")
+        if signs is not None and not mx.all((signs == 1) | (signs == -1)).item():
+            raise ValueError("Invalid sign values")
+        setattr(parent, parts[-1], Packed(arrays, block, signs, record["embedding"], mx.float16))
+
+    text_weights = {
+        key: value for key, value in weights.items()
+        if not key.startswith("vision_tower")
+    }
+    model.load_weights(list(text_weights.items()), strict=False)
+    model.vision_tower = None
+    model.eval()
+    mx.eval(model.parameters())
+    mx.clear_cache()
+    return model, config
+
+
 class _TextModelWrapper:
     """Expose the VL language model as a plain logits module.
 
@@ -252,7 +316,7 @@ class BonsaiBackend(Conversation):
         for candidate in (path / "runtime", Path(__file__).resolve().parent / "runtime"):
             if candidate.is_dir() and str(candidate) not in sys.path:
                 sys.path.insert(0, str(candidate))
-        from vision_artifact import load_vl_model
+        import vision_artifact  # noqa: F401 (proves the bundled runtime loads)
 
         if fused_fwht:
             os.environ["BONSAI2_FUSED_FWHT"] = "1"
@@ -261,7 +325,7 @@ class BonsaiBackend(Conversation):
             install_packed_hook()
         if share_fwht:
             os.environ["BONSAI2_SHARE_FWHT"] = "1"
-        vl_model, _processor, _pack_config = load_vl_model(str(path), load_processor=False)
+        vl_model, _pack_config = _load_text_model(path)
         model = vl_model.language_model
         if share_fwht:
             from .ternary_kernel import install_share_hook
