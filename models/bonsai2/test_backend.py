@@ -104,7 +104,9 @@ class BackendTests(unittest.TestCase):
         )
         self.assertEqual(tokenizer.messages[1]["think"], "")
 
-    def test_stop_is_rewound_so_the_shared_tape_contract_stays_unchanged(self):
+    def test_stop_discards_cache_for_replay_on_hybrid_state(self):
+        # KV rewind alone leaves the 48 offset-free GDN states one step
+        # ahead, so a stop must drop the whole cache and replay the tape.
         backend, _tokenizer = self.backend()
         backend.pending = [10, 11]
         backend.cache = [KVCache()]
@@ -124,7 +126,8 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(stats.finish, "stop")
         self.assertEqual(stats.tokens, 2)
         self.assertEqual(backend.tape, [10, 11, 65, 66])
-        self.assertTrue(backend.check_invariant())
+        self.assertTrue(backend._replay_needed)
+        self.assertFalse(backend.turn_closed)
 
     def test_cache_invariant_checks_every_layer_offset(self):
         backend, _tokenizer = self.backend()
@@ -157,7 +160,7 @@ class BackendTests(unittest.TestCase):
             backend.generate(2)
 
         self.assertEqual(backend.tape, [10, 11, 65])
-        self.assertTrue(backend.check_invariant())
+        self.assertTrue(backend._replay_needed)
 
     def test_synchronous_generation_setup_failure_replays_tape(self):
         backend, _tokenizer = self.backend()

@@ -23,9 +23,17 @@ Milestone 1 is text-only. The vision tower stays unloaded.
 
 ## Main retained results
 
-No promoted results yet. This branch establishes discovery, backend, protocol,
-benchmark harness, and validation. The complete table, commands, and raw
-records will live in [`measurements/`](measurements/).
+- The 256-token product baseline measured median 5.5 tok/s over 256 tokens
+  after a 3,282-token prompt, with MLX peak 10.43 GB.
+- The 32-token control measured about 5.7 tok/s. We keep it separate from
+  sustained product throughput.
+- Prefill chunk 512 stays the default: larger chunks add peak memory up to
+  15.47 GB with no speed gain.
+- Allocator cap, wired limit, and post-generation clear change no default
+  yet; the cap saves about 470 MB free at 2k and awaits 16k confirmation.
+- Greedy comparison arms retained identical token digests.
+- Exact-only context reaches about 32k on 16 GB; 262K needs 16.8 GB of KV
+  payload alone and stays out of scope without a quality-gated design.
 
 ## Current status
 

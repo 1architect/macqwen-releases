@@ -303,13 +303,6 @@ class BonsaiBackend(Conversation):
         offsets = [int(item.offset) for item in self.cache if hasattr(item, "offset")]
         return offsets[0] if offsets else 0
 
-    def _rewind_stop_token(self) -> None:
-        for item in self.cache:
-            if hasattr(item, "offset"):
-                if item.offset < 1:
-                    raise RuntimeError("Bonsai-2 cache cannot rewind its stop token")
-                item.offset -= 1
-
     @staticmethod
     def _validate_cache(cache) -> None:
         kinds = {type(item).__name__ for item in cache}
@@ -469,7 +462,13 @@ class BonsaiBackend(Conversation):
             steps = None
             try:
                 if stop_seen:
-                    self._rewind_stop_token()
+                    # Rewinding KV offsets is not enough: the 48 GDN linear
+                    # states have no offset and already absorbed the stop
+                    # token through the one-ahead lookahead. Continuing from
+                    # them contaminates the next turn, so drop the whole
+                    # cache and replay the tape instead. Measured as its own
+                    # arm; replay costs a prefill on the following turn.
+                    self._mark_replay_needed()
             finally:
                 if interrupted:
                     self._mark_replay_needed()

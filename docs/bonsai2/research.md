@@ -25,6 +25,21 @@ We downloaded `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` (about 8.6 GB) to
 `~/models/Ternary-Bonsai-2-27B-mlx-2bit`. Milestone 1 stays text-only with
 the vision tower unloaded.
 
+## 2026-09-18 — Stop rewind fix (Phase 0)
+
+`_rewind_stop_token` decremented only KV offsets. The 48 GDN linear states
+have no offset and already absorbed the stop token through the one-ahead
+lookahead, so the next turn continued from contaminated state. A live
+two-turn probe (stop at a reference token, continue, compare against a fresh
+replay of the identical tape) diverged at generated position 10 with equal
+lengths, confirming the bug.
+
+The fix drops the whole cache on stop and replays the tape on the next turn
+via the existing `_mark_replay_needed` path. The dead rewind helper is
+removed. Unit tests pin the replay marking with fake caches. The live probe
+now reports MATCH over 267 continuation tokens. Replay costs a prefill on
+the turn after a stop; we measure that cost as its own arm in Phase 1.
+
 ## 2026-09-18 — Live smoke test
 
 We ran the resident backend against the downloaded checkpoint in `.venv`
@@ -61,6 +76,85 @@ The fix passes non-JSON tool blocks through untouched and converts JSON
 blocks to the shared XML form as before. A forced `list_dir` probe now
 parses to `[('list_dir', {'path': '.'})]`, and a regression test pins the
 passthrough across split-marker chunkings.
+
+## 2026-09-19 — Speed and memory passes (Phases 1–4)
+
+All runs use `.venv` on the reference M4/16GB machine, greedy decoding with
+exact digests, fresh child process per arm, forward/reverse/forward rounds.
+Raw arms live in [`measurements/`](measurements/). Digests match within
+every comparison.
+
+### Baselines
+
+| Run | Prompt → output | Decode median | Prefill | MLX active / peak |
+|---|---|---:|---|---|
+| Short 2k | 3,282 → 32 | 5.7 tok/s | ~124 s | 8.28 / 10.43 GB |
+| Product 2k | 3,282 → 256 | 5.5 tok/s | ~124 s | 8.31 / 10.43 GB |
+| 16k probe (cache-step file, 2 arms) | 19,458 → 256 | 4.0 tok/s | ~1,240 s | — / 13.42 GB |
+
+Decode falls from 5.5 tok/s at 2k to 4.0 tok/s at 19.5k context. Prefill runs
+about 26 tok/s at 2k and 16 tok/s at 19.5k. Round-1 arms run slower
+throughout; weight paging from the page cache dominates long-prefill timing
+more than chunk compute does.
+
+### Prefill chunk sweep (512 vs 1024 vs 2048, 8k fixture, 7 of 9 arms)
+
+Prefill seconds are flat across chunk sizes within machine noise, while peak
+memory climbs steeply: 11.63 GB at 512, 13.0 GB at 1024, 15.47 GB at 2048.
+Chunk 2048 nearly exhausts the 16 GB machine for no speed gain, so 512 stays
+the default. Digests match across all three sizes.
+
+### Allocator, wired limit, post-generation clear (2k product, 6 arms each)
+
+- Allocator cap 256 MB: pool drops from ~774 MB to ~300 MB with identical
+  decode medians (5.56 vs 5.57 tok/s) and matching digests. The cap is free
+  memory at 2k; promote it to the default after a 16k confirmation run.
+- Wired limit: five of six arms tie near 5.56 tok/s; the sixth (5.90 tok/s
+  with a faster prefill) tracks page-cache warmth, not wiring. No resolved
+  benefit; keep off. This matches the K2 wired rejection.
+- Post-generation clear: pool drops to ~1 MB with identical steady-state
+  rates. Keep as an opt-in diagnostic; combine with the allocator cap only
+  after the 16k confirmation.
+
+### Decode micro-probes (no model runs beyond unit scope)
+
+- Greedy `logsumexp` costs 0.5 ms against ~190 ms/token (0.3%). Skipping it
+  needs a vendored generate loop, so we reject the change with data.
+- `cProfile` over a 16-token turn: model-forward Python is 0.3 s of 6.1 s
+  wall; the rest is GPU execution plus sync waits inside `generate_step`.
+  Python dispatch is about 5% of the token, so `mx.compile` has almost
+  nothing to reclaim. Rejected with data.
+- FWHT stays the primary structural lever: about 400 sign-plus-Hadamard
+  launches precede 400 quantized matmuls per token, and fusion needs a
+  custom Metal kernel. That kernel is the recommended next work item, gated
+  on greedy digest equality plus profiled decode windows.
+- `lm_head` skip during prefill saves about 4–5% of prefill traffic plus
+  254 MB peak per 512-token chunk, but also needs a vendored generate loop.
+  Deferred: prefill is paging-bound here, so the gain would not survive the
+  complete runtime until the cache story improves.
+
+### Context ceiling toward 262K (exact-only)
+
+Useful full-attention KV payload is 64 KiB/token (2 × 16 layers × 4 heads ×
+256 dims × 2 bytes). Measured MLX peak grows about 185 KiB/token from 2k to
+19.5k including capacities rounding, GDN state, and allocator overhead.
+Weights hold about 8.3 GB resident with peak headroom near 13.4 GB at 19.5k.
+
+| Context | Weights + state | Useful KV | Measured MLX peak | Fits 16 GB |
+|---|---|---:|---:|---|
+| 2k | ~8.4 GB | 0.1 GB | 10.43 GB | yes |
+| 8k | ~8.4 GB | 0.5 GB | 11.63 GB | yes |
+| 19.5k | ~8.4 GB | 1.2 GB | 13.42 GB | yes |
+| ~32k (projected) | ~8.4 GB | 2.0 GB | ~14.9 GB | borderline |
+| 262k | ~8.4 GB | 16.8 GB | — | no |
+
+262K needs 16.8 GB of KV payload alone before weights, state, allocator, or
+macOS. Exact-only retention cannot reach it on this machine; the honest
+ceiling is about 32k. Anything beyond needs KV quantization, GDN state
+precision reduction, disk offload, or recomputation, each with its own
+quality gate. The 16k cache-step comparison (2 of 6 arms: decode tie at
+~4.0 tok/s, identical 2,774 MB KV allocation) stays directional, not a
+promotion result.
 
 ## Promotion rules
 
