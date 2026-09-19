@@ -17,6 +17,9 @@ class FakeTokenizer:
     eos_token_ids = [1]
     added_tokens_decoder = {}
 
+    def __len__(self):
+        return 1000
+
     def __call__(self, text, add_special_tokens=False):
         del add_special_tokens
         return {"input_ids": [ord(character) for character in text]}
@@ -51,10 +54,22 @@ class BackendTests(unittest.TestCase):
             fake_model, None, {"modules": []},
         )
         sys.modules.setdefault("vision_artifact", fake_artifact)
+        # A real directory with identity files, so session fingerprinting
+        # runs its strict path instead of skipping for a missing checkpoint.
+        checkpoint_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(checkpoint_dir.cleanup)
+        checkpoint = Path(checkpoint_dir.name)
+        for name in (
+            "config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "chat_template.jinja",
+        ):
+            (checkpoint / name).write_text(f"test {name}")
         patches = (
             patch(
                 "models.bonsai2.backend.resolve_bonsai2",
-                return_value=Path("/models/b2"),
+                return_value=checkpoint,
             ),
             patch(
                 "models.bonsai2.backend.runtime_available",
@@ -640,6 +655,31 @@ class BackendTests(unittest.TestCase):
             self.assertIn("could not load", backend.load_session("work"))
             payload["budgets"] = [5]
             (Path(directory) / "work.json").write_text(json.dumps(payload))
+            self.assertIn("could not load", backend.load_session("work"))
+
+    def test_session_rejects_non_object_payload_and_wild_ids(self):
+        import json
+
+        backend, _tokenizer = self.backend()
+        with tempfile.TemporaryDirectory() as directory:
+            backend.session_dir = Path(directory)
+            backend.tape = [1, 2, 3]
+            backend.pending = []
+            self.assertTrue(backend.save_session("work").startswith("saved work"))
+            payload_path = Path(directory) / "work.json"
+            payload = json.loads(payload_path.read_text())
+            live_tape, live_pending = backend.tape, backend.pending
+            for bad in ("[1, 2, 3]", "null", '"tape"'):
+                payload_path.write_text(bad)
+                self.assertIn("could not load", backend.load_session("work"))
+                # Failed loads leave live state untouched.
+                self.assertEqual(backend.tape, live_tape)
+                self.assertEqual(backend.pending, live_pending)
+            payload["tape"] = [1, 5000]
+            payload_path.write_text(json.dumps(payload))
+            self.assertIn("could not load", backend.load_session("work"))
+            payload["tape"] = [1, -2]
+            payload_path.write_text(json.dumps(payload))
             self.assertIn("could not load", backend.load_session("work"))
 
     def test_session_round_trips_pending_with_strict_types(self):

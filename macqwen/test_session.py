@@ -308,6 +308,21 @@ class SessionTests(unittest.TestCase):
             self.assertFalse(session.opened)
             self.assertIn("conversation reset", output.getvalue())
 
+    def test_load_session_marks_pending_only_conversation_opened(self):
+        class PendingBackend(FakeBackend):
+            def load_session(self, name):
+                self.tape = []
+                self.pending = [5]
+                return "loaded work"
+
+        with tempfile.TemporaryDirectory() as root:
+            session = Session(
+                PendingBackend(), "plain", dict(preferences.DEFAULTS),
+                "unused.json", Path(root) / "keys.json",
+            )
+            session.load_session("work")
+            self.assertTrue(session.opened)
+
     def test_benchmark_reports_generated_token_ids(self):
         prefs = dict(preferences.DEFAULTS, max_tokens=2)
         with tempfile.TemporaryDirectory() as root:

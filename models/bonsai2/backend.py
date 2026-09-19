@@ -397,6 +397,10 @@ class BonsaiTokenizer:
         # safe content encoder's tokenizer(chunk) call needs this forwarder.
         return self._tokenizer(text, **options)
 
+    def __len__(self):
+        # Same dunder limitation for session token-bound validation.
+        return len(self._tokenizer)
+
     def _normalize_effort(self, messages, effort: str):
         messages = [dict(message) for message in messages]
         # No Bonsai-specific reinterpretation: the shared policy resolves
@@ -956,9 +960,15 @@ class BonsaiBackend(Conversation):
         def valid_tokens(values) -> list[int] | None:
             if not isinstance(values, list):
                 return None
+            try:
+                vocab_size = len(self.tokenizer)
+            except TypeError:
+                vocab_size = None
             clean = []
             for value in values:
                 if not isinstance(value, int) or isinstance(value, bool):
+                    return None
+                if vocab_size is not None and not 0 <= value < vocab_size:
                     return None
                 clean.append(value)
             return clean
@@ -968,15 +978,18 @@ class BonsaiBackend(Conversation):
 
         try:
             payload = json.loads(self._session_path(name).read_text())
+            if not isinstance(payload, dict):
+                raise ValueError("session payload must be an object")
             if payload.get("schema") != SESSION_SCHEMA:
                 raise ValueError("session schema is not supported here")
             if payload.get("model_path") != self.model_path:
                 raise ValueError("session belongs to another checkpoint")
             expected_config = _config_identity(self.model_path)
-            if (
-                expected_config is not None
-                and payload.get("config_sha256") != expected_config
-            ):
+            if expected_config is None:
+                raise ValueError(
+                    "session checkpoint identity is unavailable"
+                )
+            if payload.get("config_sha256") != expected_config:
                 raise ValueError("session checkpoint config changed")
             tape = valid_tokens(payload.get("tape"))
             if tape is None:

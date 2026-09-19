@@ -215,7 +215,7 @@ class Session:
 
     def load_session(self, name):
         result = self.backend.load_session(name)
-        self.opened = bool(self.backend.tape)
+        self.opened = bool(self.backend.tape or self.backend.pending)
         return result
 
     def list_sessions(self):
