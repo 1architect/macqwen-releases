@@ -270,11 +270,15 @@ def _windows(arrivals: list[dict[str, Any]], window: int) -> list[dict[str, Any]
         intervals = [group[i]["at_s"] - group[i - 1]["at_s"] for i in range(1, len(group))]
         boundary = arrivals[start - 1]["at_s"] if start else 0.0
         elapsed = group[-1]["at_s"] - boundary
+        ordered = sorted(intervals)
+        p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))] if ordered else None
+        median = st.median(intervals) if intervals else None
         result.append({"window": start // window + 1, "start_token": start + 1, "end_token": start + len(group),
                        "tokens": len(group), "is_product_tail": start + 1 >= 33,
                        "rate_tps": len(group) / elapsed if elapsed > 0 else 0.0, "boundary_elapsed_s": elapsed,
                        "first_token_latency_s": group[0]["at_s"], "arrival_intervals_s": intervals,
-                       "interval_median_s": st.median(intervals) if intervals else None})
+                       "interval_median_s": median, "interval_p95_s": p95,
+                       "ms_per_token_median": 1000.0 * median if median else None})
     return result
 def _vm_delta(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
     return {key: int(right.get(key, 0)) - int(left.get(key, 0)) for key in sorted(set(left) | set(right))}
@@ -600,15 +604,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compare", choices=sorted(COMPARISONS), default="allocator")
     parser.add_argument("--jsonl", default="bonsai2-benchmark.jsonl")
     parser.add_argument("--fixture", choices=FIXTURES, default="context-2k")
-    parser.add_argument("--horizon", choices=("short", "product"), default="short")
+    parser.add_argument("--horizon", choices=("short", "product", "tg128", "tg256"), default="short")
     parser.add_argument("--window", type=int, default=WINDOW); parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--thinking", action="store_true"); parser.add_argument("--effort", default="medium")
     parser.add_argument("--sampling", choices=("greedy", "sampled"), default="greedy")
     parser.add_argument("--prefill-step-size", type=int, default=512)
     parser.add_argument("--seed", type=int, default=SEED)
     args = parser.parse_args(argv)
+    horizons = {"short": SHORT, "product": PRODUCT, "tg128": 128, "tg256": 256}
     result = run_comparison(checkpoint=args.checkpoint, comparison=args.compare, record_path=args.jsonl,
-        fixture=args.fixture, horizon=SHORT if args.horizon == "short" else PRODUCT,
+        fixture=args.fixture, horizon=horizons[args.horizon],
         window=args.window, rounds=args.rounds, thinking=args.thinking, effort=args.effort,
         sampling=args.sampling, prefill_step_size=args.prefill_step_size, seed=args.seed)
     print(json.dumps(result, indent=2, sort_keys=True)); return 0
