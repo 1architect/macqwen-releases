@@ -485,6 +485,44 @@ class BackendTests(unittest.TestCase):
         text = "".join(chr(code) for code in backend.pending)
         self.assertIn("paste </think> verbatim", text)
 
+    def test_tool_argument_strings_normalize_to_objects(self):
+        from models.bonsai2.backend import BonsaiTokenizer
+
+        histories = [
+            # Chat Completions shape.
+            [{"role": "assistant", "content": "", "tool_calls": [{
+                "id": "call_1", "type": "function", "function": {
+                    "name": "read_file",
+                    "arguments": '{"path": "a.txt"}',
+                }}]}],
+            # Flattened shape.
+            [{"role": "assistant", "content": "", "tool_calls": [{
+                "name": "read_file", "arguments": '{"path": "a.txt"}',
+            }]}],
+        ]
+        for messages in histories:
+            with self.subTest(messages=messages):
+                tokenizer = BonsaiTokenizer(FakeTokenizer())
+                tokenizer.apply_chat_template(messages)
+                for message in tokenizer.messages:
+                    for call in message["tool_calls"]:
+                        function = call.get("function", call)
+                        self.assertEqual(
+                            function["arguments"], {"path": "a.txt"}
+                        )
+        # Already an object: untouched. Malformed or non-object: rejected.
+        tokenizer = BonsaiTokenizer(FakeTokenizer())
+        good = [{"role": "assistant", "content": "", "tool_calls": [{
+            "name": "read_file", "arguments": {"path": "a.txt"}}]}]
+        tokenizer.apply_chat_template(good)
+        for bad in ('{"path":', '[1, 2]', '42'):
+            with self.subTest(bad=bad):
+                tokenizer = BonsaiTokenizer(FakeTokenizer())
+                with self.assertRaises(ValueError):
+                    tokenizer.apply_chat_template([{
+                        "role": "assistant", "content": "", "tool_calls": [{
+                            "name": "read_file", "arguments": bad}]}])
+
     def test_answer_budget_caps_after_forced_closure(self):
         backend, _tokenizer = self.backend()
         backend.pending = [10]

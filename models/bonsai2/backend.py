@@ -416,6 +416,49 @@ class BonsaiTokenizer:
         self.thinking_tag = THINK_TAGS[effort]
         return messages, effort
 
+    @staticmethod
+    def _normalize_tool_arguments(messages) -> None:
+        """Parse JSON argument strings into objects before rendering.
+
+        API histories carry function.arguments as a JSON string, but the
+        installed template iterates arguments as a mapping. A follow-up
+        request containing a previous tool call would fail inside the
+        template, so valid objects normalize here and anything else fails
+        closed with a clear error instead of a template traceback.
+        """
+        for message in messages:
+            calls = message.get("tool_calls")
+            if not isinstance(calls, list):
+                continue
+            for call in calls:
+                if not isinstance(call, dict):
+                    raise ValueError("tool call history must hold objects")
+                function = call.get("function")
+                if isinstance(function, dict):
+                    target, key = function, "arguments"
+                elif isinstance(call.get("arguments"), str):
+                    target, key = call, "arguments"
+                else:
+                    continue
+                arguments = target.get(key, {})
+                if isinstance(arguments, dict):
+                    continue
+                if not isinstance(arguments, str):
+                    raise ValueError(
+                        "tool call arguments must be an object or JSON text"
+                    )
+                try:
+                    parsed = json.loads(arguments)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        "tool call arguments are not valid JSON"
+                    ) from None
+                if not isinstance(parsed, dict):
+                    raise ValueError(
+                        "tool call arguments must decode to an object"
+                    )
+                target[key] = parsed
+
     def apply_chat_template(
         self,
         messages,
@@ -428,6 +471,7 @@ class BonsaiTokenizer:
         **options,
     ):
         messages, effort = self._normalize_effort(messages, reasoning_effort)
+        self._normalize_tool_arguments(messages)
         text = self._tokenizer.apply_chat_template(
             messages,
             tools=tools,
