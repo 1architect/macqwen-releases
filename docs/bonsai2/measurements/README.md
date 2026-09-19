@@ -28,6 +28,10 @@ digest rejects the comparison before any speed reading.
 | 12 | Shared transforms screen ([JSONL](20260919-share-fwht-screen.jsonl)) | 51 → 32 | control 8.40, 8.35 vs shared 8.42, 8.41 | ~2–8 | peak 8.6 GB | all `730c92bf` | Screen only |
 | 12b | Shared transforms full ([JSONL](20260919-share-fwht-full.jsonl)) | 3,282 → 32 | control 8.25, 5.39, 5.66 vs shared 5.83, 5.73, 5.95 | tied | — | all `108ee966ba92` | Digest-equal; paired −29%, +6.3%, +5.1%; stays opt-in |
 | 13 | Shared transforms short ([JSONL](20260919-share-fwht-short.jsonl), 3 arms) | 3,282 → 32 | control 5.54 vs shared 5.26, 4.68 | 130–172 | — | all `d2004e2ef089` | Incomplete; rerun |
+| 14 | Decode 3k tg128 ([JSONL](20260919-decode-3k-tg128.jsonl)) | 3,282 → 128 | 7.02, 6.08, 5.98 | — | — | all match | Locked reference |
+| 15 | Decode 3k tg256 ([JSONL](20260919-decode-3k-tg256.jsonl)) | 3,282 → 256 | 5.57, 5.79, 5.75 | — | — | all match | Locked reference |
+| 16 | Custom GEMV at tg128 ([JSONL](20260919-gemv-decode.jsonl)) | 3,282 → 128 | control 6.45, 5.32, 5.27 vs gemv 5.50, 5.37, 5.21 | tied | — | all match | Rejected for default |
+| 17 | Allocator cap at 16k product ([JSONL](20260919-allocator-16k.jsonl), 3 of 6 arms) | 19,458 → 256 | control 4.29 vs capped 3.82, 3.92 | control 1327 vs capped 895, 870 | pool 2,890 → ~270 MB | all match | Directional; fast-first pattern |
 
 ## Paired effects
 
@@ -48,7 +52,9 @@ not the candidate.
 | 10, locked 8k | +9.9%, −0.6% | +16.0%, −6.4% |
 | 11, quantized KV 8-bit | −25.6%, −6.7%, +6.8% | −3.9%, +16.6%, +16.9% |
 | 12, shared screen | +0.1%, +0.7% | +77.4% once (cold), +0.9% |
-| 12b, shared full | −29.3%, +6.3%, +5.1% | −28.0%, +1.2%, −0.3% |
+| 16, custom GEMV | −14.8%, +1.0%, −1.1% | −42.5%, +3.9%, −0.5% |
+| 17, allocator 16k | −11.0% once | +32.6% once, confounded |
+| 12b, shared full | −29.3%, +6.3%, +5.2% | −39.0%, +1.1%, −0.3% |
 
 ## Cross-engine spot checks (single runs, directional)
 | # | Setup | Prefill | Decode | Note |
