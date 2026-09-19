@@ -342,6 +342,11 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
         constructor, effective_prefill_step = _constructor_options(options, prefill_step_size)
         record["prefill_step_size"] = effective_prefill_step
         backend = BonsaiBackend(checkpoint, prefill_step_size=effective_prefill_step, **constructor)
+        effective_kv = getattr(backend, "quantized_kv", None)
+        record["effective_quantized_kv"] = (
+            list(effective_kv)
+            if isinstance(effective_kv, (tuple, list)) else None
+        )
         import mlx.core as mx
         mx.random.seed(seed)
         record["snapshots"]["load"] = snapshot(backend, "load")
@@ -354,6 +359,11 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
             enable_thinking=thinking, reasoning_effort=effort)
         setup_tokens = 0
         if tool_result is not None:
+            # Populate the cache and close the first turn before the tool
+            # results land: appending onto a never-generated prompt neither
+            # exercises a live cache nor frames the turn correctly.
+            _text, setup_stats = backend.generate(max_tokens=1)
+            setup_tokens += int(getattr(setup_stats, "tokens", 0) or 0)
             setup_tokens += backend.append_tool_results([tool_result])
         if repeat_user is not None:
             _text, setup_stats = backend.generate(max_tokens=1)
@@ -535,6 +545,10 @@ def run_comparison(*, checkpoint: str, comparison: str, record_path: str, fixtur
             command.append("--thinking")
         before = read_jsonl(record_path)
         env = dict(os.environ)
+        # Precision rides the constructor options, never the ambient
+        # environment: an inherited MACQWEN_BONSAI2_KV would silently turn
+        # the full-precision control into a quantized arm.
+        env.pop("MACQWEN_BONSAI2_KV", None)
         env["PYTHONPATH"] = os.pathsep.join(x for x in (str(ROOT), env.get("PYTHONPATH", "")) if x)
         try:
             result = (runner or subprocess.run)(command, cwd=str(ROOT), env=env,
@@ -566,7 +580,20 @@ def run_comparison(*, checkpoint: str, comparison: str, record_path: str, fixtur
         row["validation"] = {"passed": passed, "reason": "digest matched" if passed else "token_mismatch"}
         append_jsonl(record_path, {"type": "validation", "arm_id": row["arm_id"],
                                    "status": "passed" if passed else "failed", **row["validation"]})
-    paired = {name: paired_stats(rows[names[0]], rows[name], names[0], name) for name in names[1:]}
+
+    def valid_for_stats(row):
+        # Performance conclusions admit only arms that ran clean: raw
+        # status alone still includes nonzero exits, child validation
+        # failures, and (under greedy) digest mismatches.
+        if (row.get("status") != "raw" or row.get("child_returncode", 0) != 0
+                or row.get("child_validation_failures")):
+            return False
+        if sampling != "greedy":
+            return True
+        return bool(row.get("validation", {}).get("passed", False))
+
+    valid = {name: [row for row in rows[name] if valid_for_stats(row)] for name in names}
+    paired = {name: paired_stats(valid[names[0]], valid[name], names[0], name) for name in names[1:]}
     failed = sum(row.get("status") != "raw" or row.get("child_returncode", 0) != 0 or
                  row.get("child_validation_failures", 0) for values in rows.values() for row in values)
     summary = {"type": "summary", "status": "completed_with_failures" if failed or validation_failures else "completed",
@@ -617,6 +644,7 @@ def main(argv: list[str] | None = None) -> int:
         fixture=args.fixture, horizon=horizons[args.horizon],
         window=args.window, rounds=args.rounds, thinking=args.thinking, effort=args.effort,
         sampling=args.sampling, prefill_step_size=args.prefill_step_size, seed=args.seed)
-    print(json.dumps(result, indent=2, sort_keys=True)); return 0
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result["status"] == "completed" else 1
 if __name__ == "__main__":
     raise SystemExit(main())

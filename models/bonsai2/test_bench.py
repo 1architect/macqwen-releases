@@ -286,6 +286,97 @@ class BenchTests(unittest.TestCase):
                                            rounds=3, runner=raw_but_failed_runner)
         self.assertEqual(summary["failed_arms"], 3)
 
+    def test_child_env_drops_the_ambient_kv_toggle(self):
+        seen = []
+
+        def recording_runner(command, **kwargs):
+            seen.append(kwargs.get("env", {}))
+            return SimpleNamespace(returncode=7, stderr="no model")
+
+        with TemporaryDirectory() as directory:
+            with patch.dict("os.environ", {"MACQWEN_BONSAI2_KV": "8"}):
+                bench.run_comparison(checkpoint=str(Path(directory) / "missing"),
+                                     comparison="baseline",
+                                     record_path=Path(directory) / "env.jsonl",
+                                     rounds=2, runner=recording_runner)
+        self.assertTrue(seen)
+        for env in seen:
+            self.assertNotIn("MACQWEN_BONSAI2_KV", env)
+
+    def test_paired_stats_exclude_arms_that_did_not_run_clean(self):
+        def mixed_runner(command, **_kwargs):
+            args = {command[index]: command[index + 1] for index in range(len(command) - 1)
+                    if command[index].startswith("--") and not command[index + 1].startswith("--")}
+            record, arm, condition = args["--record"], args["--arm-id"], args["--condition"]
+            round_index = int(args["--round"])
+            if condition == "control":
+                bench.append_jsonl(record, {"type": "arm", "arm_id": arm,
+                                            "condition": condition, "round": round_index,
+                                            "status": "raw", "tokens": [1],
+                                            "token_digest": bench._digest([1]),
+                                            "stats": {"rate_tps": 10}})
+                return SimpleNamespace(returncode=0, stderr="")
+            bench.append_jsonl(record, {"type": "arm", "arm_id": arm,
+                                        "condition": condition, "round": round_index,
+                                        "status": "raw", "tokens": [1],
+                                        "token_digest": bench._digest([1]),
+                                        "stats": {"rate_tps": 12}})
+            return SimpleNamespace(returncode=2, stderr="post-run validation failed")
+
+        with TemporaryDirectory() as directory:
+            summary = bench.run_comparison(checkpoint=str(Path(directory) / "missing"),
+                                           comparison="allocator",
+                                           record_path=Path(directory) / "mixed.jsonl",
+                                           rounds=2, runner=mixed_runner)
+        self.assertEqual(summary["failed_arms"], 2)
+        self.assertEqual(summary["paired"]["allocator-256"]["pair_count"], 0)
+        self.assertIsNone(summary["paired"]["allocator-256"]["mean_delta_pct"])
+
+    def test_main_reports_failure_through_its_exit_code(self):
+        with patch.object(bench, "run_comparison",
+                          return_value={"status": "completed"}) as run:
+            self.assertEqual(
+                bench.main(["--compare", "baseline", "--jsonl", "x.jsonl"]), 0
+            )
+        run.assert_called_once()
+        with patch.object(bench, "run_comparison",
+                          return_value={"status": "completed_with_failures"}):
+            self.assertEqual(
+                bench.main(["--compare", "baseline", "--jsonl", "x.jsonl"]), 1
+            )
+
+    def test_cached_tool_fixture_generates_before_appending_results(self):
+        backend = Mock(pending=[1, 2])
+        backend.open_conversation.return_value = 2
+        backend.append_tool_results.return_value = 3
+        backend.generate.return_value = ("t", SimpleNamespace(tokens=1))
+        backend.check_invariant.return_value = True
+        backend.quantized_kv = None
+        backend.tape = []
+        mx = SimpleNamespace(random=Mock(), synchronize=Mock())
+        with TemporaryDirectory() as directory:
+            with (
+                patch("models.bonsai2.backend.BonsaiBackend", return_value=backend),
+                patch.dict(sys.modules, {"mlx": SimpleNamespace(core=mx), "mlx.core": mx}),
+                patch.object(bench, "snapshot", return_value={}),
+                patch.object(bench, "_disk", return_value=0),
+            ):
+                bench.child_arm(
+                    checkpoint=str(Path(directory) / "missing"), arm_id="fixture-arm",
+                    condition="control", options={}, record_path=str(Path(directory) / "f.jsonl"),
+                    fixture="cached-tool-result", horizon=4, window=4, thinking=False,
+                    effort="medium", sampling="greedy", prefill_step_size=512, round_index=0,
+                )
+        order = [str(call) for call in backend.mock_calls]
+        setup_generate = next(
+            index for index, name in enumerate(order) if name.startswith("call.generate")
+        )
+        append = next(
+            index for index, name in enumerate(order) if name.startswith("call.append_tool_results")
+        )
+        # The cache must hold a generated turn before tool results frame it.
+        self.assertLess(setup_generate, append)
+
 
 if __name__ == "__main__":
     unittest.main()
