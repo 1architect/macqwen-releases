@@ -222,19 +222,23 @@ the boundary race. The prose equality is verified by inspection; the
 trajectory gate stays manual. Other stops and interruptions keep the replay
 recovery path.
 
-## Status: landed versus open
-Landed on this branch: gated stop-token retention, shared transforms per
-projection group with per-backend enablement, cache-growth repair targeting
-the real classes, allocator cap as chat default, opt-in 8-bit KV with
-digest-equal short evidence, fused FWHT kernel default-on with matching
-decode digests, chat sampler over top-k survivors, text-only materialization
-with strict language-subtree loading, hardened runtime entry-point checks,
-runtime fingerprinting in benchmark identity, sharded weight loading, locked
-3K/8K baselines with a closed GGUF comparison, and a measured prefill
-profile that reordered the plan toward quantized GEMM.
+## Status: what stays and what does not
 
-Open: the 16k allocator confirmation only. PLD is rejected, the shared
-memo has its full comparison, and every other line is closed above.
+Stays on by default: fused FWHT kernel, allocator cap at 256 MB in chat,
+chat sampler over top-k survivors.
+Stays opt-in: 8-bit and 4-bit KV with digest-equal short evidence,
+shared-transform memo, post-generation cache clear, fused FWHT rollback
+via `fused_fwht=False`.
+Stays off: stop retention behind `retain_stop=False`, wired limit,
+custom GEMV kernel, prefill chunk above 512, cache step above 256.
+Shipped infrastructure: text-only strict loading with sharded support,
+runtime entry-point checks, benchmark runtime fingerprints, repaired
+cache-growth helper, smoke screening path, tg128/tg256 horizons with p95
+and ms-per-token fields.
+Closed without building or promoting: ANE offload, full FWHT-matmul
+fusion, PLD, MTP and small-M dispatch, greedy logsumexp skip, mx.compile,
+lm_head prefill skip.
+Open: the 16k allocator confirmation only.
 
 ### Q2/G128 GEMV experiment (rejected for default)
 
