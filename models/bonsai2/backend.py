@@ -368,6 +368,7 @@ class BonsaiBackend(Conversation):
         wired_limit_enabled: bool = False,
         fused_fwht: bool = True,
         share_fwht: bool = False,
+        gemv: bool = False,
         retain_stop: bool = False,
         quantized_kv: tuple | list | None = None,
         session_dir: str = SESSION_DIR,

@@ -227,6 +227,16 @@ profile that reordered the plan toward quantized GEMM.
 Open: the PLD acceptance probe, the 16k allocator confirmation, and the
 full shared-transform comparison.
 
+### Q2/G128 GEMV experiment (rejected for default)
+
+A custom M=1 kernel calling the wheel's `qmv_fast_impl` directly is
+bit-exact on gate, down, and head shapes. Isolated, it beats stock by 34%
+on the wide gate projection and ties on the down projection. The six-arm
+tg128 comparison keeps digest `0c739afabdec` on all arms but measures
+−14.7%, +0.9%, −1.1% paired: no reproducible full decode gain. The module
+stays as an opt-in diagnostic. Lesson repeated: isolated matmul wins do
+not survive the complete runtime on this hardware.
+
 ### Runtime ownership (Phase 10 recommendation)
 Keep the native MLX backend and import ideas selectively, as done
 throughout this record. Adopting mlx-serve as the engine is rejected on
