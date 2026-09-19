@@ -16,6 +16,7 @@ from macqwen.backends.base import Backend
 
 from macqwen.tools import (
     MUTATING_TOOLS,
+    REQUIRED_PARAMS,
     parse_tool_calls,
     render_tool_result,
     split_think,
@@ -128,6 +129,23 @@ def run_agent(engine: Backend, repo, out, limits: Limits = Limits(),
                 ui.tool_started(name, args)
             else:
                 out(f"\n[tool] {name}({preview})")
+            missing = [
+                key
+                for key in REQUIRED_PARAMS.get(name, ())
+                if key not in args
+            ]
+            if missing:
+                # Fail closed before dispatch: running a tool without its
+                # required arguments reads the wrong file or writes the
+                # wrong content instead of erroring. The model sees the
+                # missing names and can retry with them.
+                message = f"missing required parameters: {', '.join(missing)}"
+                results.append(json.dumps({"error": message}))
+                if ui is not None:
+                    ui.tool_finished(error=True)
+                else:
+                    out(f"[tool error] {message}")
+                continue
             if name in MUTATING_TOOLS and approve is not None:
                 if ui is not None:
                     ui.tool_approval()

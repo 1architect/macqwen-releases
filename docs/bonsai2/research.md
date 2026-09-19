@@ -246,6 +246,55 @@ generate_step); new `_ForcingSampler` unit tests; answer-cap test asserts
 replay. Full bonsai2 suite 67 tests OK, macqwen 253 OK. Live two-turn
 smoke (`7*8=56` correct, finish stop both turns) on M4.
 
+## 2026-09-19 — Step 3: turn joins match the template
+
+`Conversation._separator` skipped the newline after the close when
+generated text ended with newlines, producing
+`<|im_end|><|im_start|>` where the template (chat_template.jinja line 109:
+every message ends `<|im_end|>\n`) and FlashNext always emit
+`<|im_end|>\n<|im_start|>`. Content trailing newlines belong to the
+message, not the join. When this side appends the close itself
+(truncated turn) the newline is now unconditional; the already-closed
+case keeps its check. Verified against the real template: assistant
+content `56\n\n` renders `56<|im_end|>\n<|im_start|>user`. Shared by k2
+and bonsai2; k2 suite still green (41 tests).
+
+## 2026-09-19 — Step 4: canonical FWHT hook composition
+
+Hook result depended on construction order: fused-after-share silently
+dropped the share layer, and `BONSAI2_FUSED_FWHT` / `BONSAI2_SHARE_FWHT`
+leaked through the environment into later backends. `apply_runtime_hooks`
+rebuilds canonically (restore to stock, fused innermost, share outermost),
+owns both env vars in both directions, and treats repeat construction as
+a verified no-op keyed on module identity plus flags. Backend delegates
+fully and verifies signs before applying. New 2x2 matrix test plus a
+composition-switch test; bonsai2 suite 87 tests OK.
+
+## 2026-09-19 — Step 5: native-XML-only tool protocol
+
+The translator no longer converts JSON object payloads: native XML
+(`<function=name>`) is the only accepted tool-call syntax. Block-end
+scanning is structural (a `</tool_call>` candidate must follow a complete
+function element) instead of JSON-parsing, so value-embedded closes no
+longer truncate. Schema-known calls re-render through the shared parser
+with value-aware delimiter escaping; unknown blocks pass through raw so
+hallucinated calls stay visible; non-call blocks drop. EOF recovery
+synthesizes only structure (never content): truncated JSON and
+unterminated values stay dropped. Hostile round-trip (`</tool_call>`,
+`</function>`, `</parameter>` in values) verified. Residual: a
+value-embedded closer followed by structural-looking text can still
+misfire; that is the model's escaping duty.
+
+## 2026-09-19 — Step 6: required params and session budgets
+
+`run_agent` fails closed before dispatch when required parameters are
+missing (`REQUIRED_PARAMS`), naming the missing keys so the model can
+retry; previously the tool ran with absent arguments. Sessions now persist
+`_interactive_budgets` with strict shape validation (bools rejected as
+token counts), so a restored conversation keeps its reasoning contract
+instead of inheriting a later chat's budgets. Macqwen suite 257 OK.
+Live two-turn smoke after all steps: `17*23=391`, `7*8=56`, both stop.
+
 ## Status: what stays and what does not
 
 Stays on by default: fused FWHT kernel, allocator cap at 256 MB in chat,

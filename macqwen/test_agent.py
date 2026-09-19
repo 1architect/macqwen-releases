@@ -146,6 +146,28 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(run_agent(engine, self.repo, self.out), "answer")
         self.assertIn("error", engine.tool_results[0][0].lower())
 
+    def test_call_missing_required_params_fails_closed_before_dispatch(self):
+        missing_path = CALL.replace("<parameter=path>\nnotes.txt\n</parameter>\n", "")
+        seen = []
+        original_call = self.repo.call
+
+        def spy(name, args):
+            seen.append((name, args))
+            return original_call(name, args)
+
+        self.repo.call = spy
+        try:
+            engine = ScriptedEngine([
+                (missing_path, Stats(finish="stop")),
+                ("recovered", Stats(finish="stop")),
+            ])
+            self.assertEqual(run_agent(engine, self.repo, self.out), "answer")
+        finally:
+            self.repo.call = original_call
+        self.assertEqual(seen, [])
+        self.assertIn("missing required parameters", engine.tool_results[0][0])
+        self.assertIn("path", engine.tool_results[0][0])
+
     def test_denied_mutating_tool_does_not_run(self):
         engine = ScriptedEngine([
             (WRITE, Stats(finish="stop")),
