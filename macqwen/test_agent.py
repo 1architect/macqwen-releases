@@ -28,6 +28,7 @@ class ScriptedEngine:
         self.pending = []
         self.appended_text = []
         self.tool_results = []
+        self.tool_thinking_flags = []
         self.invariant = True
         self.opened = None
 
@@ -51,8 +52,9 @@ class ScriptedEngine:
     def append_text(self, text):
         self.appended_text.append(text)
 
-    def append_tool_results(self, results):
+    def append_tool_results(self, results, enable_thinking=True):
         self.tool_results.append(results)
+        self.tool_thinking_flags.append(enable_thinking)
 
 
 CALL = """<tool_call>
@@ -131,11 +133,24 @@ class AgentLoopTests(unittest.TestCase):
     def test_tool_call_runs_and_feeds_back(self):
         engine = ScriptedEngine([
             (CALL, Stats(finish="stop")),
+            (CALL, Stats(finish="stop")),
             ("done", Stats(finish="stop")),
         ])
         self.assertEqual(run_agent(engine, self.repo, self.out), "answer")
-        self.assertEqual(len(engine.tool_results), 1)
+        self.assertEqual(len(engine.tool_results), 2)
         self.assertIn("hello", engine.tool_results[0][0])
+        # The engine thinks off, so neither continuation may open a
+        # thinking block.
+        self.assertEqual(engine.tool_thinking_flags, [False, False])
+
+    def test_tool_continuation_keeps_thinking_when_enabled(self):
+        engine = ScriptedEngine([
+            (CALL, Stats(finish="stop")),
+            ("done", Stats(finish="stop")),
+        ])
+        engine.thinking_enabled = True
+        run_agent(engine, self.repo, self.out)
+        self.assertEqual(engine.tool_thinking_flags, [True])
 
     def test_tool_error_is_reported_not_raised(self):
         bad = CALL.replace("notes.txt", "../escape.txt")

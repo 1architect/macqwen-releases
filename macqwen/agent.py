@@ -172,7 +172,10 @@ def run_agent(engine: Backend, repo, out, limits: Limits = Limits(),
                     ui.tool_finished(error=True)
                 else:
                     out(f"[tool error] {exc}")
-        engine.append_tool_results(results)
+        engine.append_tool_results(
+            results,
+            enable_thinking=getattr(engine, "thinking_enabled", True),
+        )
         if not engine.check_invariant():
             out("!! INVARIANT BROKEN: cache and transcript disagree")
             return stop("invariant")

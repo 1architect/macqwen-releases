@@ -98,8 +98,9 @@ class SamplerTests(unittest.TestCase):
         row = self.logits([0.0, 1.0, 0.9, 0.0])
         self.assertEqual(int(sampler(row).item()), 1)
         sampler.observe(1)
-        picks = {int(sampler(row).item()) for _ in range(20)}
-        self.assertNotIn(1, picks)
+        # While unseen tokens remain, the penalized token stays down.
+        for _ in range(3):
+            self.assertNotEqual(int(sampler(row).item()), 1)
 
     def test_top_k_survivor_path_stays_inside_top_k(self):
         settings = Sampling(temperature=1.0, top_p=0.95, top_k=20,
@@ -116,6 +117,16 @@ class SamplerTests(unittest.TestCase):
         second = int(sampler(row).item())
         self.assertEqual(first, second)
         self.assertIn(first, order)
+
+    def test_sampled_token_counts_without_an_explicit_observe(self):
+        # generate_step samples the next token before the backend loop
+        # observes the yielded one. Recording at the sampling boundary
+        # keeps the immediate repetition from escaping the penalty.
+        sampler = Sampler(Sampling(temperature=0.01, top_k=0, top_p=1.0,
+                                   presence_penalty=2.0))
+        row = self.logits([0.0, 1.0, 0.9, 0.0])
+        self.assertEqual(int(sampler(row).item()), 1)
+        self.assertNotEqual(int(sampler(row).item()), 1)
 
     def test_reset_forgets_what_was_seen(self):
         sampler = Sampler(Sampling(presence_penalty=1.0))

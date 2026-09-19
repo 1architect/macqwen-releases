@@ -101,6 +101,19 @@ class Sampler:
         if self.settings.presence_penalty:
             self._seen.add(int(token))
 
+    def _note_sampled(self, token):
+        """Record a sampled token at the sampling boundary.
+
+        generate_step samples the next token before the backend loop
+        observes the yielded one, so backend-only observation lets the
+        first repetition of a new token escape a nonzero presence penalty.
+        Recording here keeps history sequential. Zero-penalty behavior is
+        untouched: no synchronization, no history, same trajectory.
+        """
+        if self.settings.presence_penalty and not self.settings.greedy:
+            self.observe(int(token))
+        return token
+
     def __call__(self, logits):
         """`logits` is the final row, shape (1, vocab) or (vocab,)."""
         import mlx.core as mx
@@ -131,7 +144,7 @@ class Sampler:
             # kept-first-crossing rule below still guarantees a non-empty set.
             kept = mx.sort(kept, axis=-1)
             small = mx.take(row, kept, axis=-1)
-            return self._finish(small, kept)
+            return self._note_sampled(self._finish(small, kept))
 
         probabilities = mx.softmax(row, axis=-1)
 
@@ -152,7 +165,7 @@ class Sampler:
             row = mx.where(allowed, row, -mx.inf)
 
         token = mx.random.categorical(row)
-        return token.reshape(1).astype(mx.uint32)
+        return self._note_sampled(token.reshape(1).astype(mx.uint32))
 
     def _finish(self, small, kept):
         """Sample from the top-k survivor set and map the index back."""
