@@ -5,30 +5,49 @@ This directory supports the active
 [`handoff.md`](../handoff.md).
 
 All runs use greedy decoding with exact digests, one fresh child process per
-arm, and forward/reverse/forward rounds. Throughput shows median with arm
-range where present.
+arm, and forward/reverse/forward rounds unless noted. Throughput shows median
+with arm range where present. Every arm carries its token digest; a mismatched
+digest rejects the comparison before any speed reading.
 
-## Baselines (2026-09-19)
+## Master results table
 
-| Run (raw artifact) | Prompt → output | Decode median | Prefill | MLX active / peak | Correctness |
-|---|---|---:|---|---|---|
-| Short 2k ([JSONL](20260918-baseline-short.jsonl)) | 3,282 → 32 | 5.7 tok/s | ~124 s | 8.28 / 10.43 GB | 3/3 `d2004e2ef089` matches |
-| Product 2k ([JSONL](20260918-baseline-product.jsonl)) | 3,282 → 256 | 5.5 tok/s | ~124 s | 8.31 / 10.43 GB | 3/3 `cbd9b4e29f07` matches |
+| # | Run (raw artifact) | Prompt → output | Decode, tok/s by arm | Prefill, s by arm | Memory | Digests | Verdict |
+|---|---|---|---|---|---|---|---|
+| 1 | Short 2k ([JSONL](20260918-baseline-short.jsonl)) | 3,282 → 32 | 4.97, 5.84, 5.74 | 103, 130, 124 | peak 10.43 GB | 3/3 `d2004e2ef089` | Baseline |
+| 2 | Product 2k ([JSONL](20260918-baseline-product.jsonl)) | 3,282 → 256 | 5.44, 5.55, 5.54 | 117, 126, 124 | peak 10.43 GB | 3/3 `cbd9b4e29f07` | Accepted baseline |
+| 3 | Prefill chunk 512/1024/2048 at 8k ([JSONL](20260918-prefill-wide-8k.jsonl), 7 of 9 arms) | 9,752 → 32 | 4.7–5.0, flat | 400–546, flat | peak 11.63 / 13.0 / 15.47 GB | all `161f886164bb` | Keep 512 |
+| 4 | Cache step 256/1024 at 16k product ([JSONL](20260918-cache-step-16k.jsonl), 2 of 6 arms) | 19,458 → 256 | 3.94 vs 3.99 | 1477 vs 1006 | KV 2,774 MB both | both `a6bbfb944b17` | Directional only |
+| 5 | Allocator cap at 2k product ([JSONL](20260918-allocator-2k.jsonl)) | 3,282 → 256 | control 5.56–5.58, capped 5.55–5.56 | tied ~124 | pool 774 → ~300 MB | all `cbd9b4e29f07` | Promoted to chat default |
+| 6 | Wired limit at 2k product ([JSONL](20260918-wired-2k.jsonl)) | 3,282 → 256 | tied ~5.56; one 5.90 outlier tracks page warmth | tied | — | all match | Keep off |
+| 7 | Post-generation clear at 2k product ([JSONL](20260918-clear-cache-2k.jsonl)) | 3,282 → 256 | tied ~5.57 | tied | pool → ~1 MB | all match | Opt-in diagnostic |
+| 8 | Fused FWHT at 2k short ([JSONL](20260919-fused-fwht-short.jsonl)) | 3,282 → 32 | control 7.27, 5.96, 6.00 vs fused 6.30, 6.29, 6.08 | tied | peak 10.54 fused | all `d2004e2ef089` | Default-on on prefill evidence; decode unresolved |
+| 9 | Locked baseline 2k ([JSONL](20260919-phase0-2k.jsonl)) | 3,282 → 32 | control 8.21, 6.46, 6.04 vs fused 7.40, 7.19, 6.15 | 85–120 | — | all `d2004e2ef089` | Decode tied within noise |
+| 10 | Locked baseline 8k ([JSONL](20260919-phase0-8k.jsonl)) | 9,752 → 32 | control 4.21, 4.43 vs fused 4.62, 4.41 | 459–600, first-arm cold | peak ~11.7 GB | all `161f886164bb` | Decode ties; prefill confounded |
+| 11 | Quantized KV 8-bit at 2k short ([JSONL](20260919-quant-kv8-short.jsonl)) | 3,282 → 32 | control 7.76, 7.51, 5.12 vs q8 5.77, 7.01, 5.47 | tied | KV 593 → 280 MB | all `d2004e2ef089` | Opt-in; speed unresolved |
+| 12 | Shared transforms screen ([JSONL](20260919-share-fwht-screen.jsonl)) | 51 → 32 | control 8.40, 8.35 vs shared 8.42, 8.41 | ~2–8 | peak 8.6 GB | all `730c92bf` | Screen only; full comparison pending |
+| 13 | Shared transforms short ([JSONL](20260919-share-fwht-short.jsonl), 3 arms) | 3,282 → 32 | control 5.54 vs shared 5.26, 4.68 | 130–172 | — | all `d2004e2ef089` | Incomplete; rerun |
 
-## Comparisons (2026-09-19)
+## Cross-engine spot checks (single runs, directional)
 
-| Run (raw artifact) | Result |
-|---|---|
-| Prefill chunk 512/1024/2048 at 8k ([JSONL](20260918-prefill-wide-8k.jsonl), 7 of 9 arms) | Prefill flat within noise; peak 11.63 / 13.0 / 15.47 GB. Keep 512. All digests `161f886164bb` match. |
-| Cache step 256/1024 at 16k product ([JSONL](20260918-cache-step-16k.jsonl), 2 of 6 arms) | Directional only: decode tie ~4.0 tok/s, identical KV allocation. Not a promotion result. |
-| Allocator cap at 2k product ([JSONL](20260918-allocator-2k.jsonl)) | Pool 774 → ~300 MB, decode medians identical. Promote to default after 16k confirmation. |
-| Wired limit at 2k product ([JSONL](20260918-wired-2k.jsonl)) | No resolved benefit; keep off. |
-| Post-generation clear at 2k product ([JSONL](20260918-clear-cache-2k.jsonl)) | Pool → ~1 MB, steady-state rates identical. Opt-in diagnostic. |
-| Fused FWHT at 2k short ([JSONL](20260919-fused-fwht-short.jsonl)) | Exact: all 6 digests match. Decode unresolved; directional prefill probe 29.1 → 33.4 tok/s. Promoted to default; `fused_fwht=False` rolls back. |
-| Locked baseline 2k ([JSONL](20260919-phase0-2k.jsonl)) | All 6 digests match. Control versus fused decode tied within noise. |
-| Locked baseline 8k ([JSONL](20260919-phase0-8k.jsonl)) | All 4 digests match. Decode ties near 4.4 tok/s; prefill confounded by first-arm coldness. |
-| Quantized KV 8-bit at 2k short ([JSONL](20260919-quant-kv8-short.jsonl)) | Digest-equal: all 6 digests `d2004e2ef089` match. KV 593 → 280 MB. Speed unresolved. Opt-in. |
-| Shared transforms screen ([JSONL](20260919-share-fwht-screen.jsonl)) | Digest-equal: all 4 digests `730c92bf` match, rates tied. Screen only; full comparison pending. |
+| # | Setup | Prefill | Decode | Note |
+|---|---|---|---|---|
+| 14 | GGUF Prism Metal, 512-prompt | 41.3 tok/s | 7.64 tok/s tg128 | Published methodology; holds only at short prompts |
+| 15 | GGUF Prism Metal, 3,282-prompt | 26.9 tok/s | 5.82 tok/s tg32 | Ties MLX at 3K; GGUF path closed after this |
+| 16 | MLX stock, ~776-prompt | 24.6 tok/s | 7.75 tok/s tg128 | Matched short context |
+| 17 | MLX stock, 1,308-prompt | 21.6 tok/s | 5.88 tok/s tg128 | Longer context reads slower on both engines |
+| 18 | MLX fused FWHT, 776-prompt | 33.4 tok/s | 7.70 tok/s, digest matches | Directional prefill probe behind the default |
+
+## Microbenchmarks and probes (no promotion weight)
+
+| # | Probe | Result |
+|---|---|---|
+| 19 | Prefill subsystem split, 2,476 tokens | QMM 90.8%, rotation 2.4%, attention 2.4%, recurrence 2.3%, norm 1.1%, conv 1.0% |
+| 20 | QMM gate projection, batch 512 | 2.1 TFLOPS vs ~4 dense roof; fused 43.0 ms vs dequantize 7.7 + dense 38.9 ms |
+| 21 | Greedy logsumexp | 0.5 ms of ~190 ms/token; rejected |
+| 22 | Chat sampler full vs survivor path | 3.5 ms vs 2.1 ms; shipped |
+| 23 | GDN general-path conv per layer | 0.17 ms, 8.1 ms/token ceiling; no specialization |
+| 24 | ANE single ternary layer | 535 MB package, 6.1 ms vs 4.4 ms Metal, wrong output; line closed |
+| 25 | PLD n-gram acceptance, code transcript | 35% of tokens repeat context at n≥3; implementation deferred |
 
 ## Decisions and scope
 
@@ -40,8 +59,8 @@ Accepted:
 
 Not promoted:
 
-- We do not promote the allocator cap yet despite zero-cost 470 MB savings
-  at 2k; it needs the 16k confirmation run.
+- The allocator cap ships as the chat default on the complete 2k evidence;
+  the 16k confirmation still awaits affordable machine time.
 - We do not promote any 16k cache-step result; only 2 of 6 arms completed.
 - We reject greedy `logsumexp` skipping (0.5 ms of ~190 ms/token),
   `mx.compile` of the decode step (Python dispatch is ~5% of the token),
