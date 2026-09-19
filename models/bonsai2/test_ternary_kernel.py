@@ -404,6 +404,60 @@ class HookCompositionTests(unittest.TestCase):
                     apply_runtime_hooks(checkpoint, fused=False, share=False)
                     self.assertIs(fake.fwht, stock)
 
+    def test_older_hook_keeps_its_own_stock(self):
+        import tempfile
+
+        from models.bonsai2.ternary_kernel import apply_runtime_hooks
+
+        calls_a, calls_b = [], []
+        fake_a = types.ModuleType("runtime")
+        fake_b = types.ModuleType("runtime")
+
+        def stock_a(x, block, signs, inverse=False):
+            calls_a.append(inverse)
+            return x
+
+        def stock_b(x, block, signs, inverse=False):
+            calls_b.append(inverse)
+            return x
+
+        fake_a.fwht = stock_a
+        fake_b.fwht = stock_b
+        with tempfile.TemporaryDirectory() as first:
+            with tempfile.TemporaryDirectory() as second:
+                checkpoint_a = Path(first)
+                checkpoint_b = Path(second)
+                (checkpoint_a / "runtime").mkdir()
+                (checkpoint_b / "runtime").mkdir()
+                fake_a.__file__ = str(checkpoint_a / "runtime" / "runtime.py")
+                fake_b.__file__ = str(checkpoint_b / "runtime" / "runtime.py")
+                with patch.dict(os.environ, {}, clear=True):
+                    with patch.dict(sys.modules, {"runtime": fake_a}):
+                        apply_runtime_hooks(checkpoint_a, fused=True)
+                        hooked_a = fake_a.fwht
+                    with patch.dict(sys.modules, {"runtime": fake_b}):
+                        apply_runtime_hooks(checkpoint_b, fused=True)
+                    # A later install replaced the global stock, but the
+                    # older hook captured its own module's implementation.
+                    hooked_a("x", 1024, "s", inverse=True)
+                    self.assertEqual(calls_a, [True])
+                    self.assertEqual(calls_b, [])
+
+    def test_restore_refuses_a_foreign_runtime_module(self):
+        import tempfile
+
+        from models.bonsai2.ternary_kernel import restore_runtime_hooks
+
+        fake = types.ModuleType("runtime")
+        fake.fwht = lambda *args, **kwargs: "stock"
+        with tempfile.TemporaryDirectory() as first:
+            with tempfile.TemporaryDirectory() as second:
+                (Path(first) / "runtime").mkdir()
+                fake.__file__ = str(Path(first) / "runtime" / "runtime.py")
+                with patch.dict(sys.modules, {"runtime": fake}):
+                    with self.assertRaisesRegex(RuntimeError, "foreign runtime"):
+                        restore_runtime_hooks(Path(second))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -123,10 +123,11 @@ def restore_runtime_hooks(checkpoint_path=None) -> bool:
     Clears per-module patch flags and drops saved originals so a later
     backend constructed without the flags genuinely runs stock code.
     """
-    import sys
-
     global _STOCK_FWHT, _STOCK_OWNER, _INSTALLED
-    module = sys.modules.get("runtime")
+    # Provenance-checked like the install path: restoring a runtime module
+    # that does not belong to this checkpoint would corrupt another
+    # checkpoint's code.
+    module = _tracked_runtime_module(checkpoint_path)
     restored = False
     if module is not None:
         saved = _ORIGINALS.pop(id(module), None)
@@ -261,10 +262,13 @@ def install_packed_hook(checkpoint_path=None) -> bool:
     _STOCK_FWHT = module.fwht
     _STOCK_OWNER = id(module)
     _ORIGINALS.setdefault(id(module), module.fwht)
+    stock = module.fwht
 
     def hooked(x, block, signs, inverse=False):
+        # Captured, not global: a later install on another module replaces
+        # _STOCK_FWHT, and this hook must keep calling its own stock.
         if inverse:
-            return _STOCK_FWHT(x, block, signs, inverse=inverse)
+            return stock(x, block, signs, inverse=inverse)
         return fused_fwht(x, signs, block)
 
     module.fwht = hooked
