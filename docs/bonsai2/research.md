@@ -210,7 +210,7 @@ vectors across 402 modules, verified by hash), and the backend proves it at
 construction before arming the memo. An instrumented forward shows 144 of
 402 transforms eliminated, matching the predicted table. A four-arm smoke
 screen keeps digest `730c92bf` on all arms with rates tied (+0.1%, +0.7%).
-Screening never promotes; the full comparison remains future work.
+The full six-arm comparison keeps all digests equal with paired effects of −29%, +6.3%, and +5.1%, dominated by an anomalous fast round-1 control seen across files. Unresolved; the memo stays opt-in.
 
 ### Stop retention (kept, with a recorded boundary difference)
 
@@ -233,8 +233,8 @@ runtime fingerprinting in benchmark identity, sharded weight loading, locked
 3K/8K baselines with a closed GGUF comparison, and a measured prefill
 profile that reordered the plan toward quantized GEMM.
 
-Open: the PLD acceptance probe, the 16k allocator confirmation, and the
-full shared-transform comparison.
+Open: the 16k allocator confirmation only. PLD is rejected, the shared
+memo has its full comparison, and every other line is closed above.
 
 ### Q2/G128 GEMV experiment (rejected for default)
 

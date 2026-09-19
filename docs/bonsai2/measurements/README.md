@@ -25,7 +25,8 @@ digest rejects the comparison before any speed reading.
 | 10 | Locked baseline 8k ([JSONL](20260919-phase0-8k.jsonl)) | 9,752 → 32 | control 4.21, 4.43 vs fused 4.62, 4.41 | 459–600, first-arm cold | peak ~11.7 GB | all `161f886164bb` | Decode ties; prefill confounded |
 | 11 | Quantized KV 8-bit at 2k short ([JSONL](20260919-quant-kv8-short.jsonl)) | 3,282 → 32 | control 7.76, 7.51, 5.12 vs q8 5.77, 7.01, 5.47 | tied | KV 593 → 280 MB | all `d2004e2ef089` | Opt-in; speed unresolved |
 | 11b | Quantized KV 4-bit at 2k short ([JSONL](20260919-quant-kv4-short.jsonl)) | 3,282 → 32 | control 4.70, 5.72, 5.34 vs q4 5.17, 5.16, 5.66 | tied | KV 593 → 225 MB | all `108ee966ba92` | Opt-in; speed unresolved |
-| 12 | Shared transforms screen ([JSONL](20260919-share-fwht-screen.jsonl)) | 51 → 32 | control 8.40, 8.35 vs shared 8.42, 8.41 | ~2–8 | peak 8.6 GB | all `730c92bf` | Screen only; full comparison pending |
+| 12 | Shared transforms screen ([JSONL](20260919-share-fwht-screen.jsonl)) | 51 → 32 | control 8.40, 8.35 vs shared 8.42, 8.41 | ~2–8 | peak 8.6 GB | all `730c92bf` | Screen only |
+| 12b | Shared transforms full ([JSONL](20260919-share-fwht-full.jsonl)) | 3,282 → 32 | control 8.25, 5.39, 5.66 vs shared 5.83, 5.73, 5.95 | tied | — | all `108ee966ba92` | Digest-equal; paired −29%, +6.3%, +5.1%; stays opt-in |
 | 13 | Shared transforms short ([JSONL](20260919-share-fwht-short.jsonl), 3 arms) | 3,282 → 32 | control 5.54 vs shared 5.26, 4.68 | 130–172 | — | all `d2004e2ef089` | Incomplete; rerun |
 
 ## Paired effects
@@ -47,6 +48,7 @@ not the candidate.
 | 10, locked 8k | +9.9%, −0.6% | +16.0%, −6.4% |
 | 11, quantized KV 8-bit | −25.6%, −6.7%, +6.8% | −3.9%, +16.6%, +16.9% |
 | 12, shared screen | +0.1%, +0.7% | +77.4% once (cold), +0.9% |
+| 12b, shared full | −29.3%, +6.3%, +5.1% | −28.0%, +1.2%, −0.3% |
 
 ## Cross-engine spot checks (single runs, directional)
 | # | Setup | Prefill | Decode | Note |
