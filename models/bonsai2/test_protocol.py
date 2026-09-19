@@ -23,13 +23,13 @@ class ProtocolTests(unittest.TestCase):
         visible = stream_filter.feed(translated) + stream_filter.finish()
         self.assertEqual(visible, "answer")
 
-    def test_json_tool_calls_are_adapted_to_the_existing_parser(self):
+    def test_native_calls_stream_without_buffering_text(self):
         translator = ProtocolTranslator()
         first = translator.feed("checking<tool_")
         opened = translator.feed("call>")
         second = translator.feed(
-            '{"name":"read_file","arguments":{"path":"README.md",'
-            '"start_line":2}}</tool_call>'
+            '\n<function=read_file>\n<parameter=path>\nREADME.md\n</parameter>\n'
+            '<parameter=start_line>\n2\n</parameter>\n</function>\n</tool_call>'
         )
         translated = first + opened + second + translator.finish()
         self.assertEqual(first, "checking")
@@ -56,9 +56,11 @@ class ProtocolTests(unittest.TestCase):
 
     def test_split_markers_preserve_typed_arguments(self):
         raw = (
-            '<tool_call>{"name":"read_file","arguments":'
-            '{"path":"README.md","start_line":2}}</tool_call>'
-            '<tool_call>{"name":"list_dir","arguments":{}}</tool_call>'
+            '<tool_call>\n<function=read_file>\n<parameter=path>\nREADME.md\n'
+            '</parameter>\n<parameter=start_line>\n2\n</parameter>\n'
+            '</function>\n</tool_call>'
+            '<tool_call>\n<function=list_dir>\n<parameter=path>\n.\n'
+            '</parameter>\n</function>\n</tool_call>'
         )
         for size in (1, 3, 17, len(raw)):
             with self.subTest(size=size):
@@ -67,7 +69,7 @@ class ProtocolTests(unittest.TestCase):
                                for i in range(0, len(raw), size)) + translator.finish()
                 self.assertEqual(parse_tool_calls(text), [
                     ('read_file', {'path': 'README.md', 'start_line': 2}),
-                    ('list_dir', {}),
+                    ('list_dir', {'path': '.'}),
                 ])
 
     def test_truncated_outer_close_still_yields_the_completed_call(self):
@@ -86,12 +88,14 @@ class ProtocolTests(unittest.TestCase):
 
     def test_delimiter_text_inside_arguments_round_trips(self):
         # A coding tool can legitimately write protocol text inside a
-        # file-content argument. Escaping must survive all three boundaries.
+        # file-content argument. Value-embedded delimiters are escaped in
+        # transit and restored on extraction.
         hostile = "write </tool_call> then </function> then </parameter> end"
         translator = ProtocolTranslator()
         text = translator.feed(
-            '<tool_call>{"name":"write_file","arguments":'
-            '{"path":"a.txt","content":"' + hostile + '"}}</tool_call>'
+            '<tool_call>\n<function=write_file>\n<parameter=path>\na.txt\n'
+            '</parameter>\n<parameter=content>\n' + hostile + '\n</parameter>\n'
+            '</function>\n</tool_call>'
         ) + translator.finish()
         self.assertEqual(
             parse_tool_calls(text),
@@ -100,8 +104,9 @@ class ProtocolTests(unittest.TestCase):
 
     def test_split_blocks_with_delimiters_still_parse(self):
         hostile = "x</tool_call>y"
-        raw = ('<tool_call>{"name":"write_file","arguments":{"path":"a",'
-               '"content":"' + hostile + '"}}</tool_call>')
+        raw = ('<tool_call>\n<function=write_file>\n<parameter=path>\na\n'
+               '</parameter>\n<parameter=content>\n' + hostile + '\n</parameter>\n'
+               '</function>\n</tool_call>')
         for size in (1, 7, 31):
             with self.subTest(size=size):
                 translator = ProtocolTranslator()
@@ -122,13 +127,37 @@ class ProtocolTests(unittest.TestCase):
                 ) + translator.finish()
                 self.assertEqual(parse_tool_calls(text), [])
 
+    def test_json_payloads_are_dropped_as_non_native_syntax(self):
+        # Native XML is the only accepted tool-call syntax. A complete JSON
+        # object block no longer converts; it yields no calls.
+        translator = ProtocolTranslator()
+        text = translator.feed(
+            '<tool_call>{"name":"list_dir","arguments":{"path":"."}}'
+            "</tool_call>"
+        ) + translator.finish()
+        self.assertEqual(parse_tool_calls(text), [])
+
+    def test_truncated_json_at_eof_stays_dropped(self):
+        # EOF recovery never synthesizes content: truncated JSON (even with
+        # unterminated strings and braces) is dropped, not parsed.
+        for raw in (
+            '<tool_call>{"name":"read_file","arguments":{"path":"READ',
+            '<tool_call>{"name":"read_file","arguments":{"path":"README.md"}}',
+            '<tool_call>{"name":"read_file","arguments":',
+            '<tool_call>{"name":',
+        ):
+            with self.subTest(raw=raw):
+                translator = ProtocolTranslator()
+                text = translator.feed(raw) + translator.finish()
+                self.assertEqual(parse_tool_calls(text), [])
+
     def test_tool_calls_reach_the_agent_loop(self):
         class Stats(SimpleNamespace):
             pass
 
         turns = [
-            ('<tool_call>{"name":"list_dir","arguments":{"path":"."}}'
-             "</tool_call>",
+            ('<tool_call>\n<function=list_dir>\n<parameter=path>\n.\n'
+             '</parameter>\n</function>\n</tool_call>',
              Stats(finish="stop", host_free_gb=None, swap_gb=None)),
             ("done", Stats(finish="stop", host_free_gb=None, swap_gb=None)),
         ]
