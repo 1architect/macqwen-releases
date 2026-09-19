@@ -217,13 +217,23 @@ recovery path.
 Landed on this branch: gated stop-token retention, shared transforms per
 projection group with per-backend enablement, cache-growth repair targeting
 the real classes, allocator cap as chat default, opt-in 8-bit KV with
-digest-equal short evidence, bit-exact fused FWHT kernel kept off, chat
-sampler over top-k survivors, text-only materialization with strict
-language-subtree loading, hardened runtime entry-point checks, runtime
-fingerprinting in benchmark identity, and sharded weight loading.
+digest-equal short evidence, fused FWHT kernel default-on with matching
+decode digests, chat sampler over top-k survivors, text-only materialization
+with strict language-subtree loading, hardened runtime entry-point checks,
+runtime fingerprinting in benchmark identity, sharded weight loading, locked
+3K/8K baselines with a closed GGUF comparison, and a measured prefill
+profile that reordered the plan toward quantized GEMM.
 
-Open: the 16k allocator confirmation and the full shared-transform
-comparison still await affordable machine time.
+Open: the PLD acceptance probe, the 16k allocator confirmation, and the
+full shared-transform comparison.
+
+### Runtime ownership (Phase 10 recommendation)
+
+Keep the native MLX backend and import ideas selectively, as done
+throughout this record. Adopting mlx-serve as the engine is rejected on
+evidence: decode ties GGUF at matched context, the prefill gap sits inside
+one kernel family at 2.3 versus 4 TFLOPS, and every portable mlx-serve idea
+either measured small or duplicated landed work.
 
 ### Text-only materialization (shipped)
 
