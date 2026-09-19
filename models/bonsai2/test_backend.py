@@ -476,6 +476,33 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(int(sampler(peak(102))), 102)
         self.assertFalse(sampler.forced_last)
 
+    def test_checkpoint_identity_covers_tokenizer_and_template(self):
+        from models.bonsai2.backend import _IDENTITY_FILES, _config_identity
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in _IDENTITY_FILES:
+                (root / name).write_text(f"v1 {name}")
+            (root / "runtime").mkdir()
+            (root / "runtime" / "runtime.py").write_text("v1 runtime")
+            baseline = _config_identity(str(root))
+            self.assertIsNotNone(baseline)
+            # Unrelated files do not affect the fingerprint.
+            (root / "notes.txt").write_text("noise")
+            self.assertEqual(_config_identity(str(root)), baseline)
+            # Any identity input change invalidates saved tapes.
+            for name in list(_IDENTITY_FILES) + ["runtime/runtime.py"]:
+                target = root / name
+                target.write_text(target.read_text() + " changed")
+                self.assertNotEqual(
+                    _config_identity(str(root)), baseline, msg=name
+                )
+                target.write_text(target.read_text().replace(" changed", ""))
+            self.assertEqual(_config_identity(str(root)), baseline)
+            self.assertIsNone(_config_identity(str(root / "missing")))
+
     def test_session_round_trips_interactive_budgets(self):
         import json
 

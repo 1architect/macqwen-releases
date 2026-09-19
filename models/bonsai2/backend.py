@@ -38,15 +38,41 @@ _SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 SESSION_SCHEMA = 1
 
 
+_IDENTITY_FILES = (
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "chat_template.jinja",
+)
+
+
 def _config_identity(model_path: str) -> str | None:
-    """Identify the checkpoint config without loading weights."""
+    """Identify the checkpoint without loading weights.
+
+    Sessions store token IDs, not text, so the fingerprint must cover
+    everything that maps between them: model config, tokenizer data and
+    options, the chat template, and the bundled runtime loader. A changed
+    tokenizer or template silently redefines old tapes, so sessions
+    failing this check are rejected instead of replayed.
+    """
     import hashlib
+
+    def feed(handle) -> None:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
 
     try:
         digest = hashlib.sha256()
-        with open(Path(model_path).expanduser() / "config.json", "rb") as handle:
-            for block in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(block)
+        root = Path(model_path).expanduser()
+        for name in _IDENTITY_FILES:
+            with open(root / name, "rb") as handle:
+                feed(handle)
+        runtime = root / "runtime"
+        if runtime.is_dir():
+            for path in sorted(runtime.rglob("*.py")):
+                digest.update(path.name.encode("utf-8"))
+                with open(path, "rb") as handle:
+                    feed(handle)
         return digest.hexdigest()
     except OSError:
         return None
