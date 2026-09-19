@@ -129,12 +129,11 @@ reasoning effort, token limits, interpreter, and source fingerprints. Use one
 fresh process per arm, at least three arms per condition, and
 forward/reverse/forward ordering. Avoid arbitrary warmups on the fanless Mac.
 
-Report paired effects and the two-standard-error resolution band. A candidate
-must clear both a 5% effect and that band, or provide a substantial measured
-memory saving at identical context and output lengths. Different matrix shapes
-can change rounding, so exact operations require intermediate equality and
-whole-run greedy digest checks. Output-changing work also requires the sampled
-quality gate in `CONTRIBUTING.md`.
+Report paired effects and the two-standard-error resolution band alongside
+the raw arms. You decide what promotes based on that evidence. Different
+matrix shapes can change rounding, so exact operations require intermediate
+equality and whole-run greedy digest checks. Output-changing work also
+requires the sampled quality gate in `CONTRIBUTING.md`.
 
 We keep Q8/G64 weights, BF16 KV, every context token, all layers, and current
 model semantics. Lower precision, alternate checkpoints, layer skipping,

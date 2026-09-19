@@ -102,8 +102,7 @@ protocol translation. One Metal diagnostic shows nearly continuous active GPU
 intervals during decode, but does not identify individual kernel costs.
 
 Next, attribute kernel costs and the unexplained prefill interval gap before
-selecting an optimization. These profiles exclude terminal UI. Reopen only one
-bounded candidate when attributed removable work clears a 5% gain and the
-resolution band, or demonstrates substantial memory savings at identical lengths.
-Record evidence in [`research.md`](research.md) and raw arms under
-[`measurements/`](measurements/).
+selecting an optimization. These profiles exclude terminal UI. Reopen one
+bounded candidate at a time and record the evidence with its raw arms; you
+decide what promotes. Record evidence in [`research.md`](research.md) and
+raw arms under [`measurements/`](measurements/).

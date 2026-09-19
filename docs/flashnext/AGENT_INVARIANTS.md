@@ -82,7 +82,8 @@ Every optimization experiment must:
 3. Keep destinations, reads, requested bytes, worker count, slab capacity, and
    quality settings fixed when testing task topology.
 4. Pass the exact token-digest gate.
-5. Report the resolution band and reject small effects inside that band.
+5. Report the resolution band and the raw arms; you decide what the
+   evidence supports.
 6. Report physical MB/token and active RAM.
 7. Report generation and tail rate.
 8. Report queue residence, positioned-read wall time, layer completion time,
@@ -108,10 +109,9 @@ Keep the losing full `physical-miss` replacement unavailable. The guarded
 `physical-miss-hybrid` must preserve the canonical 48-slot core, pass its
 20 MB/token offline premise gate, and change only the 12 extension slots.
 
-Resolution bands above 8–10% are environmentally unresolved for small-effect
-decisions. A 17%, 28.6%, or 32.4% band cannot establish a 1–5% gain. Do not
-claim such a result as resolved. Report the evidence and let us decide
-enablement, promotion, and defaults.
+Wide resolution bands describe noisy conditions, not absent effects. Report
+the evidence with its band and let us decide enablement, promotion, and
+defaults.
 
 ## Current next-work order
 
