@@ -252,5 +252,158 @@ class FusedFwhtTests(unittest.TestCase):
                     self.assertFalse(hasattr(fake, "_bonsai2_fused"))
 
 
+class HookCompositionTests(unittest.TestCase):
+    """The 2x2 matrix over share_fwht and fused_fwht.
+
+    Composition is canonical: stock restores first, fused installs
+    innermost, share outermost. Every cell asserts the exact active
+    layering so construction order across backends cannot silently drop
+    the share layer or leak flags through the process environment.
+    """
+
+    def setUp(self):
+        from models.bonsai2 import ternary_kernel as module
+
+        self.module = module
+        self.saved = (
+            module._INSTALLED,
+            module._STOCK_FWHT,
+            module._STOCK_OWNER,
+            dict(module._ORIGINALS),
+            module._MEMO,
+        )
+        module._INSTALLED = None
+        module._STOCK_FWHT = None
+        module._STOCK_OWNER = None
+        module._ORIGINALS.clear()
+        module._MEMO = None
+
+    def tearDown(self):
+        installed, stock, owner, originals, memo = self.saved
+        self.module._INSTALLED = installed
+        self.module._STOCK_FWHT = stock
+        self.module._STOCK_OWNER = owner
+        self.module._ORIGINALS.clear()
+        self.module._ORIGINALS.update(originals)
+        self.module._MEMO = memo
+
+    def test_matrix_cells_install_exact_layers(self):
+        import tempfile
+
+        from models.bonsai2.ternary_kernel import (
+            apply_runtime_hooks,
+            arm_memo,
+            disarm_memo,
+        )
+
+        cells = [
+            # (fused, share, outermost name, fused flag, shared flag)
+            (False, False, "stock", False, False),
+            (True, False, "hooked", True, False),
+            (False, True, "shared", False, True),
+            (True, True, "shared", True, True),
+        ]
+        for fused, share, name, want_fused, want_shared in cells:
+            with self.subTest(fused=fused, share=share):
+                calls = []
+                fake = types.ModuleType("runtime")
+
+                def stock(x, block, signs, inverse=False):
+                    calls.append((block, inverse))
+                    return x
+
+                fake.fwht = stock
+                with tempfile.TemporaryDirectory() as directory:
+                    checkpoint = Path(directory)
+                    (checkpoint / "runtime").mkdir()
+                    fake.__file__ = str(checkpoint / "runtime" / "runtime.py")
+                    self.module._INSTALLED = None
+                    self.module._ORIGINALS.clear()
+                    with patch.dict(sys.modules, {"runtime": fake}):
+                        with patch.dict(os.environ, {}, clear=True):
+                            apply_runtime_hooks(
+                                checkpoint, fused=fused, share=share
+                            )
+                            self.assertIs(fake.fwht.__name__, name)
+                            self.assertEqual(
+                                hasattr(fake, "_bonsai2_fused"), want_fused
+                            )
+                            self.assertEqual(
+                                hasattr(fake, "_bonsai2_shared"), want_shared
+                            )
+                            self.assertEqual(
+                                os.environ.get("BONSAI2_FUSED_FWHT"),
+                                "1" if fused else None,
+                            )
+                            self.assertEqual(
+                                os.environ.get("BONSAI2_SHARE_FWHT"),
+                                "1" if share else None,
+                            )
+                            if share:
+                                arm_memo()
+                                try:
+                                    x = mx.zeros((1, 2048))
+                                    s = mx.zeros((2048,))
+                                    first = fake.fwht(x, 1024, s)
+                                    second = fake.fwht(x, 1024, s)
+                                finally:
+                                    disarm_memo()
+                                # Share outermost: one computation for two
+                                # identical armed calls; the count (not
+                                # identity, the stock echoes its input)
+                                # proves the memo hit.
+                                self.assertEqual(len(calls), 1)
+                            # Repeat construction is a verified no-op.
+                            current = fake.fwht
+                            apply_runtime_hooks(
+                                checkpoint, fused=fused, share=share
+                            )
+                            self.assertIs(fake.fwht, current)
+
+    def test_switching_composition_restores_stock_first(self):
+        import tempfile
+
+        from models.bonsai2.ternary_kernel import (
+            apply_runtime_hooks,
+            arm_memo,
+            disarm_memo,
+        )
+
+        calls = []
+        fake = types.ModuleType("runtime")
+
+        def stock(x, block, signs, inverse=False):
+            calls.append((block, inverse))
+            return x
+
+        fake.fwht = stock
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory)
+            (checkpoint / "runtime").mkdir()
+            fake.__file__ = str(checkpoint / "runtime" / "runtime.py")
+            with patch.dict(sys.modules, {"runtime": fake}):
+                with patch.dict(os.environ, {}, clear=True):
+                    apply_runtime_hooks(checkpoint, fused=False, share=True)
+                    self.assertIs(fake.fwht.__name__, "shared")
+                    # Fused after share must not strand the share layer:
+                    # the composition rebuilds from stock with share off.
+                    apply_runtime_hooks(checkpoint, fused=True, share=False)
+                    self.assertIs(fake.fwht.__name__, "hooked")
+                    self.assertFalse(hasattr(fake, "_bonsai2_shared"))
+                    arm_memo()
+                    try:
+                        x = mx.zeros((1, 2048))
+                        s = mx.zeros((2048,))
+                        fake.fwht(x, 1024, s)
+                        fake.fwht(x, 1024, s)
+                    finally:
+                        disarm_memo()
+                    # No memo layer: both calls reach the fallback stock.
+                    self.assertEqual(len(calls), 2)
+                    # Back to stock when both flags are off.
+                    apply_runtime_hooks(checkpoint, fused=False, share=False)
+                    self.assertIs(fake.fwht, stock)
+
+
 if __name__ == "__main__":
     unittest.main()

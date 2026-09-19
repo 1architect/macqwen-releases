@@ -472,6 +472,27 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(int(sampler(peak(102))), 102)
         self.assertFalse(sampler.forced_last)
 
+    def test_session_round_trips_interactive_budgets(self):
+        import json
+
+        backend, _tokenizer = self.backend()
+        with tempfile.TemporaryDirectory() as directory:
+            backend.session_dir = Path(directory)
+            backend.tape = [1, 2, 3]
+            backend._interactive_budgets = (5, 3)
+            self.assertTrue(backend.save_session("work").startswith("saved work"))
+            backend._interactive_budgets = (9, 9)
+            self.assertTrue(backend.load_session("work").startswith("loaded work"))
+            # Restored budgets replace whatever a later chat set.
+            self.assertEqual(backend._interactive_budgets, (5, 3))
+            payload = json.loads((Path(directory) / "work.json").read_text())
+            payload["budgets"] = [5, True]
+            (Path(directory) / "work.json").write_text(json.dumps(payload))
+            self.assertIn("could not load", backend.load_session("work"))
+            payload["budgets"] = [5]
+            (Path(directory) / "work.json").write_text(json.dumps(payload))
+            self.assertIn("could not load", backend.load_session("work"))
+
     def test_session_round_trips_pending_with_strict_types(self):
         import json
 

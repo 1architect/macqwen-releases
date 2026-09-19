@@ -454,24 +454,13 @@ class BonsaiBackend(Conversation):
                 sys.path.insert(0, str(candidate))
         import vision_artifact  # noqa: F401 (proves the bundled runtime loads)
 
-        from .ternary_kernel import (
-            install_packed_hook,
-            install_share_hook,
-            restore_runtime_hooks,
-        )
+        from .ternary_kernel import apply_runtime_hooks
 
-        if fused_fwht:
-            os.environ["BONSAI2_FUSED_FWHT"] = "1"
-            install_packed_hook(path)
-        if share_fwht:
-            os.environ["BONSAI2_SHARE_FWHT"] = "1"
-        if not fused_fwht and not share_fwht:
-            restore_runtime_hooks(path)
         vl_model, _pack_config = _load_text_model(path)
         model = vl_model.language_model
         if share_fwht:
             _verify_shared_signs(model)
-            install_share_hook(path)
+        apply_runtime_hooks(path, fused=fused_fwht, share=share_fwht)
         with _transformers_import_environment():
             from transformers import AutoTokenizer
 
@@ -842,6 +831,18 @@ class BonsaiBackend(Conversation):
                 "turn_closed": self.turn_closed,
                 "thinking": self.thinking_enabled,
                 "thinking_tag": self._thinking_tag,
+                "budgets": (
+                    None
+                    if self._interactive_budgets is None
+                    else [
+                        int(self._interactive_budgets[0]),
+                        (
+                            None
+                            if self._interactive_budgets[1] is None
+                            else int(self._interactive_budgets[1])
+                        ),
+                    ]
+                ),
             }, separators=(",", ":"))
             with tempfile.NamedTemporaryFile(
                 mode="w", encoding="utf-8", dir=path.parent, delete=False,
@@ -897,12 +898,36 @@ class BonsaiBackend(Conversation):
             thinking = valid_flag(payload.get("thinking", False))
             if turn_closed is None or thinking is None:
                 raise ValueError("session flags are invalid")
+            budgets = payload.get("budgets", None)
+            if budgets is not None:
+                # Budgets ride the session so a restored conversation keeps
+                # its reasoning contract instead of inheriting whatever a
+                # later chat set. Strict shapes only: bools are ints in
+                # Python and must not smuggle in as token counts.
+                if (
+                    not isinstance(budgets, list)
+                    or len(budgets) != 2
+                    or isinstance(budgets[0], bool)
+                    or not isinstance(budgets[0], int)
+                    or budgets[0] < 0
+                    or (
+                        budgets[1] is not None
+                        and (
+                            isinstance(budgets[1], bool)
+                            or not isinstance(budgets[1], int)
+                            or budgets[1] < 0
+                        )
+                    )
+                ):
+                    raise ValueError("session budgets are invalid")
+                budgets = (budgets[0], budgets[1])
             self.reset()
             self.tape = tape
             self.pending = pending
             self.turn_closed = turn_closed
             self.thinking_enabled = thinking
             self._thinking_tag = tag
+            self._interactive_budgets = budgets
             self._replay_needed = bool(self.tape or self.pending)
         except (OSError, TypeError, ValueError) as exc:
             return f"could not load session: {exc}"

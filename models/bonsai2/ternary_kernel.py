@@ -79,6 +79,7 @@ _STOCK_FWHT = None
 _STOCK_OWNER = None
 _MEMO = None
 _ORIGINALS: dict = {}
+_INSTALLED = None
 
 
 def _tracked_runtime_module(checkpoint_path=None):
@@ -124,7 +125,7 @@ def restore_runtime_hooks(checkpoint_path=None) -> bool:
     """
     import sys
 
-    global _STOCK_FWHT, _STOCK_OWNER
+    global _STOCK_FWHT, _STOCK_OWNER, _INSTALLED
     module = sys.modules.get("runtime")
     restored = False
     if module is not None:
@@ -141,8 +142,48 @@ def restore_runtime_hooks(checkpoint_path=None) -> bool:
         if _STOCK_OWNER == id(module):
             _STOCK_FWHT = None
             _STOCK_OWNER = None
+    _INSTALLED = None
     disarm_memo()
     return restored
+
+
+def apply_runtime_hooks(checkpoint_path=None, fused=False, share=False) -> None:
+    """Build the runtime transform composition in one canonical order.
+
+    Stock restores first whenever the requested composition differs, then
+    fused installs innermost and share outermost. Separate
+    install-then-install call sites made the result depend on
+    construction order: a fused install after a share install silently
+    dropped the share layer, and flags from an earlier backend leaked into
+    later ones through the process environment. Keying on module identity
+    plus both flags makes repeat construction a verified no-op instead of
+    a second patch layer.
+    """
+    global _INSTALLED
+    module = _tracked_runtime_module(checkpoint_path)
+    key = (id(module) if module is not None else None, bool(fused), bool(share))
+    if _INSTALLED == key and module is not None:
+        if getattr(module, "_bonsai2_fused", False) == bool(
+            fused
+        ) and getattr(module, "_bonsai2_shared", False) == bool(share):
+            return
+    restore_runtime_hooks(checkpoint_path)
+    if module is None:
+        _INSTALLED = key
+        return
+    if fused:
+        os.environ["BONSAI2_FUSED_FWHT"] = "1"
+    else:
+        os.environ.pop("BONSAI2_FUSED_FWHT", None)
+    if share:
+        os.environ["BONSAI2_SHARE_FWHT"] = "1"
+    else:
+        os.environ.pop("BONSAI2_SHARE_FWHT", None)
+    if fused:
+        install_packed_hook(checkpoint_path)
+    if share:
+        install_share_hook(checkpoint_path)
+    _INSTALLED = key
 
 
 def share_fwht_enabled() -> bool:
