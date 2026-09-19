@@ -265,6 +265,49 @@ The general-path depthwise convolution measures 0.17 ms per layer, or
 fast fp32 specialization could save at most that, so no custom kernel.
 The fp32 weights stay untouched per the no-loss requirement.
 
+### Native GGUF comparison (closed)
+
+Matched runs on M4/16GB with the Prism Metal fork (build 9a9394a) against
+PQ2_0 show both engines tied at 3K context: prefill 26.9 tok/s GGUF versus
+about 26 to 30 tok/s MLX, decode 5.82 tok/s GGUF versus 6 to 8 tok/s MLX,
+with MLX digests matching across arms. Decode is hardware-bound on both
+engines. The 41.3 tok/s GGUF figure holds only for 512-token prompts and
+does not transfer to 3K contexts. No further GGUF work: the comparison
+answered its question and the GGUF path stays out of the project. The
+7.2 GB GGUF file and the Prism fork build tree are deleted.
+
+### Quantized GEMM dissection (Phase 5 answer)
+
+Per gate-projection matmul at batch 512: fused `quantized_matmul` 43.0 ms,
+separate dequantize 7.7 ms plus dense fp16 38.9 ms. MLX already fuses;
+the dense path itself runs 2.3 TFLOPS against a roughly 4 TFLOPS roof.
+A perfect single-pass kernel recovers at most the 7.7 ms temporary, about
+1.2x on the matmul and far less end to end after Amdahl. The remaining
+prefill gap is kernel-tuning depth, not a missing algorithm. We do not
+build a custom QMM: disproportionate effort for a fractional gain, with
+tuning risk against Metal's own dense path.
+
+### Prefill subsystem profile (measured)
+
+One 2,476-token prefill, 84.4 s wall, each subsystem wrapped with its own
+eval boundary for attribution:
+
+| Subsystem | Seconds | Share of wall |
+|---|---|---:|
+| Quantized matmul | 76.7 | 90.8% |
+| Hadamard rotation | 2.1 | 2.4% |
+| Attention | 2.0 | 2.4% |
+| GDN recurrence | 1.9 | 2.3% |
+| Normalization | 1.0 | 1.1% |
+| Convolution | 0.8 | 1.0% |
+
+The QMM microbenchmark on the gate projection reaches 2.1 TFLOPS at batch
+512 against a roughly 4 TFLOPS dense roof: unpack-bound, not
+bandwidth-bound. This reorders the optimization plan. Blocked GDN (2.3%),
+SIMD rotation (2.4%), and residual-norm-rotation fusion (under 4%
+combined) are deprioritized. Quantized GEMM at 91% goes first, and the
+41.3 versus 33.4 gap reads as a QMM efficiency gap, not launch overhead.
+
 ### Allocator cap at 16k (not run)
 
 A first 16k attempt was killed twice by tool timeouts (each 16k arm needs
