@@ -178,6 +178,15 @@ trajectory survives. KV allocation halves from 593 MB to 280 MB at 2k plus
 opt-in; it is the leading candidate for long context, where halved KV
 directly extends the fitting ceiling. Quality validation stays manual.
 
+### KV quantization to 4-bit (opt-in, digest-equal)
+
+The same six-arm shape with 4-bit groups keeps digest `108ee966ba92` on
+all arms. KV allocation falls from 593 MB to 225 MB at 2k plus 32 tokens.
+Paired decode effects are +10.0%, −9.8%, +6.0%: unresolved inside machine
+noise, same as 8-bit. The validator initially rejected the mlx-vlm
+quantized class; recognition now covers both stacks. Quality validation
+stays manual.
+
 ### Further speed avenues (measured)
 
 - Vision weights: the backend keeps only `language_model` and drops the

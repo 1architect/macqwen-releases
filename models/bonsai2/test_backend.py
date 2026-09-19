@@ -475,6 +475,14 @@ class BackendTests(unittest.TestCase):
         BonsaiBackend._validate_cache([VlmArrays(size=2), VlmKv()])
         BonsaiBackend._validate_cache([LmArrays(size=2), LmKv()])
 
+    def test_vlm_quantized_cache_is_recognized(self):
+        from mlx_vlm.models.cache import QuantizedKVCache
+
+        from models.bonsai2.backend import BonsaiBackend
+
+        cache = QuantizedKVCache(group_size=64, bits=8)
+        BonsaiBackend._validate_cache([cache])
+
     def test_rotating_cache_is_rejected_on_reset(self):
         backend, _tokenizer = self.backend()
         with patch(

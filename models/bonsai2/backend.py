@@ -481,18 +481,19 @@ class BonsaiBackend(Conversation):
         try:
             from mlx_vlm.models.cache import ArraysCache as VlmArrays
             from mlx_vlm.models.cache import KVCache as VlmKv
+            from mlx_vlm.models.cache import QuantizedKVCache as VlmQuant
         except ImportError:
-            VlmArrays = VlmKv = None
+            VlmArrays = VlmKv = VlmQuant = None
         recognized = (LmArrays, LmKv, LmQuant) + tuple(
-            cls for cls in (VlmArrays, VlmKv) if cls is not None
+            cls for cls in (VlmArrays, VlmKv, VlmQuant) if cls is not None
         )
         kinds = {type(item) for item in cache}
         if not kinds <= set(recognized):
             raise TypeError(
                 "Bonsai-2 requires ArraysCache/KVCache objects"
             )
-        full_attention = (LmKv, LmQuant) + (
-            (VlmKv,) if VlmKv is not None else ()
+        full_attention = (LmKv, LmQuant) + tuple(
+            cls for cls in (VlmKv, VlmQuant) if cls is not None
         )
         if kinds and not any(
             issubclass(kind, full_attention) for kind in kinds
