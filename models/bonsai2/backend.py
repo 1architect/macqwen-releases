@@ -490,6 +490,11 @@ class BonsaiBackend(Conversation):
             raise TypeError("Bonsai-2 requires full-attention KVCache layers")
 
     def check_invariant(self) -> bool:
+        # A replay-needed state is valid, not broken: the tape is
+        # authoritative and the next turn rebuilds the cache from it. Only
+        # a live cache must match the tape offsets.
+        if self._replay_needed:
+            return True
         offsets = [int(item.offset) for item in self.cache if hasattr(item, "offset")]
         return (
             not self.cache and not self.tape

@@ -88,9 +88,6 @@ def run_agent(engine: Backend, repo, out, limits: Limits = Limits(),
         if on_stats is not None:
             on_stats(stats)
 
-        if not engine.check_invariant():
-            out("!! INVARIANT BROKEN: cache and transcript disagree")
-            return stop("invariant")
         free = getattr(stats, "host_free_gb", None)
         if free and limits.min_free_gb and free < limits.min_free_gb:
             out(f"!! host free memory {free:.2f} GB below the floor; stopping")
@@ -103,6 +100,9 @@ def run_agent(engine: Backend, repo, out, limits: Limits = Limits(),
         _, content = split_think(text)
         calls = parse_tool_calls(content) or parse_tool_calls(text)
         if not calls:
+            if not engine.check_invariant():
+                out("!! INVARIANT BROKEN: cache and transcript disagree")
+                return stop("invariant")
             if getattr(stats, "finish", None) == "stop":
                 if ui is None:
                     out("\n[final answer produced]")
@@ -155,4 +155,7 @@ def run_agent(engine: Backend, repo, out, limits: Limits = Limits(),
                 else:
                     out(f"[tool error] {exc}")
         engine.append_tool_results(results)
+        if not engine.check_invariant():
+            out("!! INVARIANT BROKEN: cache and transcript disagree")
+            return stop("invariant")
     return stop("max-turns")

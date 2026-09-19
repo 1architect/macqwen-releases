@@ -116,6 +116,18 @@ class AgentLoopTests(unittest.TestCase):
         )
         self.assertEqual(engine.requested_limits, [632])
 
+    def test_tool_call_runs_despite_a_false_invariant_report(self):
+        # Parsing precedes the invariant check: a usable tool call must run
+        # even when the engine reports broken state.
+        engine = ScriptedEngine([
+            (CALL, Stats(finish="stop")),
+            ("done", Stats(finish="stop")),
+        ])
+        engine.invariant = False
+        run_agent(engine, self.repo, self.out)
+        self.assertEqual(len(engine.tool_results), 1)
+        self.assertIn("hello", engine.tool_results[0][0])
+
     def test_tool_call_runs_and_feeds_back(self):
         engine = ScriptedEngine([
             (CALL, Stats(finish="stop")),

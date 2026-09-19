@@ -186,6 +186,16 @@ class BackendTests(unittest.TestCase):
         backend.cache[1].offset = 2
         self.assertTrue(backend.check_invariant())
 
+    def test_pristine_replay_state_is_valid(self):
+        # After a normal stop the replacement cache is empty while the tape
+        # is authoritative. That state must read valid: the next turn
+        # replays the tape instead of continuing a broken cache.
+        backend, _tokenizer = self.backend()
+        backend.tape = [10, 11]
+        backend.cache = []
+        backend._replay_needed = True
+        self.assertTrue(backend.check_invariant())
+
     def test_cached_append_keeps_all_offsets_aligned_after_stop(self):
         backend, _tokenizer = self.backend()
         backend.tape = [10]
@@ -425,7 +435,7 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(backend._replay_needed)
         self.assertFalse(backend.turn_closed)
         self.assertEqual(backend.tape, [10, 65])
-        self.assertFalse(backend.check_invariant())
+        self.assertTrue(backend.check_invariant())
         backend.append_user("next")
         self.assertTrue("<|im_end|>" in "".join(
             chr(value) for value in backend.pending
