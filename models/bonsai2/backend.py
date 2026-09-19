@@ -392,6 +392,11 @@ class BonsaiTokenizer:
     def __getattr__(self, name):
         return getattr(self._tokenizer, name)
 
+    def __call__(self, text, **options):
+        # Explicit: implicit dunder lookup bypasses __getattr__, so the
+        # safe content encoder's tokenizer(chunk) call needs this forwarder.
+        return self._tokenizer(text, **options)
+
     def _normalize_effort(self, messages, effort: str):
         messages = [dict(message) for message in messages]
         # No Bonsai-specific reinterpretation: the shared policy resolves
