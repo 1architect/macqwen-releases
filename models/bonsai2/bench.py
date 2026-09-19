@@ -32,8 +32,7 @@ COMPARISONS = {
     "fused-fwht": {"control": {"fused_fwht": False}, "fused": {"fused_fwht": True}},
     "quant-kv8": {"control": {}, "qkv8": {"quantized_kv": [8, 64]}},
     "quant-kv4": {"control": {}, "qkv4": {"quantized_kv": [4, 64]}},
-    "share-fwht": {"control": {}, "shared": {"share_fwht": True}},
-    "gemv-decode": {"control": {}, "gemv": {"gemv": True}},}
+    "share-fwht": {"control": {}, "shared": {"share_fwht": True}},}
 DIAGNOSTIC_COMPARISONS = {"profile"}
 _ANALYSIS_REQUEST = "Using the numbered records, write a detailed neutral analysis of at least 300 words covering the observed patterns and exceptions."
 def _context_fixture(records: int) -> tuple[str, str, None, None]:
