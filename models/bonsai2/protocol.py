@@ -8,10 +8,7 @@ the model does not natively emit.
 """
 from __future__ import annotations
 
-import json
 import re
-
-from macqwen.tools import parse_tool_calls
 
 
 TOOL_START = "<tool_call>"
@@ -41,24 +38,6 @@ def _partial_marker(text: str) -> int:
                 keep = size
                 break
     return keep
-
-
-def _escape_xml_text(value: str) -> str:
-    """Escape protocol delimiters inside a parsed argument value.
-
-    Only applied to values already extracted by the shared parser, where
-    data and structure are unambiguous, so full escaping is safe here.
-    The parser unescapes these sequences on extraction.
-    """
-    return (
-        value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    )
-
-
-def _tool_value(value) -> str:
-    if isinstance(value, str):
-        return _escape_xml_text(value)
-    return _escape_xml_text(json.dumps(value, ensure_ascii=False))
 
 
 def _has_function(block: str) -> bool:
@@ -120,35 +99,18 @@ def _render_calls(block: str) -> str:
 
     Returns "" for blocks without a function element so the caller drops
     them instead of leaking raw payload text into the transcript.
-    Schema-known calls re-render through the shared parser, which
-    identifies values structurally and escapes embedded delimiters; the
-    transcript then parses byte-identically. Anything the shared parser
-    rejects (unknown tools, truncated values) passes through raw so a
-    hallucinated call stays visible instead of vanishing silently.
-    Value-embedded closers are pre-escaped by `_escape_embedded` before
-    parsing: the accepted terminator was sliced off before this point, so
-    a remaining `</tool_call>` always sits inside a value, and
+    Transport stays independent of the built-in tool registry: unknown
+    tools, extra parameters, and original whitespace pass through
+    untouched, so a custom API schema sharing a built-in name loses
+    nothing. Value-embedded closers are pre-escaped by `_escape_embedded`
+    before this point: the accepted terminator was sliced off, so a
+    remaining `</tool_call>` always sits inside a value, and
     `</parameter>` / `</function>` occurrences are classified by what
-    follows them.
+    follows them. Downstream parsers reverse that escaping on extraction.
     """
     if not _has_function(block):
         return ""
-    probe = _escape_embedded(block)
-    calls = parse_tool_calls(TOOL_START + probe + TOOL_END)
-    if not calls:
-        return block + TOOL_END
-    rendered = []
-    for index, (name, arguments) in enumerate(calls):
-        if index:
-            rendered.append(TOOL_START)
-        rendered.append(f"<function={name}>")
-        for key, value in arguments.items():
-            rendered.append(
-                f"<parameter={key}>\n{_tool_value(value)}\n</parameter>"
-            )
-        rendered.append("</function>")
-    rendered.append(TOOL_END)
-    return "".join(rendered)
+    return _escape_embedded(block) + TOOL_END
 
 
 class ProtocolTranslator:

@@ -102,7 +102,11 @@ def parse_tool_calls(text):
             if key not in allowed:
                 continue
             t = allowed[key]
-            v = _unescape_argument(raw.strip())
+            # String payloads keep their exact bytes: file contents,
+            # indentation, and trailing newlines survive. Only typed
+            # scalar conversion normalizes whitespace, and int()/float()
+            # already tolerate it.
+            v = _unescape_argument(raw)
             if t == "integer":
                 try:
                     v = int(float(v))
@@ -114,7 +118,7 @@ def parse_tool_calls(text):
                 except ValueError:
                     pass
             elif t == "boolean":
-                v = v.lower() in ("true", "1", "yes")
+                v = v.strip().lower() in ("true", "1", "yes")
             args[key] = v
         # Qwen sometimes writes <path>value</parameter> instead of
         # <parameter=path>value</parameter>. Keep the standard form first.
@@ -122,7 +126,7 @@ def parse_tool_calls(text):
             if key in args or key not in allowed:
                 continue
             t = allowed[key]
-            v = _unescape_argument(raw.strip())
+            v = _unescape_argument(raw)
             if t == "integer":
                 try:
                     v = int(float(v))
@@ -134,7 +138,7 @@ def parse_tool_calls(text):
                 except ValueError:
                     pass
             elif t == "boolean":
-                v = v.lower() in ("true", "1", "yes")
+                v = v.strip().lower() in ("true", "1", "yes")
             args[key] = v
         calls.append((name, args))
     return calls

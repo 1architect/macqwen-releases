@@ -145,6 +145,46 @@ class ModelServiceTests(unittest.TestCase):
         self.assertEqual(calls[0]["name"], "client_tool")
         self.assertEqual(calls[0]["arguments"], '{"count": 3}')
 
+    def test_custom_schema_sharing_a_builtin_name_keeps_extra_params(self):
+        import json
+
+        tool = {"type": "function", "function": {
+            "name": "search",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string"},
+                "depth": {"type": "integer"},
+            }},
+        }}
+        _text, calls = _parse_tool_calls(
+            "<tool_call><function=search><parameter=query>hi</parameter>"
+            "<parameter=depth>2</parameter></function></tool_call>",
+            [tool],
+        )
+        self.assertEqual(
+            json.loads(calls[0]["arguments"]), {"query": "hi", "depth": 2}
+        )
+
+    def test_transport_escaping_reverses_exactly_once(self):
+        import json
+
+        _text, calls = _parse_tool_calls(
+            "<tool_call><function=read_file><parameter=path>a&amp;b.txt"
+            "</parameter></function></tool_call>"
+        )
+        self.assertEqual(json.loads(calls[0]["arguments"]), {"path": "a&b.txt"})
+
+    def test_string_payloads_keep_their_bytes(self):
+        import json
+
+        _text, calls = _parse_tool_calls(
+            "<tool_call><function=write_file><parameter=path>a.txt"
+            "</parameter><parameter=content>  indented\nline2\n\n"
+            "</parameter></function></tool_call>"
+        )
+        self.assertEqual(
+            json.loads(calls[0]["arguments"])["content"], "  indented\nline2\n"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

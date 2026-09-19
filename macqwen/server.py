@@ -11,6 +11,7 @@ import uuid
 from urllib.parse import urlsplit
 
 from macqwen.text import CompletedTextBuffer, ThinkingStreamFilter
+from macqwen.tools import _unescape_argument
 from macqwen.profiles import system_prompt
 from macqwen.conversation import reasoning_system_text
 
@@ -174,19 +175,22 @@ def _responses_messages(payload: dict) -> list[dict]:
 
 
 def _coerce_argument(value: str, kind: str | None):
-    value = value.strip()
+    # Transport escaping is reversed exactly once here; the shared parser
+    # does the same on its own path. String payloads keep their bytes;
+    # only typed scalar conversion normalizes whitespace.
+    text = _unescape_argument(value)
     try:
         if kind == "integer":
-            return int(value)
+            return int(text)
         if kind == "number":
-            return float(value)
+            return float(text)
         if kind == "boolean":
-            return value.lower() in ("true", "1", "yes")
+            return text.strip().lower() in ("true", "1", "yes")
         if kind in ("object", "array"):
-            return json.loads(value)
+            return json.loads(text)
     except (TypeError, ValueError):
         pass
-    return value
+    return text
 
 
 def _parse_tool_calls(text: str, tools=None) -> tuple[str, list[dict]]:

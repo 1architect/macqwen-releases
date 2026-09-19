@@ -127,6 +127,20 @@ class ProtocolTests(unittest.TestCase):
                 ) + translator.finish()
                 self.assertEqual(parse_tool_calls(text), [])
 
+    def test_bare_ampersands_pass_through_unescaped(self):
+        # Transport escapes only structural closers. A bare & is payload,
+        # so a&b.txt must not become a&amp;b.txt in transit.
+        translator = ProtocolTranslator()
+        text = translator.feed(
+            "<tool_call>\n<function=read_file>\n<parameter=path>\na&b.txt\n"
+            "</parameter>\n</function>\n</tool_call>"
+        ) + translator.finish()
+        self.assertIn("a&b.txt", text)
+        self.assertNotIn("a&amp;b.txt", text)
+        self.assertEqual(
+            parse_tool_calls(text), [("read_file", {"path": "a&b.txt"})]
+        )
+
     def test_json_payloads_are_dropped_as_non_native_syntax(self):
         # Native XML is the only accepted tool-call syntax. A complete JSON
         # object block no longer converts; it yields no calls.

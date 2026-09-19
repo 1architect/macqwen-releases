@@ -82,6 +82,29 @@ class ParseTests(unittest.TestCase):
         calls = tools.parse_tool_calls(MULTILINE_VALUE)
         self.assertEqual(calls[0][1]["content"], "first line\nsecond line")
 
+    def test_whitespace_sensitive_arguments_survive_verbatim(self):
+        # Only the single framing newline is protocol; indentation and
+        # extra trailing newlines are payload and must survive for
+        # write_file/replace_text to act on exact bytes.
+        raw = (
+            "<tool_call>\n<function=write_file>\n<parameter=path>\na.txt\n"
+            "</parameter>\n<parameter=content>\n  indented\nline2\n\n"
+            "</parameter>\n</function>\n</tool_call>"
+        )
+        (name, args), = tools.parse_tool_calls(raw)
+        self.assertEqual(name, "write_file")
+        self.assertEqual(args["content"], "  indented\nline2\n")
+
+    def test_typed_scalars_still_convert_around_whitespace(self):
+        raw = (
+            "<tool_call>\n<function=read_file>\n<parameter=path>\nnotes.txt\n"
+            "</parameter>\n<parameter=start_line>\n  3\n</parameter>\n"
+            "</function>\n</tool_call>"
+        )
+        (name, args), = tools.parse_tool_calls(raw)
+        self.assertEqual(args["start_line"], 3)
+        self.assertEqual(args["path"], "notes.txt")
+
     def test_mutating_tools_are_named(self):
         self.assertEqual(
             tools.MUTATING_TOOLS, {"write_file", "replace_text", "run_command"}
