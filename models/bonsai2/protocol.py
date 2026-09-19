@@ -14,8 +14,10 @@ import re
 TOOL_START = "<tool_call>"
 TOOL_END = "</tool_call>"
 FUNCTION_CLOSE = "</function>"
-SHORT_ELEMENT = re.compile(r"<([A-Za-z_][A-Za-z0-9_]*)>.*?</\1>", re.S)
-SHORT_OPEN = re.compile(r"<[A-Za-z_][A-Za-z0-9_]*>")
+# A short-form function element opens the block itself. Anchored: a nested
+# element inside a value must never satisfy this, no matter how complete
+# it looks.
+SHORT_FUNCTION_OPEN = re.compile(r"\A\s*<([A-Za-z_][A-Za-z0-9_]*)\s*>")
 # A closer is structural only when the next structural tag or the block
 # end follows; anything else means it sits inside a parameter value.
 EMBEDDED_PARAM = re.compile(r"</parameter>(?!\s*(?:<parameter=|</function>|\Z))")
@@ -40,28 +42,35 @@ def _partial_marker(text: str) -> int:
     return keep
 
 
+def _short_function_closed(prefix: str) -> bool:
+    """Whether the block is a completed short-form function element."""
+    match = SHORT_FUNCTION_OPEN.match(prefix)
+    if match is None or match.group(1) in ("tool_call", "function"):
+        return False
+    return f"</{match.group(1)}>" in prefix[match.end():]
+
+
 def _has_function(block: str) -> bool:
     """Whether the block holds a native function element worth keeping."""
     if "<function=" in block:
         return True
-    for match in SHORT_OPEN.finditer(block):
-        if match.group(0) != TOOL_START:
-            return True
-    return False
+    return SHORT_FUNCTION_OPEN.match(block) is not None
 
 
 def _candidate_closes(prefix: str) -> bool:
     """Whether a `</tool_call>` candidate really ends the block.
 
-    Only accept a candidate preceded by a complete function element. A
-    value-embedded `</tool_call>` has no `</function>` before it, so it is
-    skipped instead of truncating the block. Values containing a literal
-    `</function>` before the real close can still misfire; such bytes are
-    the model's escaping duty.
+    Only accept a candidate preceded by a complete OUTER function element:
+    a structural `</function>`, or a short-form `<name>...</name>` element
+    opening the block itself. A nested element inside a parameter value
+    (for example `<b>x</b>`) never qualifies, so a value-embedded
+    `</tool_call>` after it keeps buffering instead of truncating the
+    block. Values containing a literal `</function>` before the real close
+    can still misfire; such bytes are the model's escaping duty.
     """
     if FUNCTION_CLOSE in prefix:
         return True
-    return SHORT_ELEMENT.search(prefix) is not None
+    return _short_function_closed(prefix)
 
 
 def _find_block_end(buffered: str) -> int:
@@ -167,7 +176,7 @@ class ProtocolTranslator:
             payload = self.pending
             self.pending = ""
             self.in_tool = False
-            if FUNCTION_CLOSE in payload or SHORT_ELEMENT.search(payload):
+            if FUNCTION_CLOSE in payload or _short_function_closed(payload):
                 # Generation stopped after a complete native function but
                 # before the outer close. Synthesize the close and let the
                 # canonical path validate it instead of dropping the call.

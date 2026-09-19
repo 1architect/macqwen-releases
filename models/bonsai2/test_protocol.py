@@ -127,6 +127,40 @@ class ProtocolTests(unittest.TestCase):
                 ) + translator.finish()
                 self.assertEqual(parse_tool_calls(text), [])
 
+    def test_nested_element_does_not_close_the_outer_call(self):
+        # A complete short element inside a value (<b>x</b>) must not
+        # satisfy the terminator rule: only the outer function completes
+        # the block. Split across chunk sizes to cover streaming.
+        content = "see <b>x</b> then </tool_call> done"
+        raw = (
+            "<tool_call>\n<function=write_file>\n<parameter=path>\na\n"
+            "</parameter>\n<parameter=content>\n" + content + "\n</parameter>\n"
+            "</function>\n</tool_call>"
+        )
+        for size in (1, 9, len(raw)):
+            with self.subTest(size=size):
+                translator = ProtocolTranslator()
+                text = "".join(
+                    translator.feed(raw[i:i + size])
+                    for i in range(0, len(raw), size)
+                ) + translator.finish()
+                calls = parse_tool_calls(text)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][1]["content"], content)
+
+    def test_short_form_function_still_closes(self):
+        raw = "<tool_call><list_dir><path>.</path></list_dir></tool_call>"
+        for size in (1, 7, len(raw)):
+            with self.subTest(size=size):
+                translator = ProtocolTranslator()
+                text = "".join(
+                    translator.feed(raw[i:i + size])
+                    for i in range(0, len(raw), size)
+                ) + translator.finish()
+                self.assertEqual(
+                    parse_tool_calls(text), [("list_dir", {"path": "."})]
+                )
+
     def test_bare_ampersands_pass_through_unescaped(self):
         # Transport escapes only structural closers. A bare & is payload,
         # so a&b.txt must not become a&amp;b.txt in transit.
