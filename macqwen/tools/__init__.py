@@ -66,6 +66,18 @@ SHORT_PARAM_RE = re.compile(
     r"<([A-Za-z_][A-Za-z0-9_]*)>\s*(.*?)\s*</(?:\1|parameter)>", re.S
 )
 
+def _unescape_argument(value: str) -> str:
+    """Restore delimiters escaped for protocol transport.
+
+    Values without escape sequences pass through unchanged, so output from
+    models that never escape is unaffected.
+    """
+    if "&" not in value:
+        return value
+    return (
+        value.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    )
+
 def parse_tool_calls(text):
     """Accept both Qwen XML tool formats and return [(name, args)]."""
     calls = []
@@ -85,12 +97,12 @@ def parse_tool_calls(text):
         args = {}
         for key, _, raw in PARAM_VALUE_RE.findall(body):
             if key in allowed:
-                args[key] = raw.strip()
+                args[key] = _unescape_argument(raw.strip())
         for key, raw in PARAM_RE.findall(body):
             if key not in allowed:
                 continue
             t = allowed[key]
-            v = raw.strip()
+            v = _unescape_argument(raw.strip())
             if t == "integer":
                 try:
                     v = int(float(v))
@@ -110,7 +122,7 @@ def parse_tool_calls(text):
             if key in args or key not in allowed:
                 continue
             t = allowed[key]
-            v = raw.strip()
+            v = _unescape_argument(raw.strip())
             if t == "integer":
                 try:
                     v = int(float(v))

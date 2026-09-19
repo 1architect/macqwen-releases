@@ -84,6 +84,35 @@ class ProtocolTests(unittest.TestCase):
         text = translator.feed("<tool_call>\nno function here") + translator.finish()
         self.assertEqual(parse_tool_calls(text), [])
 
+    def test_delimiter_text_inside_arguments_round_trips(self):
+        # A coding tool can legitimately write protocol text inside a
+        # file-content argument. Escaping must survive all three boundaries.
+        hostile = "write </tool_call> then </function> then </parameter> end"
+        translator = ProtocolTranslator()
+        text = translator.feed(
+            '<tool_call>{"name":"write_file","arguments":'
+            '{"path":"a.txt","content":"' + hostile + '"}}</tool_call>'
+        ) + translator.finish()
+        self.assertEqual(
+            parse_tool_calls(text),
+            [("write_file", {"path": "a.txt", "content": hostile})],
+        )
+
+    def test_split_blocks_with_delimiters_still_parse(self):
+        hostile = "x</tool_call>y"
+        raw = ('<tool_call>{"name":"write_file","arguments":{"path":"a",'
+               '"content":"' + hostile + '"}}</tool_call>')
+        for size in (1, 7, 31):
+            with self.subTest(size=size):
+                translator = ProtocolTranslator()
+                text = "".join(
+                    translator.feed(raw[i:i + size])
+                    for i in range(0, len(raw), size)
+                ) + translator.finish()
+                calls = parse_tool_calls(text)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][1]["content"], hostile)
+
     def test_invalid_call_payloads_do_not_produce_partial_calls(self):
         for raw in ('[]', 'null', '42', 'not-json{{{'):
             with self.subTest(raw=raw):

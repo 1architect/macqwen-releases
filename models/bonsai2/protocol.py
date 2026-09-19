@@ -33,8 +33,23 @@ def _partial_marker(text: str) -> int:
     return keep
 
 
+def _escape_xml_text(value: str) -> str:
+    """Escape protocol delimiters inside argument values.
+
+    A coding tool can legitimately write `</tool_call>` or `</parameter>`
+    inside a file-content argument. The shared parser is regex-based, so a
+    literal delimiter would truncate or corrupt the call. The parser
+    unescapes these three sequences on extraction.
+    """
+    return (
+        value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+
+
 def _tool_value(value) -> str:
-    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if isinstance(value, str):
+        return _escape_xml_text(value)
+    return _escape_xml_text(json.dumps(value, ensure_ascii=False))
 
 
 def _as_call(value) -> tuple | None:
@@ -49,6 +64,31 @@ def _as_call(value) -> tuple | None:
     ):
         return None
     return (name, arguments)
+
+
+def _find_block_end(buffered: str) -> int:
+    """Locate the tool-block terminator that actually ends the block.
+
+    A JSON string argument can legitimately contain a literal `</tool_call>`.
+    The naive first-match search would truncate the block there and drop a
+    valid call. In JSON mode (block opens with `{`), only accept a candidate
+    that parses; otherwise keep buffering. Native XML blocks keep the
+    first-match behavior.
+    """
+    first = buffered.find(TOOL_END)
+    if first < 0:
+        return -1
+    if not buffered.lstrip().startswith("{"):
+        return first
+    position = first
+    while position >= 0:
+        try:
+            json.loads(buffered[:position])
+        except (TypeError, ValueError):
+            position = buffered.find(TOOL_END, position + len(TOOL_END))
+        else:
+            return position
+    return -1
 
 
 def _render_calls(block: str) -> str:
@@ -94,7 +134,7 @@ class ProtocolTranslator:
         output = []
         while self.pending:
             if self.in_tool:
-                end = self.pending.find(TOOL_END)
+                end = _find_block_end(self.pending)
                 if end < 0:
                     break
                 output.append(self._close_tool(self.pending[:end]))
