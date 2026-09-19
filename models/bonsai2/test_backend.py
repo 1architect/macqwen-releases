@@ -416,6 +416,65 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(stats.finish, "length")
         self.assertIn(9998, backend.tape)
 
+    def test_session_round_trips_pending_with_strict_types(self):
+        import json
+
+        backend, _tokenizer = self.backend()
+        with tempfile.TemporaryDirectory() as directory:
+            backend.session_dir = Path(directory)
+            backend.tape = [1, 2, 3]
+            backend.pending = [4]
+            backend.turn_closed = False
+            self.assertTrue(backend.save_session("work").startswith("saved work"))
+            payload_path = Path(directory) / "work.json"
+            payload = json.loads(payload_path.read_text())
+            self.assertEqual(payload["pending"], [4])
+            self.assertEqual(payload["schema"], 1)
+            backend.reset()
+            self.assertTrue(backend.load_session("work").startswith("loaded work"))
+            self.assertEqual(backend.tape, [1, 2, 3])
+            self.assertEqual(backend.pending, [4])
+
+    def test_session_rejects_coerced_types_and_unknown_schema(self):
+        import json
+
+        backend, _tokenizer = self.backend()
+        with tempfile.TemporaryDirectory() as directory:
+            backend.session_dir = Path(directory)
+            backend.tape = [1, 2, 3]
+            self.assertTrue(backend.save_session("work").startswith("saved work"))
+            payload_path = Path(directory) / "work.json"
+            payload = json.loads(payload_path.read_text())
+
+            payload["tape"] = [1, True, 3]
+            payload_path.write_text(json.dumps(payload))
+            self.assertIn("could not load", backend.load_session("work"))
+            payload["tape"] = [1, "3", 2]
+            payload_path.write_text(json.dumps(payload))
+            self.assertIn("could not load", backend.load_session("work"))
+            payload["tape"] = [1, 2, 3]
+            payload["turn_closed"] = "false"
+            payload_path.write_text(json.dumps(payload))
+            self.assertIn("could not load", backend.load_session("work"))
+            payload["turn_closed"] = False
+            payload["schema"] = 999
+            payload_path.write_text(json.dumps(payload))
+            self.assertIn("could not load", backend.load_session("work"))
+
+    def test_cache_recognition_uses_real_classes_from_both_stacks(self):
+        from mlx_lm.models.cache import (
+            ArraysCache as LmArrays,
+            KVCache as LmKv,
+        )
+        from mlx_vlm.models.cache import (
+            ArraysCache as VlmArrays,
+            KVCache as VlmKv,
+        )
+        from models.bonsai2.backend import BonsaiBackend
+
+        BonsaiBackend._validate_cache([VlmArrays(size=2), VlmKv()])
+        BonsaiBackend._validate_cache([LmArrays(size=2), LmKv()])
+
     def test_rotating_cache_is_rejected_on_reset(self):
         backend, _tokenizer = self.backend()
         with patch(

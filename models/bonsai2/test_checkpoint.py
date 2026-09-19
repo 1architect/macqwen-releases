@@ -42,6 +42,32 @@ class CheckpointTests(unittest.TestCase):
                 (expected / "tokenizer.json").unlink()
                 self.assertEqual(installed(), [])
 
+    def test_malformed_shard_names_are_incompatible_not_errors(self):
+        import json
+        import tempfile
+
+        from models.bonsai2.checkpoint import compatible
+
+        for bad_map in (
+            {"weight": "/abs/path.safetensors"},
+            {"weight": "../escape.safetensors"},
+            {"weight": "sub/dir.safetensors"},
+            {"weight": 42},
+            {"weight": ".hidden.safetensors"},
+        ):
+            with self.subTest(bad_map=bad_map):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    (root / "config.json").write_text(json.dumps({
+                        "model_type": "prism_hadamard_qwen35",
+                    }))
+                    (root / "tokenizer.json").touch()
+                    (root / "tokenizer_config.json").touch()
+                    (root / "model.safetensors.index.json").write_text(
+                        json.dumps({"weight_map": bad_map})
+                    )
+                    self.assertFalse(compatible(root))
+
     def test_runtime_requires_both_entry_points_and_packed(self):
         import tempfile
 

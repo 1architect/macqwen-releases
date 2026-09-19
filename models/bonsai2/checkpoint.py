@@ -41,6 +41,19 @@ def runtime_available(path: Path) -> bool:
         return False
 
 
+def _sane_shard_name(value) -> bool:
+    """Accept only plain shard filenames from an index weight map."""
+    return (
+        isinstance(value, str)
+        and value.endswith(".safetensors")
+        and "/" not in value
+        and "\\" not in value
+        and value not in (".", "..")
+        and not value.startswith(".")
+        and not Path(value).is_absolute()
+    )
+
+
 def compatible(path: Path) -> bool:
     config = _json(path / "config.json")
     if config.get("model_type") != "prism_hadamard_qwen35":
@@ -55,7 +68,11 @@ def compatible(path: Path) -> bool:
     weight_map = index.get("weight_map")
     if isinstance(weight_map, dict) and weight_map:
         shards = set(weight_map.values())
-        if not shards or not all((path / shard).is_file() for shard in shards):
+        if (
+            not shards
+            or not all(_sane_shard_name(shard) for shard in shards)
+            or not all((path / shard).is_file() for shard in shards)
+        ):
             return False
     elif not (path / "model.safetensors").is_file():
         return False

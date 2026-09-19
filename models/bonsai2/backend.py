@@ -35,6 +35,21 @@ THINK_FIELDS = {
     "xhigh": "think",
 }
 _SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+SESSION_SCHEMA = 1
+
+
+def _config_identity(model_path: str) -> str | None:
+    """Identify the checkpoint config without loading weights."""
+    import hashlib
+
+    try:
+        digest = hashlib.sha256()
+        with open(Path(model_path).expanduser() / "config.json", "rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 @contextmanager
@@ -458,12 +473,29 @@ class BonsaiBackend(Conversation):
 
     @staticmethod
     def _validate_cache(cache) -> None:
-        kinds = {type(item).__name__ for item in cache}
-        if not kinds <= {"ArraysCache", "KVCache", "QuantizedKVCache"}:
+        from mlx_lm.models.cache import ArraysCache as LmArrays
+        from mlx_lm.models.cache import KVCache as LmKv
+        from mlx_lm.models.cache import QuantizedKVCache as LmQuant
+
+        try:
+            from mlx_vlm.models.cache import ArraysCache as VlmArrays
+            from mlx_vlm.models.cache import KVCache as VlmKv
+        except ImportError:
+            VlmArrays = VlmKv = None
+        recognized = (LmArrays, LmKv, LmQuant) + tuple(
+            cls for cls in (VlmArrays, VlmKv) if cls is not None
+        )
+        kinds = {type(item) for item in cache}
+        if not kinds <= set(recognized):
             raise TypeError(
                 "Bonsai-2 requires ArraysCache/KVCache objects"
             )
-        if kinds and "KVCache" not in kinds and "QuantizedKVCache" not in kinds:
+        full_attention = (LmKv, LmQuant) + (
+            (VlmKv,) if VlmKv is not None else ()
+        )
+        if kinds and not any(
+            issubclass(kind, full_attention) for kind in kinds
+        ):
             raise TypeError("Bonsai-2 requires full-attention KVCache layers")
 
     def check_invariant(self) -> bool:
@@ -731,8 +763,11 @@ class BonsaiBackend(Conversation):
             path = self._session_path(name)
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             payload = json.dumps({
+                "schema": SESSION_SCHEMA,
                 "model_path": self.model_path,
+                "config_sha256": _config_identity(self.model_path),
                 "tape": self.tape,
+                "pending": self.pending,
                 "turn_closed": self.turn_closed,
                 "thinking": self.thinking_enabled,
                 "thinking_tag": self._thinking_tag,
@@ -753,22 +788,51 @@ class BonsaiBackend(Conversation):
         return f"saved {name}  {len(self.tape)} tokens"
 
     def load_session(self, name: str) -> str:
+        def valid_tokens(values) -> list[int] | None:
+            if not isinstance(values, list):
+                return None
+            clean = []
+            for value in values:
+                if not isinstance(value, int) or isinstance(value, bool):
+                    return None
+                clean.append(value)
+            return clean
+
+        def valid_flag(value) -> bool | None:
+            return value if isinstance(value, bool) else None
+
         try:
             payload = json.loads(self._session_path(name).read_text())
+            if payload.get("schema") != SESSION_SCHEMA:
+                raise ValueError("session schema is not supported here")
             if payload.get("model_path") != self.model_path:
                 raise ValueError("session belongs to another checkpoint")
-            tape = payload.get("tape")
-            if not isinstance(tape, list):
+            expected_config = _config_identity(self.model_path)
+            if (
+                expected_config is not None
+                and payload.get("config_sha256") != expected_config
+            ):
+                raise ValueError("session checkpoint config changed")
+            tape = valid_tokens(payload.get("tape"))
+            if tape is None:
                 raise ValueError("session token tape is invalid")
+            pending = valid_tokens(payload.get("pending", []))
+            if pending is None:
+                raise ValueError("session pending tokens are invalid")
             tag = payload.get("thinking_tag", THINK_TAGS["medium"])
-            if tag not in THINK_TAGS.values():
+            if not isinstance(tag, str) or tag not in THINK_TAGS.values():
                 raise ValueError("session thinking tag is invalid")
+            turn_closed = valid_flag(payload.get("turn_closed", True))
+            thinking = valid_flag(payload.get("thinking", False))
+            if turn_closed is None or thinking is None:
+                raise ValueError("session flags are invalid")
             self.reset()
-            self.tape = [int(value) for value in tape]
-            self.turn_closed = bool(payload.get("turn_closed", True))
-            self.thinking_enabled = bool(payload.get("thinking", False))
+            self.tape = tape
+            self.pending = pending
+            self.turn_closed = turn_closed
+            self.thinking_enabled = thinking
             self._thinking_tag = tag
-            self._replay_needed = bool(self.tape)
+            self._replay_needed = bool(self.tape or self.pending)
         except (OSError, TypeError, ValueError) as exc:
             return f"could not load session: {exc}"
         return f"loaded {name}  {len(self.tape)} tokens; cache will replay once"
