@@ -92,10 +92,18 @@ class Conversation:
     def _separator(self) -> str:
         """Newline separating the transcript from the next turn, if needed.
 
-        Turns join as `<|im_end|>\\n<|im_start|>`: exactly one newline. The
-        tape can already end with one when generation emitted trailing
-        newlines, so blindly adding another diverges from the template.
+        The template ends every message with `<|im_end|>\\n`, so a turn
+        join is always `<|im_end|>\\n<|im_start|>`: exactly one newline.
+        When this side appends the close itself (truncated turn), the
+        newline is unconditional: trailing newlines in the generated text
+        belong to the message content, not to the turn join, and skipping
+        it diverges from the template. When the turn already closed, the
+        tape ends with the `<|im_end|>` token and the newline is still
+        needed; only an empty transcript or a tape that somehow already
+        ends with a newline skips it.
         """
+        if not self.turn_closed:
+            return "\n"
         tail = self.pending or self.tape
         if not tail:
             return ""

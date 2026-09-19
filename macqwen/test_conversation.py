@@ -19,6 +19,9 @@ class FakeTokenizer:
             parts.insert(0, f"<tools>{len(tools)}</tools>")
         return "\n".join(parts)
 
+    def decode(self, ids):
+        return "".join(chr(c) for c in ids)
+
 
 class ConversationTests(unittest.TestCase):
     def setUp(self):
@@ -50,6 +53,30 @@ class ConversationTests(unittest.TestCase):
         self.chat.append_user("next")
         text = "".join(chr(c) for c in self.chat.pending)
         self.assertFalse(text.startswith(IM_END))
+
+    def test_truncated_turn_keeps_template_join_after_trailing_newlines(self):
+        # The template ends every message with `<|im_end|>\n`. Trailing
+        # newlines in generated text belong to the content, so the join
+        # still needs exactly one newline after the close we append.
+        self.chat.append_text("answer 56\n\n")
+        self.chat.turn_closed = False
+        self.chat.append_user("next")
+        text = "".join(chr(c) for c in self.chat.pending)
+        self.assertIn(f"{IM_END}\n{IM_START}user\nnext", text)
+
+    def test_closed_turn_joins_with_single_newline(self):
+        self.chat.append_text(f"answer 56{IM_END}")
+        self.chat.turn_closed = True
+        self.chat.append_user("next")
+        text = "".join(chr(c) for c in self.chat.pending)
+        self.assertIn(f"{IM_END}\n{IM_START}user\nnext", text)
+
+    def test_tool_results_keep_template_join_after_trailing_newlines(self):
+        self.chat.append_text("answer 56\n")
+        self.chat.turn_closed = False
+        self.chat.append_tool_results(["done"])
+        text = "".join(chr(c) for c in self.chat.pending)
+        self.assertIn(f"{IM_END}\n{IM_START}user", text)
 
     def test_tool_results_are_framed_one_block_each(self):
         self.chat.append_tool_results(["first", "second"])
