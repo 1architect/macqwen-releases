@@ -25,13 +25,11 @@ from .settings import SESSION_DIR
 IM_START = "<|im_start|>"
 IM_END = "<|im_end|>"
 THINK_TAGS = {
-    "high": "think",
     "medium": "think",
     "low": "think",
     "xhigh": "think",
 }
 THINK_FIELDS = {
-    "high": "think",
     "medium": "think",
     "low": "think",
     "xhigh": "think",
@@ -297,13 +295,9 @@ class BonsaiTokenizer:
 
     def _normalize_effort(self, messages, effort: str):
         messages = [dict(message) for message in messages]
-        # The model card marks `low` unsupported (behaves close to `xhigh`);
-        # keep `xhigh` native and fold `low` to `medium`. MACQWEN `high` is
-        # project-specific, so map it to the native `xhigh` level.
-        if effort == "low":
-            effort = "medium"
-        elif effort == "high":
-            effort = "xhigh"
+        # No Bonsai-specific reinterpretation: the shared policy resolves
+        # MACQWEN levels before this point, and the template natively
+        # supports xhigh, medium, and low. Unknown levels fail closed.
         if effort not in THINK_TAGS:
             raise ValueError(f"unsupported Bonsai-2 reasoning effort: {effort}")
         thinking_fields = {
@@ -386,20 +380,24 @@ class BonsaiBackend(Conversation):
                 sys.path.insert(0, str(candidate))
         import vision_artifact  # noqa: F401 (proves the bundled runtime loads)
 
+        from .ternary_kernel import (
+            install_packed_hook,
+            install_share_hook,
+            restore_runtime_hooks,
+        )
+
         if fused_fwht:
             os.environ["BONSAI2_FUSED_FWHT"] = "1"
-            from .ternary_kernel import install_packed_hook
-
-            install_packed_hook()
+            install_packed_hook(path)
         if share_fwht:
             os.environ["BONSAI2_SHARE_FWHT"] = "1"
+        if not fused_fwht and not share_fwht:
+            restore_runtime_hooks(path)
         vl_model, _pack_config = _load_text_model(path)
         model = vl_model.language_model
         if share_fwht:
-            from .ternary_kernel import install_share_hook
-
             _verify_shared_signs(model)
-            install_share_hook()
+            install_share_hook(path)
         with _transformers_import_environment():
             from transformers import AutoTokenizer
 
@@ -438,6 +436,7 @@ class BonsaiBackend(Conversation):
         self.reasoning_effort = "medium"
         self.think_budget = 0
         self.answer_budget = 0
+        self._interactive_budgets = None
         self.sampling = Sampling.greedy_settings()
         self._thinking_tag = THINK_TAGS["medium"]
         self._replay_needed = False
@@ -554,6 +553,32 @@ class BonsaiBackend(Conversation):
         stop_seen = False
         interrupted = False
         cleaned = False
+        answer_limited = False
+
+        interactive_budgets = getattr(self, "_interactive_budgets", None)
+        budget_answer = budget_think = 0
+        close_token = None
+        if interactive_budgets is not None:
+            budget_answer, budget_think = interactive_budgets
+            budget_answer = max(0, int(budget_answer))
+            budget_think = (
+                None if budget_think is None else max(0, int(budget_think))
+            )
+            if self.thinking_enabled and budget_think is not None:
+                close_ids = self.encode("</think>")
+                if len(close_ids) != 1:
+                    raise ValueError(
+                        "interactive reasoning closure must encode as one token"
+                    )
+                close_token = int(close_ids[0])
+        separate_budgets = (
+            interactive_budgets is not None
+            and self.thinking_enabled
+            and budget_think is not None
+            and budget_think > 0
+        )
+        phase = "thinking" if self.thinking_enabled else "answer"
+        thinking_count = answer_count = 0
 
         cache_limit = _cache_limit(mx, self.allocator_cache_mb)
 
@@ -584,6 +609,11 @@ class BonsaiBackend(Conversation):
                         try:
                             for token, _logprobs in steps:
                                 value = int(token)
+                                force_close = (
+                                    separate_budgets
+                                    and phase == "thinking"
+                                    and thinking_count == budget_think - 1
+                                )
                                 if value in self.stops:
                                     stop_seen = True
                                     finish = "stop"
@@ -606,11 +636,31 @@ class BonsaiBackend(Conversation):
                                     else:
                                         self.turn_closed = False
                                     break
+                                if force_close:
+                                    value = close_token
+                                if (
+                                    separate_budgets
+                                    and phase == "answer"
+                                    and answer_count >= budget_answer
+                                ):
+                                    answer_limited = True
+                                    finish = "length"
+                                    self.turn_closed = False
+                                    break
                                 self.tape.append(value)
                                 produced.append(value)
                                 sampler.observe(value)
                                 raw = stream_decode(self.tokenizer, partial, value)
                                 piece = protocol.feed(raw) if raw else ""
+                                if separate_budgets:
+                                    if phase == "thinking":
+                                        thinking_count += 1
+                                    else:
+                                        answer_count += 1
+                                    if phase == "thinking" and (
+                                        force_close or "</think>" in piece
+                                    ):
+                                        phase = "answer"
                                 if on_decode_token is not None:
                                     on_decode_token(value, piece)
                                 if piece:

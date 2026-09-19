@@ -18,6 +18,8 @@ class FakeTokenizer:
 
     def encode(self, text, add_special_tokens=False):
         del add_special_tokens
+        if text == "</think>":
+            return [9998]
         return [ord(character) for character in text]
 
     def decode(self, ids):
@@ -75,13 +77,22 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(tokenizer.options["reasoning_effort"], "xhigh")
         self.assertEqual(tokenizer.options["tool_call_format"], "json")
 
-    def test_low_effort_folds_to_medium(self):
+    def test_low_effort_reaches_the_native_template(self):
         backend, tokenizer = self.backend()
         backend.open_conversation(
             "system", "user", tools=[], enable_thinking=True,
             reasoning_effort="low",
         )
-        self.assertEqual(tokenizer.options["reasoning_effort"], "medium")
+        self.assertEqual(tokenizer.options["reasoning_effort"], "low")
+
+    def test_unknown_effort_fails_closed(self):
+        backend, _tokenizer = self.backend()
+        with self.assertRaisesRegex(ValueError, "unsupported Bonsai-2"):
+            backend.tokenizer.apply_chat_template(
+                [{"role": "user", "content": "hi"}],
+                add_generation_prompt=True,
+                reasoning_effort="high",
+            )
 
     def test_no_thinking_reaches_the_official_template(self):
         backend, tokenizer = self.backend()
@@ -360,6 +371,50 @@ class BackendTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "linear layer"):
             _validate_packed_record(object(), record, good, signs, 64)
+
+    def test_think_budget_forces_closure_and_answer_budget_caps(self):
+        backend, _tokenizer = self.backend()
+        backend.pending = [10]
+        backend.thinking_enabled = True
+        backend._interactive_budgets = (5, 3)
+        seen = []
+
+        def generate_step(prompt, _model, **options):
+            options["prompt_progress_callback"](len(prompt), len(prompt))
+            index = 0
+            while True:
+                index += 1
+                yield 100 + (index % 800), None
+
+        with patch("mlx_lm.generate.generate_step", generate_step):
+            _text, stats = backend.generate(100)
+
+        # 3 thinking tokens with the last forced to the </think> close,
+        # then 5 answer tokens before the cap stops generation.
+        self.assertEqual(stats.tokens, 8)
+        self.assertEqual(stats.finish, "length")
+        self.assertFalse(backend.turn_closed)
+        self.assertIn(9998, backend.tape)
+
+    def test_answer_budget_caps_after_forced_closure(self):
+        backend, _tokenizer = self.backend()
+        backend.pending = [10]
+        backend.thinking_enabled = True
+        backend._interactive_budgets = (4, 1000)
+
+        def generate_step(prompt, _model, **options):
+            options["prompt_progress_callback"](len(prompt), len(prompt))
+            index = 0
+            while True:
+                index += 1
+                yield 100 + (index % 800), None
+
+        with patch("mlx_lm.generate.generate_step", generate_step):
+            _text, stats = backend.generate(100000)
+
+        self.assertEqual(stats.tokens, 1004)
+        self.assertEqual(stats.finish, "length")
+        self.assertIn(9998, backend.tape)
 
     def test_rotating_cache_is_rejected_on_reset(self):
         backend, _tokenizer = self.backend()
