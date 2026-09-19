@@ -27,8 +27,27 @@ digest rejects the comparison before any speed reading.
 | 12 | Shared transforms screen ([JSONL](20260919-share-fwht-screen.jsonl)) | 51 → 32 | control 8.40, 8.35 vs shared 8.42, 8.41 | ~2–8 | peak 8.6 GB | all `730c92bf` | Screen only; full comparison pending |
 | 13 | Shared transforms short ([JSONL](20260919-share-fwht-short.jsonl), 3 arms) | 3,282 → 32 | control 5.54 vs shared 5.26, 4.68 | 130–172 | — | all `d2004e2ef089` | Incomplete; rerun |
 
-## Cross-engine spot checks (single runs, directional)
+## Paired effects
 
+Decode effect is positive when the candidate is faster; prefill effect is
+positive when the candidate is shorter. Machine noise runs about ±10% on
+decode and wider on prefill; first-arm outliers track page-cache coldness,
+not the candidate.
+
+| Run | Decode effect by round | Prefill effect by round |
+|---|---|---|
+| 3, prefill chunk | 1024: −2.9%, −3.8%; 2048: +3.5%, −0.7% | 1024: −9.9%, +0.0%; 2048: −7.7%, +3.3% |
+| 4, cache step | +1.4% | +31.9% once, confounded cold |
+| 5, allocator cap | −0.1%, −0.4%, −0.5% | +1.5%, −0.2%, +0.3% |
+| 6, wired limit | −0.9%, −0.4%, +5.8% | −0.3%, −1.1%, +11.4% |
+| 7, post-generation clear | −7.3%, +0.2%, +0.3% | −17.6%, −0.1%, +0.3% |
+| 8, fused FWHT | −13.3%, +5.5%, +1.4% | −24.8%, +3.7%, −0.3% |
+| 9, locked 2k | −9.9%, +11.3%, +1.9% | −2.9%, +6.9%, +0.9% |
+| 10, locked 8k | +9.9%, −0.6% | +16.0%, −6.4% |
+| 11, quantized KV 8-bit | −25.6%, −6.7%, +6.8% | −3.9%, +16.6%, +16.9% |
+| 12, shared screen | +0.1%, +0.7% | +77.4% once (cold), +0.9% |
+
+## Cross-engine spot checks (single runs, directional)
 | # | Setup | Prefill | Decode | Note |
 |---|---|---|---|---|
 | 14 | GGUF Prism Metal, 512-prompt | 41.3 tok/s | 7.64 tok/s tg128 | Published methodology; holds only at short prompts |
