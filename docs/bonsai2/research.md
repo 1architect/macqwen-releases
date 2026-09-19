@@ -222,6 +222,30 @@ the boundary race. The prose equality is verified by inspection; the
 trajectory gate stays manual. Other stops and interruptions keep the replay
 recovery path.
 
+## 2026-09-19 — Steps 1-2: sampler-forced closure and answer replay
+
+Post-hoc forced-close substitution corrupted GDN state: generate_step
+consumes each yielded token into cache before yielding the next, so the
+tape recorded </think> while the cache held an unrelated token. The
+answer-budget cutoff had the same shape: break before a stop leaves one
+lookahead token consumed but never taped.
+
+Fix: `_ForcingSampler` wraps the decode sampler and emits the close token
+at the think-budget boundary, so the forced token is genuinely consumed
+and tape matches cache. Phase switch keys on `forced_last` (exact id
+match), keeping natural `</think>` decode-sniffing for model closes.
+`end_thinking()` disarms on natural close. Answer-cap break now marks
+replay.
+
+Narrow documented race: the one-ahead lookahead can sample a stale forced
+close after observing a natural close, doubling </think>. Cache and tape
+stay consistent; one extra close token enters the transcript.
+
+Tests: fakes now route candidates through the passed sampler (mirroring
+generate_step); new `_ForcingSampler` unit tests; answer-cap test asserts
+replay. Full bonsai2 suite 67 tests OK, macqwen 253 OK. Live two-turn
+smoke (`7*8=56` correct, finish stop both turns) on M4.
+
 ## Status: what stays and what does not
 
 Stays on by default: fused FWHT kernel, allocator cap at 256 MB in chat,

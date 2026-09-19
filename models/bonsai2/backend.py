@@ -286,6 +286,49 @@ def _load_text_model(path):
     return model, config
 
 
+class _ForcingSampler:
+    """Emit the reasoning-close token at the think budget boundary.
+
+    generate_step() consumes each yielded token into cache before yielding
+    the next, so substituting a token after the fact corrupts GDN state:
+    the tape would record </think> while the cache holds an unrelated
+    token. Forcing inside the sampler makes the close token genuinely
+    consumed, so tape and cache always agree. One-shot per arming; the
+    backend disarms when the thinking phase ends naturally.
+
+    Narrow race, documented not hidden: the one-ahead lookahead may already
+    have sampled the next token when the backend observes a natural close.
+    That token can be a stale forced close, yielding a doubled </think>.
+    Cache and tape stay consistent regardless; only one extra close token
+    enters the transcript.
+    """
+
+    def __init__(self, sampler, think_budget, close_token):
+        self._sampler = sampler
+        self._remaining = think_budget
+        self._close_token = close_token
+        self.armed = think_budget is not None and think_budget > 0
+        self.forced_last = False
+
+    def __call__(self, logits):
+        import mlx.core as mx
+
+        self.forced_last = False
+        if self.armed:
+            if self._remaining <= 1:
+                self.armed = False
+                self.forced_last = True
+                return mx.array([self._close_token], dtype=mx.uint32)
+            self._remaining -= 1
+        return self._sampler(logits)
+
+    def observe(self, value):
+        self._sampler.observe(value)
+
+    def end_thinking(self):
+        self.armed = False
+
+
 class _TextModelWrapper:
     """Expose the VL language model as a plain logits module.
 
@@ -563,49 +606,6 @@ class BonsaiBackend(Conversation):
         self.pending = []
         self._replay_needed = False
         sampler = Sampler(self.sampling)
-        prefill_began = time.perf_counter()
-        prefill_seconds = 0.0
-        timer = None
-        prefilled = False
-
-        def progress(done, total):
-            nonlocal prefill_seconds, timer, prefilled
-            if on_prefill_progress is not None:
-                on_prefill_progress(done, total)
-            if done >= total and not prefilled:
-                prefilled = True
-                prefill_seconds = time.perf_counter() - prefill_began
-                timer = DecodeTimer()
-                if on_prefilled is not None:
-                    on_prefilled()
-
-        steps = None
-        try:
-            steps = generate_step(
-                mx.array(prompt),
-                self._text_model,
-                max_tokens=max_tokens,
-                sampler=sampler,
-                prompt_cache=self.cache,
-                prefill_step_size=self.prefill_step_size,
-                prompt_progress_callback=progress,
-            )
-        except BaseException:
-            try:
-                mx.synchronize(generation_stream)
-            finally:
-                self._mark_replay_needed()
-            raise
-        produced: list[int] = []
-        pieces: list[str] = []
-        partial: list[int] = []
-        protocol = ProtocolTranslator()
-        finish = "length"
-        stop_seen = False
-        interrupted = False
-        cleaned = False
-        answer_limited = False
-
         interactive_budgets = getattr(self, "_interactive_budgets", None)
         budget_answer = budget_think = 0
         close_token = None
@@ -628,6 +628,54 @@ class BonsaiBackend(Conversation):
             and budget_think is not None
             and budget_think > 0
         )
+        decoding_sampler = (
+            _ForcingSampler(sampler, budget_think, close_token)
+            if separate_budgets
+            else sampler
+        )
+        prefill_began = time.perf_counter()
+        prefill_seconds = 0.0
+        timer = None
+        prefilled = False
+
+        def progress(done, total):
+            nonlocal prefill_seconds, timer, prefilled
+            if on_prefill_progress is not None:
+                on_prefill_progress(done, total)
+            if done >= total and not prefilled:
+                prefilled = True
+                prefill_seconds = time.perf_counter() - prefill_began
+                timer = DecodeTimer()
+                if on_prefilled is not None:
+                    on_prefilled()
+
+        steps = None
+        try:
+            steps = generate_step(
+                mx.array(prompt),
+                self._text_model,
+                max_tokens=max_tokens,
+                sampler=decoding_sampler,
+                prompt_cache=self.cache,
+                prefill_step_size=self.prefill_step_size,
+                prompt_progress_callback=progress,
+            )
+        except BaseException:
+            try:
+                mx.synchronize(generation_stream)
+            finally:
+                self._mark_replay_needed()
+            raise
+        produced: list[int] = []
+        pieces: list[str] = []
+        partial: list[int] = []
+        protocol = ProtocolTranslator()
+        finish = "length"
+        stop_seen = False
+        interrupted = False
+        cleaned = False
+        answer_limited = False
+
         phase = "thinking" if self.thinking_enabled else "answer"
         thinking_count = answer_count = 0
 
@@ -660,11 +708,6 @@ class BonsaiBackend(Conversation):
                         try:
                             for token, _logprobs in steps:
                                 value = int(token)
-                                force_close = (
-                                    separate_budgets
-                                    and phase == "thinking"
-                                    and thinking_count == budget_think - 1
-                                )
                                 if value in self.stops:
                                     stop_seen = True
                                     finish = "stop"
@@ -687,8 +730,6 @@ class BonsaiBackend(Conversation):
                                     else:
                                         self.turn_closed = False
                                     break
-                                if force_close:
-                                    value = close_token
                                 if (
                                     separate_budgets
                                     and phase == "answer"
@@ -708,10 +749,16 @@ class BonsaiBackend(Conversation):
                                         thinking_count += 1
                                     else:
                                         answer_count += 1
+                                    forced = (
+                                        separate_budgets
+                                        and decoding_sampler.forced_last
+                                    )
                                     if phase == "thinking" and (
-                                        force_close or "</think>" in piece
+                                        forced or "</think>" in piece
                                     ):
                                         phase = "answer"
+                                        if separate_budgets:
+                                            decoding_sampler.end_thinking()
                                 if on_decode_token is not None:
                                     on_decode_token(value, piece)
                                 if piece:
@@ -749,6 +796,11 @@ class BonsaiBackend(Conversation):
                     # cache and replay the tape instead. A retained
                     # <|im_end|> close leaves turn_closed true and skips
                     # this path with the live cache intact.
+                    self._mark_replay_needed()
+                if answer_limited:
+                    # The answer cap breaks before a stop, so the one-ahead
+                    # lookahead already consumed one unconsumed-to-tape
+                    # token into cache. Replay the tape next turn.
                     self._mark_replay_needed()
             finally:
                 if interrupted:

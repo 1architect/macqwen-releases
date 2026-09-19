@@ -380,11 +380,21 @@ class BackendTests(unittest.TestCase):
         seen = []
 
         def generate_step(prompt, _model, **options):
+            # Route each candidate through the passed sampler, mirroring
+            # generate_step: the backend forces closure inside the sampler,
+            # so a fake that ignores it never observes the close token.
+            import mlx.core as mx
+
             options["prompt_progress_callback"](len(prompt), len(prompt))
+            sampler = options["sampler"]
             index = 0
             while True:
                 index += 1
-                yield 100 + (index % 800), None
+                candidate = 100 + (index % 800)
+                logits = mx.where(
+                    mx.arange(1000) == candidate, 1.0, 0.0
+                )
+                yield sampler(logits), None
 
         with patch("mlx_lm.generate.generate_step", generate_step):
             _text, stats = backend.generate(100)
@@ -395,6 +405,8 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(stats.finish, "length")
         self.assertFalse(backend.turn_closed)
         self.assertIn(9998, backend.tape)
+        # The answer cap breaks mid-stream, so the next turn replays.
+        self.assertTrue(backend._replay_needed)
 
     def test_answer_budget_caps_after_forced_closure(self):
         backend, _tokenizer = self.backend()
@@ -403,11 +415,18 @@ class BackendTests(unittest.TestCase):
         backend._interactive_budgets = (4, 1000)
 
         def generate_step(prompt, _model, **options):
+            import mlx.core as mx
+
             options["prompt_progress_callback"](len(prompt), len(prompt))
+            sampler = options["sampler"]
             index = 0
             while True:
                 index += 1
-                yield 100 + (index % 800), None
+                candidate = 100 + (index % 800)
+                logits = mx.where(
+                    mx.arange(1000) == candidate, 1.0, 0.0
+                )
+                yield sampler(logits), None
 
         with patch("mlx_lm.generate.generate_step", generate_step):
             _text, stats = backend.generate(100000)
@@ -415,6 +434,43 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(stats.tokens, 1004)
         self.assertEqual(stats.finish, "length")
         self.assertIn(9998, backend.tape)
+
+    def test_forcing_sampler_emits_close_at_budget_then_disarms(self):
+        import mlx.core as mx
+
+        from models.bonsai2.backend import _ForcingSampler
+
+        inner = lambda logits: mx.argmax(logits.reshape(-1), axis=-1).reshape(1)
+        sampler = _ForcingSampler(inner, 3, 9998)
+        peak = lambda want: mx.where(mx.arange(1000) == want, 1.0, 0.0)
+
+        self.assertEqual(int(sampler(peak(101))), 101)
+        self.assertFalse(sampler.forced_last)
+        self.assertEqual(int(sampler(peak(102))), 102)
+        self.assertFalse(sampler.forced_last)
+        # Budget boundary: the close token comes out of the sampler, so
+        # generate_step consumes it into cache instead of a substituted id.
+        self.assertEqual(int(sampler(peak(103))), 9998)
+        self.assertTrue(sampler.forced_last)
+        # One-shot: later calls pass through to the inner sampler.
+        self.assertFalse(sampler.armed)
+        self.assertEqual(int(sampler(peak(104))), 104)
+        self.assertFalse(sampler.forced_last)
+
+    def test_forcing_sampler_disarms_on_natural_close(self):
+        import mlx.core as mx
+
+        from models.bonsai2.backend import _ForcingSampler
+
+        inner = lambda logits: mx.argmax(logits.reshape(-1), axis=-1).reshape(1)
+        sampler = _ForcingSampler(inner, 1000, 9998)
+        peak = lambda want: mx.where(mx.arange(1000) == want, 1.0, 0.0)
+
+        self.assertEqual(int(sampler(peak(101))), 101)
+        sampler.end_thinking()
+        self.assertFalse(sampler.armed)
+        self.assertEqual(int(sampler(peak(102))), 102)
+        self.assertFalse(sampler.forced_last)
 
     def test_session_round_trips_pending_with_strict_types(self):
         import json
