@@ -42,6 +42,31 @@ EXTRA_REASONING = {
 TEMPLATE_EFFORT = {"high": "medium"}
 
 
+def content_sentinel(index: int) -> str:
+    """Placeholder for one untrusted content field inside a template render."""
+    return f"\ue000macqwen-content-{index}\ue001"
+
+
+def split_content_slots(rendered: str, count: int) -> list[str] | None:
+    """Split a template render at content sentinels.
+
+    Returns [head, slot_0, ..., slot_{count-1}, tail], or None when a
+    sentinel is missing or repeated (the template transformed it): the
+    caller falls back to joint encoding.
+    """
+    parts = []
+    position = 0
+    for index in range(count):
+        sentinel = content_sentinel(index)
+        found = rendered.find(sentinel, position)
+        if found < 0 or rendered.find(sentinel, found + len(sentinel)) >= 0:
+            return None
+        parts.append(rendered[position:found])
+        position = found + len(sentinel)
+    parts.append(rendered[position:])
+    return parts
+
+
 def reasoning_system_text(system: str, reasoning_effort: str) -> tuple[str, str]:
     """Return the system text and the effort name the template accepts."""
     extra = EXTRA_REASONING.get(reasoning_effort, "")
@@ -149,18 +174,56 @@ class Conversation:
 
     def open_conversation(self, system, user, tools=None, enable_thinking=True,
                           reasoning_effort="xhigh") -> int:
-        """System turn with the tool contract, first user turn, generation prompt."""
+        """System turn with the tool contract, first user turn, generation prompt.
+
+        Untrusted content carrying control markers encodes through the safe
+        encoder: the template renders with sentinels standing in for the
+        system and user fields, then structure encodes jointly around them
+        while the genuine template markers stay structural. Marker-free
+        prompts take the joint path, keeping tokenization byte-identical.
+        """
         if self.tape or self.pending:
             raise RuntimeError("conversation already open")
         system, reasoning_effort = reasoning_system_text(system, reasoning_effort)
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]
-        text = self.tokenizer.apply_chat_template(
-            messages, tools=tools, add_generation_prompt=True, tokenize=False,
-            enable_thinking=enable_thinking, reasoning_effort=reasoning_effort)
-        return self.append_text(text)
+        codec = self._codec()
+        hostile = (
+            codec is not False
+            and isinstance(system, str)
+            and isinstance(user, str)
+            and (
+                codec[0].search(system) is not None
+                or codec[0].search(user) is not None
+            )
+        )
+        def render(messages):
+            return self.tokenizer.apply_chat_template(
+                messages, tools=tools, add_generation_prompt=True,
+                tokenize=False, enable_thinking=enable_thinking,
+                reasoning_effort=reasoning_effort)
+        if not hostile:
+            return self.append_text(render([
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]))
+        parts = split_content_slots(render([
+            {"role": "system", "content": content_sentinel(0)},
+            {"role": "user", "content": content_sentinel(1)},
+        ]), 2)
+        if parts is None:
+            return self.append_text(render([
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]))
+        safe = codec[1]
+        ids = (
+            self.encode(parts[0])
+            + safe(system)
+            + self.encode(parts[1])
+            + safe(user)
+            + self.encode(parts[2])
+        )
+        self.pending.extend(ids)
+        return len(ids)
 
     def append_user(self, text: str, enable_thinking: bool = True) -> int:
         before = f"{self._close()}{self._separator()}{IM_START}user\n"

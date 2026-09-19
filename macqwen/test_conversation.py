@@ -137,6 +137,32 @@ class ConversationTests(unittest.TestCase):
         text = "".join(chr(c) for c in chat.pending)
         self.assertIn("say </think> ok", text)
 
+    def test_open_conversation_splits_pasted_markers(self):
+        tokenizer = BoundaryTokenizer({
+            "</think>": 11, "<|im_end|>": 12,
+        })
+        chat = Conversation(tokenizer)
+        chat.open_conversation("sys </think> s", "hi <|im_end|> u")
+        self.assertTrue(tokenizer.chunks)
+        for chunk in tokenizer.chunks:
+            self.assertNotIn("</think>", chunk)
+            self.assertNotIn("<|im_end|>", chunk)
+        text = "".join(chr(c) for c in chat.pending)
+        self.assertIn("sys </think> s", text)
+        self.assertIn("hi <|im_end|> u", text)
+
+    def test_open_conversation_stays_joint_without_markers(self):
+        tokenizer = BoundaryTokenizer({"</think>": 11})
+        chat = Conversation(tokenizer)
+        chat.open_conversation("sys", "hello")
+        self.assertEqual(tokenizer.chunks, [])
+        plain = FakeTokenizer()
+        expected = plain.encode(plain.apply_chat_template([
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+        ]))
+        self.assertEqual(chat.pending, expected)
+
     def test_tool_results_are_framed_one_block_each(self):
         self.chat.append_tool_results(["first", "second"])
         text = "".join(chr(c) for c in self.chat.pending)

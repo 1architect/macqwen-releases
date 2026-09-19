@@ -10,10 +10,18 @@ import time
 import uuid
 from urllib.parse import urlsplit
 
-from macqwen.text import CompletedTextBuffer, ThinkingStreamFilter
+from macqwen.text import (
+    CompletedTextBuffer,
+    ThinkingStreamFilter,
+    build_user_encoder,
+)
 from macqwen.tools import _unescape_argument
+from macqwen.conversation import (
+    content_sentinel,
+    reasoning_system_text,
+    split_content_slots,
+)
 from macqwen.profiles import system_prompt
-from macqwen.conversation import reasoning_system_text
 
 
 MAX_BODY = 16 * 1024 * 1024
@@ -254,7 +262,61 @@ class ModelService:
         self.reused = 0
         self.rebuilt = 0
 
-    def _adopt(self, rendered: str) -> bool:
+    @staticmethod
+    def _substitute_slots(normalized, tokenizer):
+        """Stand sentinels in for marker-carrying user/system content.
+
+        Returns (render_messages, slot_texts). Assistant and tool history
+        is the model's own output, so its genuine thinking structure keeps
+        joint encoding; user and system content is untrusted and splits
+        when it carries control markers. No markers anywhere means no
+        slots, and the prompt renders exactly as before.
+        """
+        try:
+            codec = build_user_encoder(tokenizer)
+        except (AttributeError, TypeError):
+            return normalized, []
+        render_messages, slot_texts = [], []
+        for message in normalized:
+            item = dict(message)
+            content = item.get("content", "")
+            if (
+                isinstance(content, str)
+                and item.get("role") in ("user", "system")
+                and codec[0].search(content) is not None
+            ):
+                item["content"] = content_sentinel(len(slot_texts))
+                slot_texts.append(content)
+            render_messages.append(item)
+        if not slot_texts:
+            return normalized, []
+        return render_messages, slot_texts
+
+    def _adopt_split(self, rendered, slot_texts, tokenizer) -> bool:
+        """Adopt a sentinel render with content-safe slot encoding.
+
+        Returns False when the template transformed a sentinel or the
+        backend cannot encode structurally: the caller adopts jointly.
+        """
+        try:
+            codec = build_user_encoder(tokenizer)
+        except (AttributeError, TypeError):
+            return False
+        encode = getattr(self.session.backend, "encode", None)
+        if encode is None:
+            return False
+        parts = split_content_slots(rendered, len(slot_texts))
+        if parts is None:
+            return False
+        safe = codec[1]
+        ids = list(encode(parts[0]))
+        for content, structural in zip(slot_texts, parts[1:]):
+            ids.extend(safe(content))
+            ids.extend(encode(structural))
+        self._adopt(rendered, ids=ids)
+        return True
+
+    def _adopt(self, rendered: str, ids=None) -> bool:
         """Feed the prompt, keeping the cache when it holds a prefix.
 
         A client resends the whole conversation on every call. When the new
@@ -271,7 +333,8 @@ class ModelService:
             backend.append_text(rendered)
             self.rebuilt += 1
             return False
-        ids = encode(rendered)
+        if ids is None:
+            ids = encode(rendered)
         if not backend.pending and backend.tape:
             shared = common_prefix(ids)
             if shared == len(backend.tape) and shared < len(ids):
@@ -310,15 +373,22 @@ class ModelService:
             )
             normalized[system_index] = dict(normalized[system_index], content=system_text)
             tokenizer = _model_tokenizer(backend)
+            render_messages, slot_texts = self._substitute_slots(
+                normalized, tokenizer
+            )
             rendered = tokenizer.apply_chat_template(
-                normalized,
+                render_messages,
                 tools=_openai_tools(tools) or None,
                 add_generation_prompt=True,
                 tokenize=False,
                 enable_thinking=session.preferences["thinking_enabled"],
                 reasoning_effort=template_effort,
             )
-            self._adopt(rendered)
+            if slot_texts:
+                if not self._adopt_split(rendered, slot_texts, tokenizer):
+                    self._adopt(rendered)
+            else:
+                self._adopt(rendered)
             thinking = ThinkingStreamFilter(
                 session.preferences["thinking_enabled"], False
             )
