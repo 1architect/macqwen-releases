@@ -390,6 +390,7 @@ class BackendTests(unittest.TestCase):
             index = 0
             while True:
                 index += 1
+                seen.append(index)
                 candidate = 100 + (index % 800)
                 logits = mx.where(
                     mx.arange(1000) == candidate, 1.0, 0.0
@@ -405,8 +406,11 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(stats.finish, "length")
         self.assertFalse(backend.turn_closed)
         self.assertIn(9998, backend.tape)
-        # The answer cap breaks mid-stream, so the next turn replays.
-        self.assertTrue(backend._replay_needed)
+        # The cap breaks after accepting its last token: every pulled token
+        # is taped, none is pulled and discarded, so tape and cache agree
+        # and no replay is marked.
+        self.assertEqual(len(seen), stats.tokens)
+        self.assertFalse(backend._replay_needed)
 
     def test_answer_budget_caps_after_forced_closure(self):
         backend, _tokenizer = self.backend()

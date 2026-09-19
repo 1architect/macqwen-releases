@@ -695,6 +695,14 @@ class BonsaiBackend(Conversation):
                     )
                     with residency:
                         try:
+                            # One-ahead invariant: generate_step() feeds each
+                            # yielded token back through the model before
+                            # yielding the next, so every token received here
+                            # is already inside KV and GDN state. This loop
+                            # may accept a token (tape it) or invalidate
+                            # state (replay), but it must never substitute
+                            # or silently discard a yielded token while
+                            # keeping the cache.
                             for token, _logprobs in steps:
                                 value = int(token)
                                 if value in self.stops:
@@ -719,15 +727,6 @@ class BonsaiBackend(Conversation):
                                     else:
                                         self.turn_closed = False
                                     break
-                                if (
-                                    separate_budgets
-                                    and phase == "answer"
-                                    and answer_count >= budget_answer
-                                ):
-                                    answer_limited = True
-                                    finish = "length"
-                                    self.turn_closed = False
-                                    break
                                 self.tape.append(value)
                                 produced.append(value)
                                 sampler.observe(value)
@@ -748,6 +747,21 @@ class BonsaiBackend(Conversation):
                                         phase = "answer"
                                         if separate_budgets:
                                             decoding_sampler.end_thinking()
+                                    if (
+                                        phase == "answer"
+                                        and answer_count >= budget_answer
+                                    ):
+                                        # Break after accepting: this token is
+                                        # already consumed into cache and
+                                        # taped, and the sampled-but-unfed
+                                        # next token is safe to discard. Tape
+                                        # and cache stay aligned, so unlike a
+                                        # mid-stream stop this needs no replay
+                                        # and saves one forward.
+                                        answer_limited = True
+                                        finish = "length"
+                                        self.turn_closed = False
+                                        break
                                 if on_decode_token is not None:
                                     on_decode_token(value, piece)
                                 if piece:
@@ -784,12 +798,9 @@ class BonsaiBackend(Conversation):
                     # them contaminates the next turn, so drop the whole
                     # cache and replay the tape instead. A retained
                     # <|im_end|> close leaves turn_closed true and skips
-                    # this path with the live cache intact.
-                    self._mark_replay_needed()
-                if answer_limited:
-                    # The answer cap breaks before a stop, so the one-ahead
-                    # lookahead already consumed one unconsumed-to-tape
-                    # token into cache. Replay the tape next turn.
+                    # this path with the live cache intact. A capped answer
+                    # breaks after accepting its last token, so tape and
+                    # cache already agree and need no replay here.
                     self._mark_replay_needed()
             finally:
                 if interrupted:
