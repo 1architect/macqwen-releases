@@ -326,6 +326,41 @@ class BackendTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Duplicate tensor"):
                     _load_weight_tensors(path)
 
+    def test_packed_geometry_validation_rejects_bad_records(self):
+        import mlx.core as mx
+        from mlx.nn import Linear
+        from models.bonsai2.backend import _validate_packed_record
+
+        def arrays(rows, width, signs=True):
+            out = [
+                mx.zeros((rows, width // 16), dtype=mx.uint32),
+                mx.ones((rows, width // 128), dtype=mx.float16),
+                mx.zeros((rows, width // 128), dtype=mx.float16),
+            ]
+            sign = mx.ones((width,), dtype=mx.float32) if signs else None
+            return out, sign
+
+        rows, width = 8, 256
+        module = Linear(width, rows)
+        record = {"embedding": False}
+        good, signs = arrays(rows, width)
+        _validate_packed_record(module, record, good, signs, 64)
+
+        bad_shapes, _ = arrays(rows + 8, width)
+        with self.assertRaisesRegex(ValueError, "packed weight"):
+            _validate_packed_record(module, record, bad_shapes, signs, 64)
+
+        _, no_signs = arrays(rows, width, signs=False)
+        with self.assertRaisesRegex(ValueError, "sign vector"):
+            _validate_packed_record(module, record, good, no_signs, 64)
+
+        wrong_kind = dict(record, embedding=True)
+        with self.assertRaisesRegex(ValueError, "kind mismatch"):
+            _validate_packed_record(module, wrong_kind, good, signs, 64)
+
+        with self.assertRaisesRegex(ValueError, "linear layer"):
+            _validate_packed_record(object(), record, good, signs, 64)
+
     def test_rotating_cache_is_rejected_on_reset(self):
         backend, _tokenizer = self.backend()
         with patch(

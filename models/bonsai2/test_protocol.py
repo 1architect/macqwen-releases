@@ -70,6 +70,20 @@ class ProtocolTests(unittest.TestCase):
                     ('list_dir', {}),
                 ])
 
+    def test_truncated_outer_close_still_yields_the_completed_call(self):
+        translator = ProtocolTranslator()
+        text = translator.feed(
+            "<tool_call>\n<function=list_dir>\n<parameter=path>\n.\n</parameter>\n</function>"
+        ) + translator.finish()
+        self.assertEqual(
+            parse_tool_calls(text), [("list_dir", {"path": "."})]
+        )
+
+    def test_truncated_garbage_without_a_function_stays_dropped(self):
+        translator = ProtocolTranslator()
+        text = translator.feed("<tool_call>\nno function here") + translator.finish()
+        self.assertEqual(parse_tool_calls(text), [])
+
     def test_invalid_call_payloads_do_not_produce_partial_calls(self):
         for raw in ('[]', 'null', '42', 'not-json{{{'):
             with self.subTest(raw=raw):

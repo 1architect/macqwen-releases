@@ -97,18 +97,7 @@ class ProtocolTranslator:
                 end = self.pending.find(TOOL_END)
                 if end < 0:
                     break
-                inner = self.pending[:end]
-                rendered = _render_calls(inner)
-                if rendered == "</tool_call>" and inner.strip():
-                    # Not JSON. The native Qwen XML call already matches the
-                    # shared contract, so pass it through instead of eating it.
-                    # The opening tag was already emitted; re-emit only the
-                    # inner markup plus the close. Eating a valid call hides
-                    # the function name from the tool filter and the turn ends
-                    # with no visible answer.
-                    output.append(inner + TOOL_END)
-                else:
-                    output.append(rendered)
+                output.append(self._close_tool(self.pending[:end]))
                 self.pending = self.pending[end + len(TOOL_END):]
                 self.in_tool = False
                 continue
@@ -136,9 +125,29 @@ class ProtocolTranslator:
             break
         return "".join(output)
 
+    @staticmethod
+    def _close_tool(inner: str) -> str:
+        # The opening tag was already emitted; re-emit only the inner
+        # markup plus the close.
+        rendered = _render_calls(inner)
+        if rendered == "</tool_call>" and inner.strip():
+            # Not JSON. The native Qwen XML call already matches the
+            # shared contract, so pass it through instead of eating it.
+            # Eating a valid call hides the function name from the tool
+            # filter and the turn ends with no visible answer.
+            return inner + TOOL_END
+        return rendered
+
     def finish(self) -> str:
         if self.in_tool:
+            payload = self.pending
             self.pending = ""
+            self.in_tool = False
+            if "</function>" in payload:
+                # Generation stopped after a complete native function but
+                # before the outer close. Synthesize the close and let the
+                # canonical path validate it instead of dropping the call.
+                return self._close_tool(payload)
             return ""
         tail = self.pending
         self.pending = ""

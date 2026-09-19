@@ -154,6 +154,45 @@ def _load_weight_tensors(directory: Path) -> dict:
     return merged
 
 
+def _validate_packed_record(original, record, arrays, signs, block) -> None:
+    """Validate packed tensors against the original module geometry.
+
+    Runs before the original module is replaced, so a corrupted pack fails
+    here instead of executing against unchecked shapes.
+    """
+    import mlx.core as mx
+    from mlx.nn import Embedding, Linear
+
+    weight, scales, biases = arrays
+    if not isinstance(original, (Linear, Embedding)):
+        raise ValueError("Packed module target is not a linear layer")
+    if record["embedding"] != isinstance(original, Embedding):
+        raise ValueError("Packed module kind mismatch")
+    rows, width = original.weight.shape
+    if width % 128:
+        raise ValueError("Invalid packed width")
+    if tuple(weight.shape) != (rows, width // 16) or str(weight.dtype) != "mlx.core.uint32":
+        raise ValueError("Invalid packed weight shape or storage dtype")
+    for array in (scales, biases):
+        if tuple(array.shape) != (rows, width // 128):
+            raise ValueError("Invalid packed metadata shape")
+        if str(array.dtype) not in (
+            "mlx.core.float16", "mlx.core.float32", "mlx.core.bfloat16",
+        ):
+            raise ValueError("Invalid affine dtype")
+        if not mx.all(mx.isfinite(array)).item():
+            raise ValueError("Non-finite affine parameters")
+    if block:
+        if width % block:
+            raise ValueError("Transform block does not divide input width")
+        if signs is None or tuple(signs.shape) != (width,):
+            raise ValueError("Invalid sign vector")
+        if not mx.all((signs == 1) | (signs == -1)).item():
+            raise ValueError("Invalid sign values")
+    elif signs is not None:
+        raise ValueError("Unexpected sign vector")
+
+
 def _load_text_model(path):
     """Load the language model without materializing the vision tower.
 
@@ -200,10 +239,8 @@ def _load_text_model(path):
         if block and block not in (512, 1024, 2048, 4096):
             raise ValueError("Unsupported block size")
         signs = weights.get(key + ".signs")
-        if block and signs is None:
-            raise ValueError("Missing sign vector")
-        if signs is not None and not mx.all((signs == 1) | (signs == -1)).item():
-            raise ValueError("Invalid sign values")
+        original = getattr(parent, parts[-1])
+        _validate_packed_record(original, record, arrays, signs, block)
         setattr(parent, parts[-1], Packed(arrays, block, signs, record["embedding"], mx.float16))
 
     text_weights = {
