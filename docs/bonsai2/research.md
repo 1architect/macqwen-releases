@@ -228,12 +228,22 @@ Open: the PLD acceptance probe, the 16k allocator confirmation, and the
 full shared-transform comparison.
 
 ### Runtime ownership (Phase 10 recommendation)
-
 Keep the native MLX backend and import ideas selectively, as done
 throughout this record. Adopting mlx-serve as the engine is rejected on
 evidence: decode ties GGUF at matched context, the prefill gap sits inside
 one kernel family at 2.3 versus 4 TFLOPS, and every portable mlx-serve idea
 either measured small or duplicated landed work.
+
+### PLD acceptance probe (positive signal, not implemented)
+
+Static n-gram analysis on a 256-token greedy code-explanation transcript
+(1,806 prompt tokens) simulates prompt-lookup drafting without running a
+draft model. About 35% of output tokens repeat context n-grams of length 3
+or more, projecting roughly 1.3 to 1.5x effective throughput at block 8.
+Greedy transcript overstates chat acceptance under sampling, and this is
+one transcript. The signal justifies implementing PLD behind a flag with
+acceptance, effective rate, and target-call metrics kept separate from
+base-runtime tables.
 
 ### Text-only materialization (shipped)
 
