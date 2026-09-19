@@ -4,6 +4,7 @@ import os
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import mlx.core as mx
@@ -69,7 +70,31 @@ class FusedFwhtTests(unittest.TestCase):
                         or float(np.abs(actual - expected.astype(np.float32)).max()) <= 0.125
                     )
 
+    def test_oversized_block_and_foreign_dtype_fall_back_to_stock(self):
+        from models.bonsai2 import ternary_kernel as module
+
+        seen = []
+
+        def stock_fn(x, block, signs, inverse=False):
+            seen.append(block)
+            return mx.zeros((1, 2048), dtype=mx.float16)
+
+        module._STOCK_FWHT = stock_fn
+        try:
+            with patch.dict(os.environ, {"BONSAI2_FUSED_FWHT": "1"}):
+                wide = mx.zeros((1, 4096), dtype=mx.float16)
+                signs = mx.zeros((1, 4096), dtype=mx.float32)
+                fused_fwht(wide, signs, 2048)
+                fp32 = mx.zeros((1, 2048), dtype=mx.float32)
+                fused_fwht(fp32, signs, 1024)
+        finally:
+            module._STOCK_FWHT = None
+        # Both fell back instead of compiling an impossible dispatch.
+        self.assertEqual(seen, [2048, 1024])
+
     def test_hook_redirects_forward_transform_and_keeps_inverse_stock(self):
+        import tempfile
+
         calls = []
         fake = types.ModuleType("runtime")
 
@@ -78,22 +103,26 @@ class FusedFwhtTests(unittest.TestCase):
             return x
 
         fake.fwht = stock
-        with patch.dict(sys.modules, {"runtime": fake}):
-            with patch.dict(os.environ, {"BONSAI2_FUSED_FWHT": "1"}):
-                ternary_kernel._STOCK_FWHT = None
-                try:
-                    self.assertTrue(install_packed_hook())
-                    self.assertIs(fake.fwht.__name__, "hooked")
-                    # Odd width falls back to the saved stock implementation.
-                    odd = mx.zeros((1, 100), dtype=mx.float16)
-                    result = fake.fwht(odd, 1024, odd, inverse=False)
-                    self.assertIsInstance(result, mx.array)
-                    result = fake.fwht(odd, 1024, odd, inverse=True)
-                    self.assertIsInstance(result, mx.array)
-                finally:
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory)
+            (checkpoint / "runtime").mkdir()
+            fake.__file__ = str(checkpoint / "runtime" / "runtime.py")
+            with patch.dict(sys.modules, {"runtime": fake}):
+                with patch.dict(os.environ, {"BONSAI2_FUSED_FWHT": "1"}):
                     ternary_kernel._STOCK_FWHT = None
-                    del fake.fwht
-                    del fake._bonsai2_fused
+                    try:
+                        self.assertTrue(install_packed_hook(checkpoint))
+                        self.assertIs(fake.fwht.__name__, "hooked")
+                        # Odd width falls back to the saved stock implementation.
+                        odd = mx.zeros((1, 100), dtype=mx.float16)
+                        result = fake.fwht(odd, 1024, odd, inverse=False)
+                        self.assertIsInstance(result, mx.array)
+                        result = fake.fwht(odd, 1024, odd, inverse=True)
+                        self.assertIsInstance(result, mx.array)
+                    finally:
+                        ternary_kernel._STOCK_FWHT = None
+                        del fake.fwht
+                        del fake._bonsai2_fused
         self.assertEqual(calls, [(1024, False), (1024, True)])
 
     def test_share_hook_reuses_identical_calls(self):
@@ -104,6 +133,8 @@ class FusedFwhtTests(unittest.TestCase):
             install_share_hook,
         )
 
+        import tempfile
+
         calls = []
         fake = types.ModuleType("runtime")
 
@@ -112,10 +143,15 @@ class FusedFwhtTests(unittest.TestCase):
             return ("computed", block)
 
         fake.fwht = stock
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        checkpoint = Path(tmp.name)
+        (checkpoint / "runtime").mkdir()
+        fake.__file__ = str(checkpoint / "runtime" / "runtime.py")
         try:
             with patch.dict(sys.modules, {"runtime": fake}):
                 with patch.dict(os.environ, {"BONSAI2_SHARE_FWHT": "1"}):
-                    self.assertTrue(install_share_hook())
+                    self.assertTrue(install_share_hook(checkpoint))
                     arm_memo()
                     try:
                         x = mx.zeros((1, 2048))
@@ -174,6 +210,46 @@ class FusedFwhtTests(unittest.TestCase):
                 os.environ.pop("BONSAI2_FUSED_FWHT", None)
                 self.assertFalse(install_packed_hook())
                 self.assertFalse(hasattr(fake, "_bonsai2_fused"))
+
+    def test_foreign_runtime_module_refuses_patching(self):
+        import tempfile
+
+        from models.bonsai2.ternary_kernel import restore_runtime_hooks
+
+        fake = types.ModuleType("runtime")
+        fake.fwht = lambda *args, **kwargs: "stock"
+        with tempfile.TemporaryDirectory() as first:
+            with tempfile.TemporaryDirectory() as second:
+                (Path(first) / "runtime").mkdir()
+                fake.__file__ = str(Path(first) / "runtime" / "runtime.py")
+                with patch.dict(sys.modules, {"runtime": fake}):
+                    with patch.dict(os.environ, {"BONSAI2_FUSED_FWHT": "1"}):
+                        with self.assertRaisesRegex(RuntimeError, "foreign runtime"):
+                            install_packed_hook(Path(second))
+                self.assertEqual(fake.fwht.__name__, "<lambda>")
+
+    def test_restore_returns_a_patched_module_to_stock(self):
+        import tempfile
+
+        from models.bonsai2.ternary_kernel import restore_runtime_hooks
+
+        fake = types.ModuleType("runtime")
+
+        def stock(x, block, signs, inverse=False):
+            return "stock"
+
+        fake.fwht = stock
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory)
+            (checkpoint / "runtime").mkdir()
+            fake.__file__ = str(checkpoint / "runtime" / "runtime.py")
+            with patch.dict(sys.modules, {"runtime": fake}):
+                with patch.dict(os.environ, {"BONSAI2_FUSED_FWHT": "1"}):
+                    self.assertTrue(install_packed_hook(checkpoint))
+                    self.assertIs(fake.fwht.__name__, "hooked")
+                    self.assertTrue(restore_runtime_hooks(checkpoint))
+                    self.assertIs(fake.fwht, stock)
+                    self.assertFalse(hasattr(fake, "_bonsai2_fused"))
 
 
 if __name__ == "__main__":

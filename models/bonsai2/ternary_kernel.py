@@ -46,7 +46,9 @@ def _dtype_tag(dtype) -> str:
     name = str(getattr(dtype, "value", dtype))
     if "bfloat16" in name:
         return "bfloat16"
-    return "half"
+    if "float16" in name or name == "half":
+        return "half"
+    return "unsupported:" + name
 
 
 @lru_cache(maxsize=None)
@@ -74,7 +76,73 @@ def fused_fwht_enabled() -> bool:
 
 
 _STOCK_FWHT = None
+_STOCK_OWNER = None
 _MEMO = None
+_ORIGINALS: dict = {}
+
+
+def _tracked_runtime_module(checkpoint_path=None):
+    """Return the checkpoint runtime module, verifying provenance.
+
+    A foreign `runtime` module already in sys.modules (another checkpoint,
+    a test double without a matching file, or anything outside the selected
+    checkpoint directory) refuses patching instead of silently patching the
+    wrong code. Returns None only when no runtime module is loaded at all.
+    """
+    import sys
+    from pathlib import Path
+
+    module = sys.modules.get("runtime")
+    if module is None:
+        return None
+    if checkpoint_path is None:
+        return module
+    anchor = getattr(module, "__file__", "")
+    try:
+        inside = (
+            Path(anchor).resolve().is_relative_to(
+                Path(checkpoint_path).resolve() / "runtime"
+            )
+            if anchor
+            else False
+        )
+    except (OSError, ValueError):
+        inside = False
+    if not inside:
+        raise RuntimeError(
+            "Refusing to patch a foreign runtime module: "
+            f"{anchor!r} is not inside {checkpoint_path}"
+        )
+    return module
+
+
+def restore_runtime_hooks(checkpoint_path=None) -> bool:
+    """Undo transform patches and return the module to stock behavior.
+
+    Clears per-module patch flags and drops saved originals so a later
+    backend constructed without the flags genuinely runs stock code.
+    """
+    import sys
+
+    global _STOCK_FWHT, _STOCK_OWNER
+    module = sys.modules.get("runtime")
+    restored = False
+    if module is not None:
+        saved = _ORIGINALS.pop(id(module), None)
+        if saved is not None:
+            module.fwht = saved
+            restored = True
+        if getattr(module, "_bonsai2_fused", False):
+            delattr(module, "_bonsai2_fused")
+            restored = True
+        if getattr(module, "_bonsai2_shared", False):
+            delattr(module, "_bonsai2_shared")
+            restored = True
+        if _STOCK_OWNER == id(module):
+            _STOCK_FWHT = None
+            _STOCK_OWNER = None
+    disarm_memo()
+    return restored
 
 
 def share_fwht_enabled() -> bool:
@@ -96,23 +164,22 @@ def disarm_memo() -> None:
     _MEMO = None
 
 
-def install_share_hook() -> bool:
+def install_share_hook(checkpoint_path=None) -> bool:
     """Memoize forward transforms across modules sharing one input object.
 
     Same-width modules carry byte-identical sign vectors, so a shared input
     means a shared result. The memo consults whatever transform sits
     underneath (fused kernel when enabled, stock otherwise).
     """
-    import sys
-
     if not share_fwht_enabled():
         return False
-    module = sys.modules.get("runtime")
+    module = _tracked_runtime_module(checkpoint_path)
     if module is None:
         return False
     if getattr(module, "_bonsai2_shared", False):
         return True
     inner = module.fwht
+    _ORIGINALS.setdefault(id(module), inner)
 
     def shared(x, block, signs, inverse=False):
         memo = _MEMO
@@ -134,7 +201,7 @@ def install_share_hook() -> bool:
     return True
 
 
-def install_packed_hook() -> bool:
+def install_packed_hook(checkpoint_path=None) -> bool:
     """Route the checkpoint runtime's forward transform through the kernel.
 
     ``Packed.__call__`` resolves ``fwht`` from its own module globals, so
@@ -142,17 +209,17 @@ def install_packed_hook() -> bool:
     touching checkpoint code. The inverse embedding path keeps the stock
     implementation. Returns whether the hook is active.
     """
-    import sys
-
-    global _STOCK_FWHT
+    global _STOCK_FWHT, _STOCK_OWNER
     if not fused_fwht_enabled():
         return False
-    module = sys.modules.get("runtime")
+    module = _tracked_runtime_module(checkpoint_path)
     if module is None:
         return False
     if getattr(module, "_bonsai2_fused", False):
         return True
     _STOCK_FWHT = module.fwht
+    _STOCK_OWNER = id(module)
+    _ORIGINALS.setdefault(id(module), module.fwht)
 
     def hooked(x, block, signs, inverse=False):
         if inverse:
@@ -168,12 +235,18 @@ def fused_fwht(x, signs, block: int):
     """Apply sign multiply, Hadamard transform, and downcast in one launch.
 
     Falls back to the stock runtime path when the row width is not a
-    multiple of ``block`` or the fused path is disabled.
+    multiple of ``block``, the block exceeds the device threadgroup limit,
+    the activation dtype is not fp16, or the fused path is disabled.
     """
     import mlx.core as mx
 
     width = x.shape[-1]
-    if not fused_fwht_enabled() or width % block != 0:
+    if (
+        not fused_fwht_enabled()
+        or width % block != 0
+        or block > 1024
+        or _dtype_tag(x.dtype) != "half"
+    ):
         if _STOCK_FWHT is not None:
             return _STOCK_FWHT(
                 x.astype(mx.float32), block, signs, inverse=False
