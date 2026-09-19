@@ -762,16 +762,21 @@ class BonsaiBackend(Conversation):
                                         thinking_count += 1
                                     else:
                                         answer_count += 1
-                                    forced = (
-                                        separate_budgets
-                                        and decoding_sampler.forced_last
-                                    )
-                                    if phase == "thinking" and (
-                                        forced or "</think>" in piece
+                                    if (
+                                        phase == "thinking"
+                                        and separate_budgets
+                                        and value == close_token
                                     ):
+                                        # The yielded close token itself ends
+                                        # thinking, forced or natural: it was
+                                        # genuinely consumed, so tape, cache,
+                                        # and phase agree. Sampler-side flags
+                                        # describe the lookahead token already
+                                        # sampled for the next step, never the
+                                        # token yielded here, so they must not
+                                        # drive the phase.
                                         phase = "answer"
-                                        if separate_budgets:
-                                            decoding_sampler.end_thinking()
+                                        decoding_sampler.end_thinking()
                                     if (
                                         phase == "answer"
                                         and answer_count >= budget_answer
@@ -782,11 +787,12 @@ class BonsaiBackend(Conversation):
                                         # next token is safe to discard. Tape
                                         # and cache stay aligned, so unlike a
                                         # mid-stream stop this needs no replay
-                                        # and saves one forward.
+                                        # and saves one forward. The accepted
+                                        # token still emits below so reply,
+                                        # stream, callbacks, and tape agree.
                                         answer_limited = True
                                         finish = "length"
                                         self.turn_closed = False
-                                        break
                                 if on_decode_token is not None:
                                     on_decode_token(value, piece)
                                 if piece:
@@ -794,6 +800,8 @@ class BonsaiBackend(Conversation):
                                     if out is not None:
                                         with timer.emitting():
                                             out(piece)
+                                if answer_limited:
+                                    break
                             else:
                                 self.turn_closed = False
                         except BaseException:

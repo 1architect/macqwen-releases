@@ -380,37 +380,90 @@ class BackendTests(unittest.TestCase):
         seen = []
 
         def generate_step(prompt, _model, **options):
-            # Route each candidate through the passed sampler, mirroring
-            # generate_step: the backend forces closure inside the sampler,
-            # so a fake that ignores it never observes the close token.
+            # Mirror generate_step's one-ahead order: the next token is
+            # sampled before the current one is yielded, so sampler flags
+            # always describe the upcoming token, never the yielded one.
             import mlx.core as mx
 
             options["prompt_progress_callback"](len(prompt), len(prompt))
             sampler = options["sampler"]
             index = 0
-            while True:
+
+            def sample():
+                nonlocal index
                 index += 1
                 seen.append(index)
                 candidate = 100 + (index % 800)
-                logits = mx.where(
-                    mx.arange(1000) == candidate, 1.0, 0.0
+                return sampler(
+                    mx.where(mx.arange(1000) == candidate, 1.0, 0.0)
                 )
-                yield sampler(logits), None
+
+            current = sample()
+            while True:
+                upcoming = sample()
+                yield current, None
+                current = upcoming
 
         with patch("mlx_lm.generate.generate_step", generate_step):
             _text, stats = backend.generate(100)
 
         # 3 thinking tokens with the last forced to the </think> close,
-        # then 5 answer tokens before the cap stops generation.
+        # then 5 answer tokens before the cap stops generation. Because the
+        # double samples one token ahead, the forced close must not shift
+        # the phase early: it still closes thinking, not an answer slot.
         self.assertEqual(stats.tokens, 8)
         self.assertEqual(stats.finish, "length")
         self.assertFalse(backend.turn_closed)
-        self.assertIn(9998, backend.tape)
+        self.assertEqual(
+            backend.tape[-8:], [101, 102, 9998, 104, 105, 106, 107, 108]
+        )
         # The cap breaks after accepting its last token: every pulled token
-        # is taped, none is pulled and discarded, so tape and cache agree
-        # and no replay is marked.
-        self.assertEqual(len(seen), stats.tokens)
+        # is taped, so tape and cache agree and no replay is marked.
+        self.assertEqual(len(seen), stats.tokens + 1)
         self.assertFalse(backend._replay_needed)
+
+    def test_capped_answer_emits_its_last_accepted_token(self):
+        backend, _tokenizer = self.backend()
+        backend.pending = [10]
+        backend.thinking_enabled = True
+        backend._interactive_budgets = (2, 3)
+        decoded = []
+
+        def generate_step(prompt, _model, **options):
+            import mlx.core as mx
+
+            options["prompt_progress_callback"](len(prompt), len(prompt))
+            sampler = options["sampler"]
+            index = 0
+
+            def sample():
+                nonlocal index
+                index += 1
+                candidate = 200 + index
+                return sampler(
+                    mx.where(mx.arange(1000) == candidate, 1.0, 0.0)
+                )
+
+            current = sample()
+            while True:
+                upcoming = sample()
+                yield current, None
+                current = upcoming
+
+        with patch("mlx_lm.generate.generate_step", generate_step):
+            text, stats = backend.generate(
+                100, on_decode_token=lambda value, piece: decoded.append(value)
+            )
+
+        # 3 thinking tokens (last forced shut) + 2 answer tokens.
+        self.assertEqual(stats.tokens, 5)
+        self.assertEqual(stats.finish, "length")
+        last = backend.tape[-1]
+        # Reply, callbacks, and tape agree at the boundary: the last
+        # accepted token is emitted, not dropped.
+        self.assertEqual(decoded[-1], last)
+        self.assertTrue(text.endswith(chr(last)))
+        self.assertEqual(len(decoded), stats.tokens)
 
     def test_answer_budget_caps_after_forced_closure(self):
         backend, _tokenizer = self.backend()
@@ -424,13 +477,20 @@ class BackendTests(unittest.TestCase):
             options["prompt_progress_callback"](len(prompt), len(prompt))
             sampler = options["sampler"]
             index = 0
-            while True:
+
+            def sample():
+                nonlocal index
                 index += 1
                 candidate = 100 + (index % 800)
-                logits = mx.where(
-                    mx.arange(1000) == candidate, 1.0, 0.0
+                return sampler(
+                    mx.where(mx.arange(1000) == candidate, 1.0, 0.0)
                 )
-                yield sampler(logits), None
+
+            current = sample()
+            while True:
+                upcoming = sample()
+                yield current, None
+                current = upcoming
 
         with patch("mlx_lm.generate.generate_step", generate_step):
             _text, stats = backend.generate(100000)
