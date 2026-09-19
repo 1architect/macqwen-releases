@@ -89,6 +89,22 @@ class Conversation:
     def _close(self) -> str:
         return "" if self.turn_closed else IM_END
 
+    def _separator(self) -> str:
+        """Newline separating the transcript from the next turn, if needed.
+
+        Turns join as `<|im_end|>\\n<|im_start|>`: exactly one newline. The
+        tape can already end with one when generation emitted trailing
+        newlines, so blindly adding another diverges from the template.
+        """
+        tail = self.pending or self.tape
+        if not tail:
+            return ""
+        try:
+            ending = self.tokenizer.decode(tail[-2:])
+        except Exception:
+            return "\n"
+        return "" if ending.endswith("\n") else "\n"
+
     @staticmethod
     def _assistant_prefix(enable_thinking: bool = True) -> str:
         if enable_thinking:
@@ -112,7 +128,7 @@ class Conversation:
 
     def append_user(self, text: str, enable_thinking: bool = True) -> int:
         return self.append_text(
-            f"{self._close()}\n{IM_START}user\n{text}{IM_END}\n"
+            f"{self._close()}{self._separator()}{IM_START}user\n{text}{IM_END}\n"
             f"{self._assistant_prefix(enable_thinking)}")
 
     def append_tool_results(self, results, enable_thinking: bool = True) -> int:
@@ -121,7 +137,7 @@ class Conversation:
             f"\n<tool_response>\n{result}\n</tool_response>" for result in results
         )
         return self.append_text(
-            f"{self._close()}\n{IM_START}user{body}{IM_END}\n"
+            f"{self._close()}{self._separator()}{IM_START}user{body}{IM_END}\n"
             f"{self._assistant_prefix(enable_thinking)}")
 
     @property

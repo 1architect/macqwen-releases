@@ -296,16 +296,14 @@ class BonsaiTokenizer:
         text = self._tokenizer.apply_chat_template(
             messages,
             tools=tools,
-            add_generation_prompt=add_generation_prompt and enable_thinking,
+            add_generation_prompt=add_generation_prompt,
             tokenize=False,
+            enable_thinking=enable_thinking,
             reasoning_effort=effort,
             tool_presentation_format="markdown",
             tool_call_format="json",
             **options,
         )
-        if add_generation_prompt and not enable_thinking:
-            tag = self.thinking_tag
-            text += f"{IM_START}assistant\n<{tag}>\n</{tag}>"
         if tokenize:
             return self.encode(text, add_special_tokens=False)
         return text
@@ -416,63 +414,6 @@ class BonsaiBackend(Conversation):
         self._im_end_id = int(end) if end is not None else None
         if end is not None:
             self.stops.add(int(end))
-
-    @staticmethod
-    def _effort(effort: str) -> str:
-        if effort == "low":
-            return "medium"
-        return effort
-
-    def _assistant_prefix(self, enable_thinking: bool) -> str:
-        tag = self._thinking_tag
-        prefix = f"{IM_START}assistant\n<{tag}>\n"
-        return prefix if enable_thinking else f"{prefix}</{tag}>"
-
-    def _select_thinking_tag(self, effort: str) -> None:
-        self._thinking_tag = THINK_TAGS[self._effort(effort)]
-
-    def open_conversation(
-        self,
-        system,
-        user,
-        tools=None,
-        enable_thinking=True,
-        reasoning_effort="high",
-    ) -> int:
-        if self.tape or self.pending:
-            raise RuntimeError("conversation already open")
-        text = self.tokenizer.apply_chat_template(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            tools=tools,
-            add_generation_prompt=True,
-            tokenize=False,
-            enable_thinking=enable_thinking,
-            reasoning_effort=reasoning_effort,
-        )
-        self._thinking_tag = self.tokenizer.thinking_tag
-        return self.append_text(text)
-
-    def append_user(self, text: str, enable_thinking: bool = True) -> int:
-        self._select_thinking_tag(self.reasoning_effort)
-        close = "" if self.turn_closed else IM_END
-        return self.append_text(
-            f"{close}{IM_START}user\n{text}{IM_END}"
-            f"{self._assistant_prefix(enable_thinking)}"
-        )
-
-    def append_tool_results(self, results, enable_thinking: bool | None = None) -> int:
-        if enable_thinking is None:
-            enable_thinking = self.thinking_enabled
-        close = "" if self.turn_closed else IM_END
-        body = "".join(f"{IM_START}tool\n{result}{IM_END}" for result in results)
-        return self.append_text(close + body + self._assistant_prefix(enable_thinking))
-
-    def append_text(self, text: str) -> int:
-        text = text.replace("</think>", f"</{self._thinking_tag}>")
-        return super().append_text(text)
 
     @property
     def cache_tokens(self) -> int:

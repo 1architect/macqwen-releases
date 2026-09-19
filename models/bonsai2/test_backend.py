@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+import os
 import tempfile
 import unittest
 from unittest.mock import call, patch
@@ -82,17 +83,16 @@ class BackendTests(unittest.TestCase):
         )
         self.assertEqual(tokenizer.options["reasoning_effort"], "medium")
 
-    def test_no_thinking_uses_the_matching_think_tag(self):
-        backend, _tokenizer = self.backend()
+    def test_no_thinking_reaches_the_official_template(self):
+        backend, tokenizer = self.backend()
         backend.open_conversation(
             "system", "user", enable_thinking=False,
             reasoning_effort="medium",
         )
-        rendered = "".join(chr(value) for value in backend.pending)
-        self.assertTrue(rendered.endswith(
-            "<|im_start|>assistant\n<think>\n"
-            "</think>"
-        ))
+        # The wrapper must not invent its own assistant suffix: the official
+        # template renders the closed think block, including its newlines.
+        self.assertFalse(tokenizer.options["enable_thinking"])
+        self.assertTrue(tokenizer.options["add_generation_prompt"])
 
     def test_server_history_adds_the_thinking_field_bonsai_requires(self):
         backend, tokenizer = self.backend()
@@ -453,6 +453,115 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(backend.tape, [1, 2, 3])
         self.assertFalse(backend.turn_closed)
         self.assertTrue(backend._replay_needed)
+
+
+CHECKPOINT = Path(os.environ.get(
+    "MACQWEN_MODEL_ROOT", "~/models")).expanduser() / "Ternary-Bonsai-2-27B-mlx-2bit"
+
+
+def _needs_checkpoint(test):
+    return unittest.skipUnless(
+        (CHECKPOINT / "tokenizer.json").is_file(),
+        "needs the local Bonsai-2 checkpoint tokenizer",
+    )(test)
+
+
+class TemplateParityTests(unittest.TestCase):
+    """Incremental construction must equal one-shot official renders."""
+
+    def official(self, messages, generation_prompt=True, **options):
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(CHECKPOINT), fix_mistral_regex=True
+        )
+        text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=generation_prompt,
+            tool_presentation_format="markdown", tool_call_format="json",
+            **options
+        )
+        return tokenizer.encode(text, add_special_tokens=False)
+
+    @_needs_checkpoint
+    def test_second_user_turn_matches(self):
+        from macqwen.conversation import Conversation
+        from transformers import AutoTokenizer
+
+        first = [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "Hi."},
+            {"role": "assistant", "content": "Hello!"},
+        ]
+        options = {"enable_thinking": False, "reasoning_effort": "medium"}
+        backend = BonsaiBackend.__new__(BonsaiBackend)
+        Conversation.__init__(backend, backend_tokenizer_for_test())
+        backend.turn_closed = True
+        backend.append_user("Thanks.", enable_thinking=False)
+        head = self.official(first, generation_prompt=False, **options)
+        full = self.official(
+            first + [{"role": "user", "content": "Thanks."}], **options
+        )
+        self.assertEqual(list(head) + list(backend.pending), list(full))
+
+    @_needs_checkpoint
+    def test_tool_results_match_in_each_count(self):
+        from macqwen.conversation import Conversation
+        from transformers import AutoTokenizer
+
+        for count in (1, 3):
+            with self.subTest(count=count):
+                first = [
+                    {"role": "system", "content": "Be brief."},
+                    {"role": "user", "content": "List it."},
+                    {"role": "assistant", "content": "Here."},
+                ]
+                options = {"enable_thinking": False, "reasoning_effort": "medium"}
+                backend = BonsaiBackend.__new__(BonsaiBackend)
+                Conversation.__init__(backend, backend_tokenizer_for_test())
+                backend.turn_closed = True
+                backend.thinking_enabled = False
+                results = [f"outcome {index}" for index in range(count)]
+                backend.append_tool_results(results, enable_thinking=False)
+                head = self.official(first, generation_prompt=False, **options)
+                body = "".join(
+                    f"\n<tool_response>\n{result}\n</tool_response>"
+                    for result in results
+                )
+                full = self.official(
+                    first + [{"role": "user", "content": body}], **options
+                )
+                self.assertEqual(list(head) + list(backend.pending), list(full))
+
+    @_needs_checkpoint
+    def test_thinking_prefix_matches(self):
+        from macqwen.conversation import Conversation
+        from transformers import AutoTokenizer
+
+        first = [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "Hi."},
+            {"role": "assistant", "content": "Hello!"},
+        ]
+        options = {"enable_thinking": True, "reasoning_effort": "medium"}
+        backend = BonsaiBackend.__new__(BonsaiBackend)
+        Conversation.__init__(backend, backend_tokenizer_for_test())
+        backend.turn_closed = True
+        backend.reasoning_effort = "medium"
+        backend.append_user("More.", enable_thinking=True)
+        head = self.official(first, generation_prompt=False, **options)
+        full = self.official(
+            first + [{"role": "user", "content": "More."}], **options
+        )
+        self.assertEqual(list(head) + list(backend.pending), list(full))
+
+
+def backend_tokenizer_for_test():
+    from models.bonsai2.backend import BonsaiTokenizer
+    from transformers import AutoTokenizer
+
+    return BonsaiTokenizer(
+        AutoTokenizer.from_pretrained(str(CHECKPOINT), fix_mistral_regex=True)
+    )
 
 
 if __name__ == "__main__":
