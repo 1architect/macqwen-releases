@@ -98,6 +98,21 @@ class Stats:
         return self.prompt_tokens / self.prefill_seconds if self.prefill_seconds else 0.0
 
 
+def _quantized_kv_from_environment():
+    """Read the chat-side KV toggle without touching chat code.
+
+    `MACQWEN_BONSAI2_KV=8` selects 8-bit groups of 64, `=4` selects 4-bit.
+    Unset or empty means full-precision caches. Anything else raises
+    instead of silently picking a precision.
+    """
+    raw = (os.environ.get("MACQWEN_BONSAI2_KV") or "").strip()
+    if not raw:
+        return None
+    if raw not in ("4", "8"):
+        raise ValueError("MACQWEN_BONSAI2_KV must be 4 or 8")
+    return (int(raw), 64)
+
+
 def _quantize_kv_caches(cache, bits: int, group_size: int):
     """Replace full-attention caches with quantized versions in place.
 
@@ -428,6 +443,8 @@ class BonsaiBackend(Conversation):
         self._text_model = _TextModelWrapper(model, share=share_fwht)
         self.model_path = str(path)
         self.cache = make_prompt_cache(model)
+        if quantized_kv is None:
+            quantized_kv = _quantized_kv_from_environment()
         self.quantized_kv = (
             (int(quantized_kv[0]), int(quantized_kv[1]))
             if quantized_kv is not None

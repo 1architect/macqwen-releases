@@ -483,6 +483,24 @@ class BackendTests(unittest.TestCase):
         cache = QuantizedKVCache(group_size=64, bits=8)
         BonsaiBackend._validate_cache([cache])
 
+    def test_kv_environment_toggle_maps_and_defers_to_argument(self):
+        import os
+
+        backend, _tokenizer = self.backend()
+        self.assertIsNone(backend.quantized_kv)
+        with patch.dict(os.environ, {"MACQWEN_BONSAI2_KV": "8"}):
+            backend, _tokenizer = self.backend()
+            self.assertEqual(backend.quantized_kv, (8, 64))
+        with patch.dict(os.environ, {"MACQWEN_BONSAI2_KV": "4"}):
+            backend, _tokenizer = self.backend()
+            self.assertEqual(backend.quantized_kv, (4, 64))
+        with patch.dict(os.environ, {"MACQWEN_BONSAI2_KV": "8"}):
+            backend, _tokenizer = self.backend(quantized_kv=(4, 64))
+            self.assertEqual(backend.quantized_kv, (4, 64))
+        with patch.dict(os.environ, {"MACQWEN_BONSAI2_KV": "2"}):
+            with self.assertRaisesRegex(ValueError, "MACQWEN_BONSAI2_KV"):
+                self.backend()
+
     def test_rotating_cache_is_rejected_on_reset(self):
         backend, _tokenizer = self.backend()
         with patch(
