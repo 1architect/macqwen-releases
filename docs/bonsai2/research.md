@@ -295,6 +295,35 @@ token counts), so a restored conversation keeps its reasoning contract
 instead of inheriting a later chat's budgets. Macqwen suite 257 OK.
 Live two-turn smoke after all steps: `17*23=391`, `7*8=56`, both stop.
 
+## 2026-09-19 — Review reconciliation batch
+
+An external re-review checked a stale snapshot and re-raised items already
+fixed on this branch (sampler-forced close, newline join, canonical hook
+composition, native-only protocol, dispatch-level required params). Five
+remaining gaps were valid and are now closed:
+
+- Answer cap breaks after accepting its last token instead of pulling one
+  more and replaying. Saves a forward and a full replay per capped turn;
+  the one-ahead invariant is now a code comment plus a test asserting
+  every pulled token is taped.
+- `append_user` / `append_tool_results` route content through
+  `build_user_encoder`. Marker-free text keeps byte-identical joint
+  encoding; pasted `</think>`, `<|im_end|>`, `</tool_call>` split at
+  marker boundaries and never become control tokens. Verified against the
+  real checkpoint tokenizer: joint encoding emits the `</think>` id, safe
+  encoding does not, decoded text identical.
+- The fused hook captures its own stock module instead of reading the
+  `_STOCK_FWHT` global; hook restore verifies checkpoint provenance like
+  the install path. Both pinned by tests.
+- Session fingerprint hashes `tokenizer.json`,
+  `tokenizer_config.json`, `chat_template.jinja`, and bundled runtime
+  sources in addition to `config.json`. Old sessions mismatch cleanly.
+- Removed the dead `gemv` constructor switch and its no-op bench arm.
+  `gemv_kernel.py` and its tests stay as research artifacts.
+
+Suites: bonsai2 90 OK, macqwen 261 OK, k2 41 OK. Live two-turn smoke:
+`17*23=391`, `7*8=56`, both stop.
+
 ## Status: what stays and what does not
 
 Stays on by default: fused FWHT kernel, allocator cap at 256 MB in chat,
