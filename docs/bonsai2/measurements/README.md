@@ -71,6 +71,15 @@ not the candidate.
 | 24 | ANE single ternary layer | 535 MB package, 6.1 ms vs 4.4 ms Metal, wrong output; line closed |
 | 25 | PLD n-gram acceptance, code transcript | 35% of tokens repeat context at n≥3; implementation deferred |
 
+## Long-context allocator notes
+
+The 16k allocator file ([JSONL](20260919-allocator-16k.jsonl)) holds 3 of 6
+arms: control 4.29 tok/s with pool 2,890 MB against capped 3.82 and
+3.92 tok/s with pool ~270 MB, all digests matching. The capped arms match
+historical 16k levels while the control repeats the fast-first pattern, so
+no regression is established either way. The chat default cap still rests
+on the complete 2k evidence.
+
 ## Decisions and scope
 
 Accepted:

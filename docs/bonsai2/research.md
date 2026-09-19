@@ -367,7 +367,13 @@ SIMD rotation (2.4%), and residual-norm-rotation fusion (under 4%
 combined) are deprioritized. Quantized GEMM at 91% goes first, and the
 41.3 versus 33.4 gap reads as a QMM efficiency gap, not launch overhead.
 
-### Allocator cap at 16k (not run)
+### Allocator cap at 16k (directional, 3 of 6 arms)
+
+Control decodes 4.29 tok/s with a 2,890 MB pool; capped arms decode 3.82
+and 3.92 tok/s with ~270 MB pools and matching digests. The capped arms
+match historical 16k levels while the control arm repeats the fast-first
+pattern, so no regression is established either way. The default still
+rests on the complete 2k evidence.
 
 A first 16k attempt was killed twice by tool timeouts (each 16k arm needs
 15–25 minutes of prefill) and then aborted on request. Its 3 observed arms
