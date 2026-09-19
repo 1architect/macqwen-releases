@@ -12,6 +12,8 @@ out of step with the transcript.
 """
 from __future__ import annotations
 
+from macqwen.text import build_user_encoder
+
 IM_START = "<|im_start|>"
 IM_END = "<|im_end|>"
 
@@ -59,6 +61,32 @@ class Conversation:
         # a turn that stopped before <|im_end|> has to be closed before the
         # next one opens, or the model reads two turns as one
         self.turn_closed = True
+        # (pattern, encode) for untrusted content, built on first use.
+        # False when the tokenizer cannot report added tokens: without the
+        # marker list there is nothing to split on, so content encodes
+        # plainly exactly as before.
+        self._user_codec = None
+
+    def _codec(self):
+        if self._user_codec is None:
+            try:
+                self._user_codec = build_user_encoder(self.tokenizer)
+            except (AttributeError, TypeError):
+                self._user_codec = False
+        return self._user_codec
+
+    def _content_ids(self, text: str) -> list[int] | None:
+        """Token ids for untrusted content, or None for the joint path.
+
+        Marker-free text returns None so the caller encodes it jointly with
+        its framing, keeping tokenization byte-identical. Text carrying
+        control markers encodes through the safe encoder, which splits at
+        marker boundaries so a paste can never become chat structure.
+        """
+        codec = self._codec()
+        if codec is False or codec[0].search(text) is None:
+            return None
+        return codec[1](text)
 
     def encode(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
@@ -135,18 +163,33 @@ class Conversation:
         return self.append_text(text)
 
     def append_user(self, text: str, enable_thinking: bool = True) -> int:
-        return self.append_text(
-            f"{self._close()}{self._separator()}{IM_START}user\n{text}{IM_END}\n"
-            f"{self._assistant_prefix(enable_thinking)}")
+        before = f"{self._close()}{self._separator()}{IM_START}user\n"
+        after = f"{IM_END}\n{self._assistant_prefix(enable_thinking)}"
+        content = self._content_ids(text)
+        if content is None:
+            return self.append_text(before + text + after)
+        ids = self.encode(before) + content + self.encode(after)
+        self.pending.extend(ids)
+        return len(ids)
 
     def append_tool_results(self, results, enable_thinking: bool = True) -> int:
         """Return tool output as a user turn, one block per result."""
-        body = "".join(
-            f"\n<tool_response>\n{result}\n</tool_response>" for result in results
-        )
-        return self.append_text(
-            f"{self._close()}{self._separator()}{IM_START}user{body}{IM_END}\n"
-            f"{self._assistant_prefix(enable_thinking)}")
+        head = f"{self._close()}{self._separator()}{IM_START}user"
+        tail = f"{IM_END}\n{self._assistant_prefix(enable_thinking)}"
+        coded = [self._content_ids(result) for result in results]
+        if all(part is None for part in coded):
+            body = "".join(
+                f"\n<tool_response>\n{result}\n</tool_response>" for result in results
+            )
+            return self.append_text(f"{head}{body}{tail}")
+        ids = self.encode(head)
+        for result, content in zip(results, coded):
+            ids.extend(self.encode("\n<tool_response>\n"))
+            ids.extend(content if content is not None else self.encode(result))
+            ids.extend(self.encode("\n</tool_response>"))
+        ids.extend(self.encode(tail))
+        self.pending.extend(ids)
+        return len(ids)
 
     @property
     def cache_tokens(self) -> int:

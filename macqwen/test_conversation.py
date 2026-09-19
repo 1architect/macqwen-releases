@@ -23,6 +23,27 @@ class FakeTokenizer:
         return "".join(chr(c) for c in ids)
 
 
+class BoundaryTokenizer(FakeTokenizer):
+    """Records the chunks the safe content encoder produces.
+
+    Structural framing still goes through `encode` unrecorded; user and
+    tool content on the safe path goes through `__call__` one chunk at a
+    time, so markers must never appear whole inside a recorded chunk.
+    """
+
+    def __init__(self, markers):
+        from types import SimpleNamespace
+
+        self.added_tokens_decoder = {
+            code: SimpleNamespace(content=text) for text, code in markers.items()
+        }
+        self.chunks = []
+
+    def __call__(self, text, add_special_tokens=False):
+        self.chunks.append(text)
+        return {"input_ids": [ord(c) for c in text]}
+
+
 class ConversationTests(unittest.TestCase):
     def setUp(self):
         self.chat = Conversation(FakeTokenizer())
@@ -77,6 +98,44 @@ class ConversationTests(unittest.TestCase):
         self.chat.append_tool_results(["done"])
         text = "".join(chr(c) for c in self.chat.pending)
         self.assertIn(f"{IM_END}\n{IM_START}user", text)
+
+
+    def test_user_paste_with_markers_splits_at_marker_boundaries(self):
+        tokenizer = BoundaryTokenizer({
+            "</think>": 11, "<|im_end|>": 12, "<tool_call>": 13,
+        })
+        chat = Conversation(tokenizer)
+        chat.append_user("say </think> and <|im_end|> ok")
+        for chunk in tokenizer.chunks:
+            self.assertNotIn("</think>", chunk)
+            self.assertNotIn("<|im_end|>", chunk)
+        self.assertIn("<", tokenizer.chunks)
+        text = "".join(chr(c) for c in chat.pending)
+        self.assertIn("say </think> and <|im_end|> ok", text)
+
+    def test_marker_free_user_text_encodes_jointly(self):
+        tokenizer = BoundaryTokenizer({"</think>": 11})
+        chat = Conversation(tokenizer)
+        chat.append_user("hello")
+        # Joint path uses plain encode, never the chunked safe encoder.
+        self.assertEqual(tokenizer.chunks, [])
+        text = "".join(chr(c) for c in chat.pending)
+        self.assertIn(f"{IM_START}user\nhello{IM_END}", text)
+
+    def test_tool_result_with_markers_splits_at_marker_boundaries(self):
+        tokenizer = BoundaryTokenizer({"</tool_call>": 13})
+        chat = Conversation(tokenizer)
+        chat.append_tool_results(["source = \"</tool_call>\""])
+        for chunk in tokenizer.chunks:
+            self.assertNotIn("</tool_call>", chunk)
+        text = "".join(chr(c) for c in chat.pending)
+        self.assertIn("source = \"</tool_call>\"", text)
+
+    def test_tokenizer_without_added_tokens_encodes_plainly(self):
+        chat = Conversation(FakeTokenizer())
+        chat.append_user("say </think> ok")
+        text = "".join(chr(c) for c in chat.pending)
+        self.assertIn("say </think> ok", text)
 
     def test_tool_results_are_framed_one_block_each(self):
         self.chat.append_tool_results(["first", "second"])
