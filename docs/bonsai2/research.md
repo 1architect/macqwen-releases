@@ -246,12 +246,32 @@ tg128 comparison keeps digest `0c739afabdec` on all arms but measures
 stays as an opt-in diagnostic. Lesson repeated: isolated matmul wins do
 not survive the complete runtime on this hardware.
 
+### Closed gates: D3, D4, D9, D10, D11
+
+- D3 fused single-token GDN: recurrence is 3.6% of the decode token,
+  below the 5% implementation bar in the mission. Closed without building.
+- D4 decode norm plus rotation fusion: launch-only savings against the
+  documented absorption pattern. Closed without building.
+- D9 MTP: no Bonsai-compatible draft weights exist locally. Deferred until
+  exact target performance stabilizes and weights appear.
+- D10 small-M dispatch: no consumer without MTP or PLD. Deferred.
+- D11 sampling fast path: already shipped as the top-k survivor path.
+
 ### Runtime ownership (Phase 10 recommendation)
 Keep the native MLX backend and import ideas selectively, as done
 throughout this record. Adopting mlx-serve as the engine is rejected on
 evidence: decode ties GGUF at matched context, the prefill gap sits inside
 one kernel family at 2.3 versus 4 TFLOPS, and every portable mlx-serve idea
 either measured small or duplicated landed work.
+
+### PLD block simulation (rejected, acceptance near zero)
+
+Static n-gram overlap overstated the opportunity: 35% of output tokens
+repeat context, but block-level simulation over the same transcript shows
+72 proposed drafts with zero first-token hits, projecting 1.00x target
+forwards. The model rarely continues a repeated 4-gram the same way, so
+there is nothing to verify. No implementation. The pure draft utilities in
+`models/bonsai2/pld.py` remain for reuse if a richer draft source appears.
 
 ### PLD acceptance probe (positive signal, not implemented)
 
