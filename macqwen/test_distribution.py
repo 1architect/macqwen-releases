@@ -34,13 +34,17 @@ class DistributionTests(unittest.TestCase):
             },
         )
 
-    def test_ci_and_release_automation_exist(self):
-        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
-        self.assertIn("models/flashnext", workflow)
-        self.assertIn("models/qwen27b", workflow)
-        self.assertIn("models/k2_horizon", workflow)
-        self.assertIn("models/bonsai2", workflow)
-        self.assertIn("gh release create", workflow)
+    def test_ci_and_release_automation_are_separate(self):
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        release = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        self.assertIn("models/flashnext", ci)
+        self.assertIn("models/qwen27b", ci)
+        self.assertIn("models/k2_horizon", ci)
+        self.assertIn("models/bonsai2", ci)
+        self.assertNotIn("gh release create", ci)
+        self.assertIn("tags: ['v*']", release)
+        self.assertIn("needs: test", release)
+        self.assertIn("gh release create", release)
 
 
 if __name__ == "__main__":
