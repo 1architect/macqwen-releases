@@ -1,5 +1,46 @@
 # Changelog
 
+## MACQWEN 0.4.5 - 2026-09-20
+
+### Added
+
+- Promote prepared QMM metadata to the Bonsai-2 default: one-time FP32
+  scales/biases preparation for the 401 non-embedding packed projections
+  (about 763 MB residency). The bounded 1k screen shows decode
+  `+21.07% ±2.24` with matching provenance, complete coverage, and
+  matching greedy digests; prefill is unresolved at `+1.28% ±3.52`.
+  `prepared_qmm_metadata=False` rolls back to the stock path.
+- Add opt-in Bonsai-2 diagnostics with execution-path gates: Q2/G128
+  prefill MPP, fused Q4 attention with tiling controls, and exact
+  speculative-oracle ceiling probes. None is promoted.
+- Add bounded live-test cases for the question-only and context-1k
+  prepared-metadata screens through the project-owned test terminal.
+
+### Changed
+
+- Run every chat turn on one persistent worker thread, so the live
+  cache stays valid across turns with incremental prefill only.
+- Make prefill cancellation responsive across the Flash-Next, Qwen27B,
+  K2-Horizon, and Bonsai-2 runtimes.
+- Cut the agent-profile system prompt from 943 to 450 Bonsai tokens
+  while keeping the api_docs-first rule and the measured environment
+  facts.
+
+### Fixed
+
+- Fix Bonsai-2 provenance self-match: confirmed optional-file absence
+  no longer reports unknown, namespace packages resolve to their root
+  with the real binary fingerprint, and provenance failures increment
+  validation counts, fail the comparison, and return a nonzero exit.
+- Fix the second-turn chat crash (`There is no Stream(gpu, 3) in
+  current thread`) caused by evaluating one thread's cache state on a
+  fresh worker thread.
+
+### Tests
+
+- Pass 169 checkpoint-free Bonsai-2 tests and 303 checkpoint-free
+  shared tests, plus Python bytecode compilation.
+
 ## MACQWEN 0.4.3 - 2026-09-19
 
 ### Added
