@@ -66,6 +66,10 @@ def effective_think_budget(
     checkpoint: str | os.PathLike[str] | None = None,
 ) -> int | None:
     """Cap excessive REAP xhigh reasoning while preserving the effort level."""
+    # An explicit -1 is the user's no-cap setting. Keep the older ``None``
+    # sentinel available for callers that still request a shared total.
+    if requested is not None and requested < 0:
+        return requested
     if not reap_xhigh_guard_active(effort, checkpoint):
         return requested
     cap = _reap_budget_cap()
@@ -83,7 +87,7 @@ def think_budget_status(
     if effective == requested:
         return (
             "think-tokens=unlimited"
-            if requested is None else f"think-tokens={requested}"
+            if requested is None or requested < 0 else f"think-tokens={requested}"
         )
     requested_text = "unlimited" if requested is None else str(requested)
     return f"think-tokens={effective} (requested {requested_text}; REAP xhigh budget cap)"

@@ -19,7 +19,7 @@ class LauncherTests(unittest.TestCase):
                 os.environ,
                 {"MACQWEN_BONSAI2_PYTHON": str(python)},
                 clear=False,
-            ):
+            ), patch("macqwen.cli._supports_python", return_value=True):
                 command, _ = cli.command([
                     "--model", "bonsai2", "--checkpoint", "b2",
                 ])

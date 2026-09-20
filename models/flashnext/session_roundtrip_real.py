@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-token parity test for a saved FlashNext cache on the real model."""
+"""Manual one-token parity check for a saved FlashNext cache."""
 from __future__ import annotations
 
 import argparse

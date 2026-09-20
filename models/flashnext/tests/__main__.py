@@ -1,4 +1,4 @@
-from .terminal import main
+from macqwen.testsuite.terminal import main
 
 
 if __name__ == "__main__":

@@ -20,6 +20,18 @@ def model_root() -> Path:
     return Path(os.environ.get("MACQWEN_MODEL_ROOT", "~/models")).expanduser()
 
 
+def _sane_shard_name(value) -> bool:
+    return (
+        isinstance(value, str)
+        and value.endswith(".safetensors")
+        and "/" not in value
+        and "\\" not in value
+        and value not in (".", "..")
+        and not value.startswith(".")
+        and not Path(value).is_absolute()
+    )
+
+
 def compatible(path: Path) -> bool:
     config = _json(path / "config.json")
     index = _json(path / "model.safetensors.index.json")
@@ -37,7 +49,10 @@ def compatible(path: Path) -> bool:
         or not all((path / name).is_file() for name in required)
     ):
         return False
-    shards = set(weight_map.values())
+    values = list(weight_map.values())
+    if not all(_sane_shard_name(value) for value in values):
+        return False
+    shards = set(values)
     return bool(shards) and all((path / shard).is_file() for shard in shards)
 
 

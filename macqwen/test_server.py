@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import unittest
 
 from macqwen import preferences
-from macqwen.server import ModelService, _parse_tool_calls
+from macqwen.server import ModelService, RequestError, _parse_tool_calls
+from macqwen.conversation import content_sentinel
 
 
 class FakeTokenizer:
@@ -23,12 +24,14 @@ class FakeBackend:
         self.pieces = pieces
         self.pending = []
         self.tape = []
+        self._replay_needed = False
         self.reset_count = 0
 
     def reset(self):
         self.reset_count += 1
         self.pending = []
         self.tape = []
+        self._replay_needed = False
 
     def encode(self, text):
         return [ord(character) for character in text]
@@ -97,6 +100,18 @@ class ModelServiceTests(unittest.TestCase):
         service.complete([{"role": "user", "content": "one"}], [], 10)
         session.backend.tokenizer.rendered = "different prompt"
         service.complete([{"role": "user", "content": "two"}], [], 10)
+        self.assertEqual((service.reused, service.rebuilt), (0, 2))
+        self.assertEqual(session.backend.reset_count, 2)
+
+    def test_invalid_replay_state_rebuilds_even_with_a_matching_prefix(self):
+        session = FakeSession(["hello"])
+        service = ModelService(session)
+        service.complete([{"role": "user", "content": "one"}], [], 10)
+        session.backend.tokenizer.rendered = "rendered prompthelloMORE"
+        session.backend._replay_needed = True
+
+        service.complete([{"role": "user", "content": "two"}], [], 10)
+
         self.assertEqual((service.reused, service.rebuilt), (0, 2))
         self.assertEqual(session.backend.reset_count, 2)
 
@@ -191,6 +206,7 @@ class ModelServiceTests(unittest.TestCase):
         class EchoTokenizer(FakeTokenizer):
             added_tokens_decoder = {
                 1: SimpleNamespace(content="</think>"),
+                2: SimpleNamespace(content="<|im_end|>"),
             }
 
             def __init__(self):
@@ -222,6 +238,91 @@ class ModelServiceTests(unittest.TestCase):
             self.assertNotIn("</think>", chunk)
         tape_text = "".join(chr(c) for c in session.backend.tape)
         self.assertIn("paste </think> verbatim", tape_text)
+
+    def test_tool_history_content_uses_the_safe_encoder(self):
+        from types import SimpleNamespace
+
+        class EchoTokenizer(FakeTokenizer):
+            added_tokens_decoder = {
+                1: SimpleNamespace(content="</think>"),
+                2: SimpleNamespace(content="<|im_end|>"),
+            }
+
+            def __init__(self):
+                super().__init__()
+                self.chunks = []
+
+            def __call__(self, text, add_special_tokens=False):
+                self.chunks.append(text)
+                return {"input_ids": [ord(c) for c in text]}
+
+            def apply_chat_template(self, messages, **options):
+                self.messages = messages
+                self.options = options
+                return "HEAD:" + "|".join(
+                    m.get("content", "") for m in messages
+                ) + ":TAIL"
+
+        content = "file </think> and <|im_end|> bytes"
+        session = FakeSession(["done"])
+        session.backend.tokenizer = EchoTokenizer()
+        ModelService(session).complete(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "call_1", "type": "function", "function": {
+                        "name": "read_file", "arguments": '{"path":"a.txt"}',
+                    },
+                }]},
+                {"role": "tool", "content": content},
+                {"role": "tool", "content": content + " again"},
+            ],
+            [],
+            10,
+        )
+        tokenizer = session.backend.tokenizer
+        self.assertTrue(tokenizer.chunks)
+        self.assertTrue(all(
+            "</think>" not in chunk and "<|im_end|>" not in chunk
+            for chunk in tokenizer.chunks
+        ))
+        tape_text = "".join(chr(c) for c in session.backend.tape)
+        self.assertIn(content, tape_text)
+        self.assertIn(content + " again", tape_text)
+
+    def test_failed_placeholder_split_fails_closed(self):
+        from types import SimpleNamespace
+
+        class BrokenTokenizer(FakeTokenizer):
+            added_tokens_decoder = {1: SimpleNamespace(content="</think>")}
+
+            def __init__(self, mode):
+                super().__init__()
+                self.mode = mode
+
+            def __call__(self, text, add_special_tokens=False):
+                return {"input_ids": [ord(c) for c in text]}
+
+            def apply_chat_template(self, messages, **options):
+                sentinel = content_sentinel(0)
+                if self.mode == "missing":
+                    return "HEAD:missing:TAIL"
+                return f"HEAD:{sentinel}{sentinel}:TAIL"
+
+        for mode in ("missing", "repeated"):
+            with self.subTest(mode=mode):
+                session = FakeSession(["done"])
+                session.backend.tokenizer = BrokenTokenizer(mode)
+                with self.assertRaisesRegex(
+                    RequestError, "safely encode content placeholders"
+                ):
+                    ModelService(session).complete(
+                        [{"role": "tool", "content": "file </think>"}],
+                        [],
+                        10,
+                    )
+                self.assertEqual(session.backend.tape, [])
+                self.assertEqual(session.backend.pending, [])
 
 
 if __name__ == "__main__":

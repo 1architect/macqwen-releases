@@ -6,6 +6,10 @@ from contextlib import contextmanager
 from typing import Any, Callable, Protocol
 
 
+class GenerationCancelled(Exception):
+    """The user stopped one in-flight answer."""
+
+
 class DecodeTimer:
     """Measure model time, not terminal time.
 
@@ -57,6 +61,7 @@ class Backend(Protocol):
         on_prefilled: Callable[[], None] | None = None,
         on_prefill_progress: Callable[[int, int], None] | None = None,
         on_decode_token: Callable[[int, str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> tuple[str, Any]: ...
     def check_invariant(self) -> bool: ...
     def reset(self) -> None: ...

@@ -15,12 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from macqwen.preferences import (
-    DEFAULT_ANSWER_TOKENS,
-    DEFAULT_PLAIN_ANSWER_TOKENS,
-    EFFORT_LEVELS,
-    SCHEMA,
-)
+from macqwen.preferences import EFFORT_LEVELS, SCHEMA
 from macqwen.sampling import THINKING
 from macqwen.ui import token_limit_text
 
@@ -80,15 +75,7 @@ def _max_tokens(session, argument: str) -> str:
             return "usage: /max-tokens N|off"
         prefs["max_tokens"] = limit
     session.save_preferences()
-    shown = token_limit_text(prefs["max_tokens"])
-    if prefs["max_tokens"] < 0:
-        default = (
-            DEFAULT_PLAIN_ANSWER_TOKENS
-            if session.profile == "plain"
-            else DEFAULT_ANSWER_TOKENS
-        )
-        shown = f"default ({default})"
-    return f"max answer tokens: {shown}"
+    return f"max answer tokens: {token_limit_text(prefs['max_tokens'])}"
 
 
 def _think_budget(session, argument: str) -> str:

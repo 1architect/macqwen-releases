@@ -220,12 +220,11 @@ class EngineFingerprintCoverageTests(unittest.TestCase):
     """
 
     def test_it_covers_each_file_that_shapes_the_cache(self):
-        import inspect
-
         from models.flashnext import sessions
+        from types import SimpleNamespace
+        from unittest.mock import patch
 
-        source = inspect.getsource(sessions._engine_fingerprint)
-        for name in (
+        required = {
             "adaptive_topk.py",
             "expert_cache.py",
             "loader.py",
@@ -234,21 +233,36 @@ class EngineFingerprintCoverageTests(unittest.TestCase):
             "prefill.py",
             "qsa_chunk.py",
             "store.py",
+        }
+        with (
+            patch.object(
+                sessions,
+                "_hash_relocated_engine_file",
+                wraps=sessions._hash_relocated_engine_file,
+            ) as hash_file,
+            patch.object(sessions.importlib.metadata, "version", return_value="test"),
         ):
-            with self.subTest(name=name):
-                self.assertIn(name, source)
+            digest = sessions._engine_fingerprint(
+                SimpleNamespace(make_cache=lambda: [])
+            )
 
-    def test_the_listed_files_all_exist(self):
-        import inspect
-        import re
-        from pathlib import Path
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        hashed = {call.args[1].name for call in hash_file.call_args_list}
+        self.assertTrue(required <= hashed)
 
-        from models.flashnext import sessions
+        target = Path(sessions.__file__).resolve().parent / "qsa_chunk.py"
+        read_bytes = Path.read_bytes
 
-        source = inspect.getsource(sessions._engine_fingerprint)
-        listed = re.findall(r'"([a-z_]+\.py)"', source)
-        self.assertTrue(listed)
-        local = Path(sessions.__file__).resolve().parent
-        for name in listed:
-            with self.subTest(name=name):
-                self.assertTrue((local / name).is_file(), f"{name} is gone")
+        def changed_bytes(path):
+            data = read_bytes(path)
+            return data + b"\n# fingerprint test mutation\n" if path == target else data
+
+        with (
+            patch.object(sessions.importlib.metadata, "version", return_value="test"),
+            patch.object(Path, "read_bytes", autospec=True, side_effect=changed_bytes),
+        ):
+            changed = sessions._engine_fingerprint(
+                SimpleNamespace(make_cache=lambda: [])
+            )
+
+        self.assertNotEqual(digest, changed)

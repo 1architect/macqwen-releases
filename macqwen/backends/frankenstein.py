@@ -14,6 +14,7 @@ import re
 import tempfile
 
 from models.qwen27b.settings import get_registry
+from macqwen.backends.base import GenerationCancelled
 
 
 _SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -279,7 +280,8 @@ class FrankensteinBackend:
         return self.engine.check_invariant()
 
     def generate(self, max_tokens: int, out=None, on_prefilled=None,
-                 on_prefill_progress=None):
+                 on_prefill_progress=None, on_decode_token=None,
+                 should_cancel=None):
         fired = False
 
         def prefilled():
@@ -289,13 +291,19 @@ class FrankensteinBackend:
                 on_prefilled()
 
         def progress(done, total):
+            if should_cancel is not None and should_cancel():
+                raise GenerationCancelled
             if on_prefill_progress is not None:
                 on_prefill_progress(done, total)
             if done >= total:
                 prefilled()
 
         def on_token(_count, result):
+            if should_cancel is not None and should_cancel():
+                raise GenerationCancelled
             prefilled()
+            if on_decode_token is not None:
+                on_decode_token(_count, result.text)
             if out is not None and result.text:
                 out(result.text)
 

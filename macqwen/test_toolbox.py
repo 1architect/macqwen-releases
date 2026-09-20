@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from macqwen.tools.context7 import Context7, param_types, prefetch
 from macqwen.tools.repo import Repo
 from macqwen.tools.toolbox import Toolbox
 
@@ -61,6 +62,80 @@ class ToolboxTests(unittest.TestCase):
                 if name in ("api_docs", "web_search"):
                     continue
                 self.assertTrue(hasattr(box.repo, name), f"{name} has no implementation")
+
+
+class Context7Tests(unittest.TestCase):
+    def test_agent_docs_use_compact_default_and_fields(self):
+        client = Context7.__new__(Context7)
+        seen = []
+        client.resolve = lambda _library: "/websites/test"
+        client._cached = lambda url: (seen.append(url) or ("x" * 7000, True))
+
+        result = client.docs("sketchup", "pushpull")
+
+        self.assertIn("tokens=1000", seen[0])
+        self.assertEqual(len(result["documentation"]), 6000)
+        self.assertEqual(result["library"], "/websites/test")
+        self.assertEqual(result["topic"], "pushpull")
+        self.assertNotIn("cached", result)
+        self.assertNotIn("instruction", result)
+
+    def test_internal_signature_checks_keep_their_budgets(self):
+        client = Context7.__new__(Context7)
+        seen = []
+        client.docs = lambda _library, _topic, tokens=0: (
+            seen.append(tokens), {"documentation": ""}
+        )[1]
+
+        client.signatures("sketchup", "pushpull")
+        param_types(client, "sketchup", "pushpull")
+
+        self.assertEqual(seen, [1500, 2000])
+
+    def test_prefetch_keeps_its_explicit_budget(self):
+        class FakeClient:
+            def __init__(self):
+                self.seen = []
+
+            def docs(self, _library, _topic, tokens=0):
+                self.seen.append(tokens)
+                return {"library": "/websites/ruby_sketchup",
+                        "documentation": "pushpull(distance)"}
+
+        client = FakeClient()
+        self.assertIn("pushpull(distance)", prefetch(
+            "Use SketchUp pushpull", client=client
+        ))
+        self.assertEqual(client.seen, [1200])
+
+    def test_representative_signatures_and_examples_survive(self):
+        fixtures = {
+            "pushpull": (
+                "## pushpull(distance, copy = false)\n"
+                "* distance (Length)\n"
+                "* copy (Boolean, optional) - false\n"
+                "### Returns\n* nil\n"
+                "face.pushpull(100, true)"
+            ),
+            "UI.inputbox": (
+                "## UI.inputbox\n"
+                "`inputbox(prompts, defaults, title)`\n"
+                "`inputbox(prompts, defaults, list, title)`\n"
+                "### Returns\n* Array<String>\n* false\n"
+                "input = UI.inputbox(prompts, defaults, list, title)"
+            ),
+        }
+        for topic, documentation in fixtures.items():
+            with self.subTest(topic=topic):
+                client = Context7.__new__(Context7)
+                client.resolve = lambda _library: "/websites/test"
+                client._cached = lambda _url, text=documentation: (text, False)
+
+                result = client.docs("sketchup", topic)
+
+                for fragment in documentation.splitlines():
+                    if fragment:
+                        self.assertIn(fragment, result["documentation"])
 
 
 if __name__ == "__main__":

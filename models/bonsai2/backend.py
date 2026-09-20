@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 
-from macqwen.backends.base import DecodeTimer
+from macqwen.backends.base import DecodeTimer, GenerationCancelled
 from macqwen.conversation import Conversation, EXTRA_REASONING
 from macqwen.sampling import Sampler, Sampling
 from macqwen.text import stream_decode
@@ -36,6 +36,7 @@ THINK_FIELDS = {
 }
 _SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 SESSION_SCHEMA = 1
+_Q4_ATTENTION_DEFAULT_TEMP_MB = 256.0
 
 
 _IDENTITY_FILES = (
@@ -137,6 +138,187 @@ def _quantized_kv_from_environment():
     if raw not in ("4", "8"):
         raise ValueError("MACQWEN_BONSAI2_KV must be 4 or 8")
     return (int(raw), 64)
+
+
+def _mlx_dtype_itemsize(dtype) -> int:
+    """Return the storage width used by the attention estimate."""
+    try:
+        return int(dtype.itemsize)
+    except (AttributeError, TypeError, ValueError):
+        return {
+            "mlx.core.float16": 2,
+            "mlx.core.bfloat16": 2,
+            "mlx.core.float32": 4,
+        }.get(str(dtype), 4)
+
+
+def _attention_memory_snapshot() -> dict[str, int | None]:
+    import mlx.core as mx
+
+    result = {}
+    for key, name in (
+        ("active_bytes", "get_active_memory"),
+        ("cache_bytes", "get_cache_memory"),
+        ("peak_bytes", "get_peak_memory"),
+    ):
+        function = getattr(mx, name, None)
+        result[key] = int(function()) if function is not None else None
+    return result
+
+
+def _q4_attention_tile_plan(queries, keys, mask, budget_bytes: int):
+    """Estimate a score/probability tile without changing model batch size."""
+    batch, q_heads, query_rows, head_dim = map(int, queries.shape)
+    key_rows = int(keys[0].shape[-2])
+    dtype_bytes = _mlx_dtype_itemsize(queries.dtype)
+    mask_bytes = 1 if mask is None or isinstance(mask, str) else _mlx_dtype_itemsize(mask.dtype)
+    per_query_bytes = (
+        2 * batch * q_heads * key_rows * dtype_bytes
+        + batch * key_rows * mask_bytes
+        + 2 * batch * q_heads * head_dim * dtype_bytes
+    )
+    # Quantized matmul workspace is backend-dependent; leave a conservative
+    # margin instead of pretending the score estimate is a hard allocator cap.
+    per_query_bytes = max(1, math.ceil(per_query_bytes * 1.25))
+    tile_rows = max(1, min(query_rows, budget_bytes // per_query_bytes))
+    return tile_rows, {
+        "batch": batch,
+        "query_heads": q_heads,
+        "query_rows": query_rows,
+        "key_rows": key_rows,
+        "head_dim": head_dim,
+        "dtype": str(queries.dtype),
+        "dtype_bytes": dtype_bytes,
+        "estimated_bytes_per_query": per_query_bytes,
+        "estimated_tile_bytes": per_query_bytes * tile_rows,
+        "tile_rows": tile_rows,
+    }
+
+
+def _q4_attention_tile_mask(mask, query_offset: int, start: int, end: int, key_rows: int):
+    import mlx.core as mx
+
+    if mask is None:
+        return None
+    if isinstance(mask, str):
+        if mask != "causal":
+            return mask
+        query_positions = mx.arange(query_offset + start, query_offset + end)
+        key_positions = mx.arange(key_rows)
+        return query_positions[:, None] >= key_positions[None, :]
+    if mask.ndim < 2:
+        return mask
+    query_axis = int(mask.shape[-2])
+    if query_axis == 1:
+        return mask[..., :1, :key_rows]
+    if query_axis < end:
+        raise ValueError("attention mask is shorter than its query tile")
+    return mask[..., start:end, :key_rows]
+
+
+def _bonsai_quantized_attention(
+    stock_attention,
+    queries,
+    keys,
+    values,
+    cache,
+    scale,
+    mask,
+    budget_bytes: int,
+):
+    import mlx.core as mx
+
+    if not hasattr(cache, "bits") or queries.shape[-2] <= 1:
+        return stock_attention(
+            queries, keys, values, cache=cache, scale=scale, mask=mask
+        )
+    if isinstance(mask, str) and mask != "causal":
+        return stock_attention(
+            queries, keys, values, cache=cache, scale=scale, mask=mask
+        )
+
+    offset = getattr(cache, "offset", None)
+    if hasattr(offset, "ndim") and int(offset.ndim) != 0:
+        return stock_attention(
+            queries, keys, values, cache=cache, scale=scale, mask=mask
+        )
+    try:
+        offset = int(offset.item()) if hasattr(offset, "item") else int(offset)
+        key_rows = int(keys[0].shape[-2])
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return stock_attention(
+            queries, keys, values, cache=cache, scale=scale, mask=mask
+        )
+    query_offset = offset - int(queries.shape[-2])
+    if query_offset < 0 or key_rows != offset:
+        return stock_attention(
+            queries, keys, values, cache=cache, scale=scale, mask=mask
+        )
+
+    tile_rows, plan = _q4_attention_tile_plan(
+        queries, keys, mask, budget_bytes
+    )
+    if tile_rows >= queries.shape[-2]:
+        return stock_attention(
+            queries, keys, values, cache=cache, scale=scale, mask=mask
+        )
+
+    trace = getattr(cache, "_bonsai_attention_trace", None)
+    layer = getattr(cache, "_bonsai_attention_layer", None)
+    outputs = []
+    for start in range(0, int(queries.shape[-2]), tile_rows):
+        end = min(start + tile_rows, int(queries.shape[-2]))
+        tile_plan = dict(plan, tile_start=start, tile_end=end)
+        tile_mask = _q4_attention_tile_mask(
+            mask, query_offset, start, end, key_rows
+        )
+        started = time.perf_counter() if trace is not None else None
+        before = _attention_memory_snapshot() if trace is not None else None
+        output = stock_attention(
+            queries[..., start:end, :],
+            keys,
+            values,
+            cache=cache,
+            scale=scale,
+            mask=tile_mask,
+        )
+        # The point of tiling is lost if all outputs remain one lazy graph.
+        mx.eval(output)
+        after = _attention_memory_snapshot() if trace is not None else None
+        if trace is not None:
+            trace.append({
+                "layer": layer,
+                "bits": int(cache.bits),
+                "group_size": int(cache.group_size),
+                **tile_plan,
+                "duration_s": time.perf_counter() - started,
+                "memory_before": before,
+                "memory_after": after,
+            })
+        outputs.append(output)
+    return mx.concatenate(outputs, axis=-2)
+
+
+def _install_q4_attention_tiling(enabled: bool, budget_bytes: int) -> None:
+    """Patch only Bonsai's imported Qwen3.5 attention symbol."""
+    import mlx_vlm.models.qwen3_5.language as language
+
+    stock = getattr(language, "_bonsai_stock_attention", None)
+    if stock is None:
+        stock = language.scaled_dot_product_attention
+        language._bonsai_stock_attention = stock
+
+    def dispatch(queries, keys, values, cache, scale, mask, sinks=None):
+        if not enabled or sinks is not None:
+            return stock(
+                queries, keys, values, cache=cache, scale=scale,
+                mask=mask, sinks=sinks
+            )
+        return _bonsai_quantized_attention(
+            stock, queries, keys, values, cache, scale, mask, budget_bytes
+        )
+
+    language.scaled_dot_product_attention = dispatch
 
 
 def _quantize_kv_caches(cache, bits: int, group_size: int):
@@ -319,14 +501,9 @@ class _ForcingSampler:
     the next, so substituting a token after the fact corrupts GDN state:
     the tape would record </think> while the cache holds an unrelated
     token. Forcing inside the sampler makes the close token genuinely
-    consumed, so tape and cache always agree. One-shot per arming; the
-    backend disarms when the thinking phase ends naturally.
-
-    Narrow race, documented not hidden: the one-ahead lookahead may already
-    have sampled the next token when the backend observes a natural close.
-    That token can be a stale forced close, yielding a doubled </think>.
-    Cache and tape stay consistent regardless; only one extra close token
-    enters the transcript.
+    consumed, so tape and cache always agree. Natural closes are detected
+    from the sampled token itself before lookahead can make another decision;
+    the backend also observes yielded ids as a fallback. One-shot per arming.
     """
 
     def __init__(self, sampler, think_budget, close_token):
@@ -346,10 +523,20 @@ class _ForcingSampler:
                 self.forced_last = True
                 return mx.array([self._close_token], dtype=mx.uint32)
             self._remaining -= 1
+            token = self._sampler(logits)
+            # The generator can sample one token ahead of yielding the
+            # previous one. Observe a natural close at sampling time, before
+            # that lookahead can reach the budget boundary and force a second
+            # close.
+            if int(token) == self._close_token:
+                self.armed = False
+            return token
         return self._sampler(logits)
 
     def observe(self, value):
         self._sampler.observe(value)
+        if int(value) == self._close_token:
+            self.armed = False
 
     def end_thinking(self):
         self.armed = False
@@ -380,6 +567,45 @@ class _TextModelWrapper:
 
     def __getattr__(self, name):
         return getattr(self.__dict__["_language_model"], name)
+
+
+class _NonConsumingStopModel:
+    """Keep sampled stop IDs out of recurrent state.
+
+    ``mlx_lm.generate_step`` runs one model call ahead of each yielded token.
+    The call for a stop ID is unnecessary because the backend immediately
+    ends the turn. Skipping only those post-prefill one-token calls preserves
+    every accepted token in every cache layer while leaving prompt content
+    and structural stop IDs in the prefill path untouched.
+    """
+
+    def __init__(self, model, prompt_length: int, prefill_step_size: int, stops):
+        self._model = model
+        prefill_tokens = max(0, int(prompt_length) - 1)
+        self._initial_calls = (
+            (prefill_tokens + prefill_step_size - 1) // prefill_step_size + 1
+        )
+        self._calls = 0
+        self._stops = {int(value) for value in stops}
+        self._last_logits_shape = None
+        self._last_logits_dtype = None
+
+    def __call__(self, inputs, cache=None, **options):
+        import mlx.core as mx
+
+        self._calls += 1
+        if self._calls > self._initial_calls and inputs.shape[-1] == 1:
+            value = int(inputs.reshape(-1)[0].item())
+            if value in self._stops:
+                if self._last_logits_shape is None:
+                    raise RuntimeError("stop-aware generation has no logits shape")
+                return mx.zeros(
+                    self._last_logits_shape, dtype=self._last_logits_dtype
+                )
+        logits = self._model(inputs, cache=cache, **options)
+        self._last_logits_shape = tuple(int(value) for value in logits.shape)
+        self._last_logits_dtype = logits.dtype
+        return logits
 
 
 class BonsaiTokenizer:
@@ -507,6 +733,9 @@ class BonsaiBackend(Conversation):
         share_fwht: bool = False,
         retain_stop: bool = False,
         quantized_kv: tuple | list | None = None,
+        q4_attention_tiling: bool = True,
+        q4_attention_temp_mb: float = _Q4_ATTENTION_DEFAULT_TEMP_MB,
+        trace_memory: bool = False,
         session_dir: str = SESSION_DIR,
     ):
         prefill_step_size = int(prefill_step_size)
@@ -516,6 +745,9 @@ class BonsaiBackend(Conversation):
             allocator_cache_mb = float(allocator_cache_mb)
             if not math.isfinite(allocator_cache_mb) or allocator_cache_mb < 0:
                 raise ValueError("allocator_cache_mb must be a finite non-negative number")
+        q4_attention_temp_mb = float(q4_attention_temp_mb)
+        if not math.isfinite(q4_attention_temp_mb) or q4_attention_temp_mb <= 0:
+            raise ValueError("q4_attention_temp_mb must be a finite positive number")
 
         import mlx_lm
         from mlx_lm.models.cache import make_prompt_cache
@@ -552,6 +784,16 @@ class BonsaiBackend(Conversation):
         self.model = model
         self._text_model = _TextModelWrapper(model, share=share_fwht)
         self.model_path = str(path)
+        self.fused_fwht = bool(fused_fwht)
+        self.share_fwht = bool(share_fwht)
+        self.q4_attention_tiling = bool(q4_attention_tiling)
+        self.q4_attention_temp_mb = q4_attention_temp_mb
+        self.trace_memory = bool(trace_memory)
+        self.attention_events = []
+        _install_q4_attention_tiling(
+            self.q4_attention_tiling,
+            int(self.q4_attention_temp_mb * 1024 * 1024),
+        )
         self.cache = make_prompt_cache(model)
         if quantized_kv is None:
             quantized_kv = _quantized_kv_from_environment()
@@ -566,13 +808,14 @@ class BonsaiBackend(Conversation):
                 raise ValueError("quantized_kv needs (bits, group_size) with bits 4 or 8")
             _quantize_kv_caches(self.cache, bits, group_size)
         self._validate_cache(self.cache)
+        self._attach_attention_trace()
         self.prefill_step_size = prefill_step_size
         self.allocator_cache_mb = allocator_cache_mb
         self.clear_cache_after_generate = bool(clear_cache_after_generate)
         self.wired_limit_enabled = bool(wired_limit_enabled)
-        # Experimental: retain a consumed <|im_end|> close in the tape and
-        # continue on the live cache instead of replaying history. Off by
-        # default until user-turn and tool-turn continuation checks pass.
+        # Kept for constructor compatibility. Stops are now always rejected
+        # before the one-ahead model call, so retaining a consumed stop is no
+        # longer a separate mode.
         self.retain_stop = bool(retain_stop)
         self.session_dir = Path(session_dir).expanduser()
         self.thinking_enabled = False
@@ -598,6 +841,32 @@ class BonsaiBackend(Conversation):
     def cache_tokens(self) -> int:
         offsets = [int(item.offset) for item in self.cache if hasattr(item, "offset")]
         return offsets[0] if offsets else 0
+
+    def _attach_attention_trace(self) -> None:
+        for layer, item in enumerate(self.cache):
+            if item is None:
+                continue
+            if self.trace_memory:
+                item._bonsai_attention_trace = self.attention_events
+                item._bonsai_attention_layer = layer
+            else:
+                for name in ("_bonsai_attention_trace", "_bonsai_attention_layer"):
+                    if hasattr(item, name):
+                        delattr(item, name)
+
+    def runtime_settings(self) -> dict[str, object]:
+        return {
+            "prefill_step_size": self.prefill_step_size,
+            "allocator_cache_mb": self.allocator_cache_mb,
+            "fused_fwht": self.fused_fwht,
+            "share_fwht": self.share_fwht,
+            "quantized_kv": (
+                list(self.quantized_kv) if self.quantized_kv is not None else None
+            ),
+            "q4_attention_tiling": self.q4_attention_tiling,
+            "q4_attention_temp_mb": self.q4_attention_temp_mb,
+            "trace_memory": self.trace_memory,
+        }
 
     @staticmethod
     def _validate_cache(cache) -> None:
@@ -650,6 +919,7 @@ class BonsaiBackend(Conversation):
             bits, group_size = self.quantized_kv
             _quantize_kv_caches(self.cache, bits, group_size)
         self._validate_cache(self.cache)
+        self._attach_attention_trace()
         self._replay_needed = bool(self.tape)
         self.turn_closed = False
 
@@ -660,6 +930,7 @@ class BonsaiBackend(Conversation):
         on_prefilled=None,
         on_prefill_progress=None,
         on_decode_token=None,
+        should_cancel=None,
     ) -> tuple[str, Stats]:
         if not self.pending:
             return "", Stats()
@@ -667,20 +938,22 @@ class BonsaiBackend(Conversation):
         import mlx.core as mx
         from mlx_lm.generate import generate_step, generation_stream, wired_limit
 
-        prompt = list(self.tape) + self.pending if self._replay_needed else list(self.pending)
-        prompt_tokens = len(prompt)
-        self.tape.extend(self.pending)
-        self.pending = []
-        self._replay_needed = False
-        sampler = Sampler(self.sampling)
+        if self.trace_memory:
+            self.attention_events.clear()
+
+        # Validate budgets before pending tokens move into the tape: an
+        # early validation exception must not leave moved-but-unprocessed
+        # state behind.
         interactive_budgets = getattr(self, "_interactive_budgets", None)
         budget_answer = budget_think = 0
         close_token = None
         if interactive_budgets is not None:
             budget_answer, budget_think = interactive_budgets
-            budget_answer = max(0, int(budget_answer))
+            budget_answer = int(budget_answer)
             budget_think = (
-                None if budget_think is None else max(0, int(budget_think))
+                None
+                if budget_think is None or int(budget_think) < 0
+                else int(budget_think)
             )
             if self.thinking_enabled and budget_think is not None:
                 close_ids = self.encode("</think>")
@@ -695,6 +968,12 @@ class BonsaiBackend(Conversation):
             and budget_think is not None
             and budget_think > 0
         )
+        prompt = list(self.tape) + self.pending if self._replay_needed else list(self.pending)
+        prompt_tokens = len(prompt)
+        self.tape.extend(self.pending)
+        self.pending = []
+        self._replay_needed = False
+        sampler = Sampler(self.sampling)
         decoding_sampler = (
             _ForcingSampler(sampler, budget_think, close_token)
             if separate_budgets
@@ -705,8 +984,13 @@ class BonsaiBackend(Conversation):
         timer = None
         prefilled = False
 
+        def check_cancel():
+            if should_cancel is not None and should_cancel():
+                raise GenerationCancelled
+
         def progress(done, total):
             nonlocal prefill_seconds, timer, prefilled
+            check_cancel()
             if on_prefill_progress is not None:
                 on_prefill_progress(done, total)
             if done >= total and not prefilled:
@@ -717,10 +1001,14 @@ class BonsaiBackend(Conversation):
                     on_prefilled()
 
         steps = None
+        text_model = _NonConsumingStopModel(
+            self._text_model, prompt_tokens, self.prefill_step_size, self.stops
+        )
         try:
+            check_cancel()
             steps = generate_step(
                 mx.array(prompt),
-                self._text_model,
+                text_model,
                 max_tokens=max_tokens,
                 sampler=decoding_sampler,
                 prompt_cache=self.cache,
@@ -774,40 +1062,26 @@ class BonsaiBackend(Conversation):
                     with residency:
                         try:
                             # One-ahead invariant: generate_step() feeds each
-                            # yielded token back through the model before
-                            # yielding the next, so every token received here
-                            # is already inside KV and GDN state. This loop
-                            # may accept a token (tape it) or invalidate
-                            # state (replay), but it must never substitute
-                            # or silently discard a yielded token while
-                            # keeping the cache.
+                            # accepted token back through the model before
+                            # yielding the next. The stop-aware wrapper keeps
+                            # protocol stops out of that call, so every token
+                            # taped here is present in every cache layer.
                             for token, _logprobs in steps:
+                                check_cancel()
                                 value = int(token)
                                 if value in self.stops:
                                     stop_seen = True
                                     finish = "stop"
-                                    if (
-                                        self.retain_stop
-                                        and self._im_end_id is not None
-                                        and value == self._im_end_id
-                                    ):
-                                        # The close token is already consumed
-                                        # into every cache layer through the
-                                        # one-ahead lookahead. Retain it in
-                                        # the tape and close the turn: the
-                                        # next-turn builders omit a second
-                                        # close, so the combined sequence is
-                                        # identical while the live cache
-                                        # survives. Other stops keep the
-                                        # replay recovery path below.
-                                        self.tape.append(value)
-                                        self.turn_closed = True
-                                    else:
-                                        self.turn_closed = False
+                                    # Stop-aware generation keeps this token
+                                    # out of every cache layer. The next
+                                    # append supplies the structural close as
+                                    # pending input, so only the new framing
+                                    # and tool/user content are prefilled.
+                                    self.turn_closed = False
                                     break
                                 self.tape.append(value)
                                 produced.append(value)
-                                sampler.observe(value)
+                                decoding_sampler.observe(value)
                                 raw = stream_decode(self.tokenizer, partial, value)
                                 piece = protocol.feed(raw) if raw else ""
                                 if separate_budgets:
@@ -832,6 +1106,7 @@ class BonsaiBackend(Conversation):
                                         decoding_sampler.end_thinking()
                                     if (
                                         phase == "answer"
+                                        and budget_answer >= 0
                                         and answer_count >= budget_answer
                                     ):
                                         # Break after accepting: this token is
@@ -877,16 +1152,10 @@ class BonsaiBackend(Conversation):
                 cleanup_steps()
             steps = None
             try:
-                if stop_seen and not self.turn_closed:
-                    # Rewinding KV offsets is not enough: the 48 GDN linear
-                    # states have no offset and already absorbed the stop
-                    # token through the one-ahead lookahead. Continuing from
-                    # them contaminates the next turn, so drop the whole
-                    # cache and replay the tape instead. A retained
-                    # <|im_end|> close leaves turn_closed true and skips
-                    # this path with the live cache intact. A capped answer
-                    # breaks after accepting its last token, so tape and
-                    # cache already agree and need no replay here.
+                if stop_seen and not self.turn_closed and not self.check_invariant():
+                    # The production wrapper above prevents stop consumption.
+                    # Keep the old recovery path for alternate generators or
+                    # a future MLX change that violates that boundary.
                     self._mark_replay_needed()
             finally:
                 if interrupted:
@@ -1015,13 +1284,13 @@ class BonsaiBackend(Conversation):
                     or len(budgets) != 2
                     or isinstance(budgets[0], bool)
                     or not isinstance(budgets[0], int)
-                    or budgets[0] < 0
+                    or budgets[0] < -1
                     or (
                         budgets[1] is not None
                         and (
                             isinstance(budgets[1], bool)
                             or not isinstance(budgets[1], int)
-                            or budgets[1] < 0
+                            or budgets[1] < -1
                         )
                     )
                 ):
@@ -1074,6 +1343,7 @@ class BonsaiBackend(Conversation):
             bits, group_size = self.quantized_kv
             _quantize_kv_caches(self.cache, bits, group_size)
         self._validate_cache(self.cache)
+        self._attach_attention_trace()
         self.tape = []
         self.pending = []
         self.turn_closed = True
@@ -1081,12 +1351,40 @@ class BonsaiBackend(Conversation):
         mx.clear_cache()
 
     def configure(self, argument: str) -> str:
-        if argument.strip() in ("", "all"):
+        text = argument.strip()
+
+        def kv_description() -> str:
+            if self.quantized_kv is None:
+                return "fp32"
+            bits, group_size = self.quantized_kv
+            return f"{bits}-bit (group {group_size})"
+
+        if text == "kv-cache":
+            return f"kv-cache            {kv_description()}"
+        if text.startswith("kv-cache "):
+            value = text.split(None, 1)[1].strip().lower()
+            if value in ("off", "fp32"):
+                selected = None
+            elif value in ("4", "8"):
+                selected = (int(value), 64)
+            else:
+                raise ValueError("kv-cache expects 4, 8, fp32, or off")
+            if selected != self.quantized_kv:
+                turn_closed = self.turn_closed
+                self.quantized_kv = selected
+                self._mark_replay_needed()
+                self.turn_closed = turn_closed
+            return f"kv-cache            {kv_description()}"
+        if text in ("", "all"):
             return (
                 "Bonsai-2 settings\n"
                 f"  checkpoint          {self.model_path}\n"
                 f"  prefill-step-size   {self.prefill_step_size}\n"
                 f"  allocator-cache-mb  {self.allocator_cache_mb if self.allocator_cache_mb is not None else 'off'}\n"
+                f"  fused-fwht          {'on' if self.fused_fwht else 'off'}\n"
+                f"  kv-cache            {kv_description()}\n"
+                f"  q4-attention       {'tiled' if self.q4_attention_tiling else 'stock'}\n"
+                f"  q4-attention-mb    {self.q4_attention_temp_mb:g}\n"
                 f"  clear-cache-after   {'on' if self.clear_cache_after_generate else 'off'}\n"
                 f"  wired-limit         {'on' if self.wired_limit_enabled else 'off'}"
             )

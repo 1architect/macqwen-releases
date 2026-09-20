@@ -53,7 +53,9 @@ STOP_REASONS = (
 
 def run_agent(engine: Backend, repo, out, limits: Limits = Limits(),
               host_memory=None, approve=None, model_out=None,
-              model_done=None, ui=None, on_stats=None) -> str:
+              model_done=None, ui=None, on_stats=None,
+              on_prefill_progress=None, on_decode_token=None,
+              should_cancel=None) -> str:
     """Drive one agent session. Returns why it stopped.
 
     `host_memory` returns (free_gb, swap_gb) and may be None when a runtime
@@ -75,19 +77,37 @@ def run_agent(engine: Backend, repo, out, limits: Limits = Limits(),
             out(f"[appending {len(engine.pending)} new tokens]")
         generation_limit = limits.max_tokens
         if getattr(engine, "thinking_enabled", False):
-            generation_limit += limits.think_tokens
-        text, stats = engine.generate(
-            max_tokens=generation_limit,
-            out=model_out or out,
-            on_prefilled=ui.prefilled if ui is not None else None,
-            on_prefill_progress=(
+            generation_limit = (
+                -1
+                if generation_limit < 0 or limits.think_tokens < 0
+                else generation_limit + limits.think_tokens
+            )
+        if on_prefill_progress is not None and ui is not None:
+            def progress(done, total):
+                ui.prefill_progress(done, total)
+                on_prefill_progress(done, total)
+        else:
+            progress = on_prefill_progress or (
                 ui.prefill_progress if ui is not None else None
-            ),
-        )
+            )
+        generate_kwargs = {
+            "max_tokens": generation_limit,
+            "out": model_out or out,
+            "on_prefilled": ui.prefilled if ui is not None else None,
+        }
+        if progress is not None:
+            generate_kwargs["on_prefill_progress"] = progress
+        if on_decode_token is not None:
+            generate_kwargs["on_decode_token"] = on_decode_token
+        if should_cancel is not None:
+            generate_kwargs["should_cancel"] = should_cancel
+        text, stats = engine.generate(**generate_kwargs)
         if model_done is not None:
             model_done()
         if on_stats is not None:
             on_stats(stats)
+        if should_cancel is not None and should_cancel():
+            return stop("interrupted")
 
         free = getattr(stats, "host_free_gb", None)
         if free and limits.min_free_gb and free < limits.min_free_gb:

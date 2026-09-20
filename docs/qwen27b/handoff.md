@@ -2,13 +2,14 @@
 
 ## Environment
 
-The launcher checks the active environment, then `.venv-qwen27b`:
+Qwen3.8-27B uses the same managed runtime as the other supported models:
 
 ```text
-.venv-qwen27b/bin/python
+.venv/bin/python
 ```
 
-Override it with `MACQWEN_QWEN27B_PYTHON`.
+MACQWEN prepares it on setup or on the first launch. We retain
+`MACQWEN_QWEN27B_PYTHON` as an explicitly validated developer override.
 
 ## Model selection
 
@@ -25,7 +26,9 @@ Run a build by suffix:
 ./chat.sh BUILD --profile agent
 ```
 
-The launcher also accepts `--model-path`. It rejects an incompatible vocabulary.
+The launcher also accepts `--model-path`. It rejects incomplete checkpoints,
+including missing tokenizer files, weight shards, model metadata, or the
+checkpoint-local `bf16-ends/` assets required by the default loader.
 
 ## Main files
 

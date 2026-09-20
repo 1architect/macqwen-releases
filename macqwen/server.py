@@ -266,9 +266,9 @@ class ModelService:
     def _substitute_slots(normalized, tokenizer):
         """Stand sentinels in for marker-carrying user/system content.
 
-        Returns (render_messages, slot_texts). Assistant and tool history
-        is the model's own output, so its genuine thinking structure keeps
-        joint encoding; user and system content is untrusted and splits
+        Returns (render_messages, slot_texts). Assistant history is the
+        model's own output, so its genuine thinking structure keeps joint
+        encoding; user, system, and tool content is untrusted and splits
         when it carries control markers. No markers anywhere means no
         slots, and the prompt renders exactly as before.
         """
@@ -282,7 +282,7 @@ class ModelService:
             content = item.get("content", "")
             if (
                 isinstance(content, str)
-                and item.get("role") in ("user", "system")
+                and item.get("role") in ("user", "system", "tool")
                 and codec[0].search(content) is not None
             ):
                 item["content"] = content_sentinel(len(slot_texts))
@@ -335,6 +335,15 @@ class ModelService:
             return False
         if ids is None:
             ids = encode(rendered)
+        if getattr(backend, "_replay_needed", False):
+            # The transcript may still be a prefix, but the live cache is
+            # deliberately invalid. Reusing it would make a tool result
+            # appear incremental while the backend silently re-prefills the
+            # entire conversation on the next generation.
+            session.reset()
+            backend.append_tokens(ids)
+            self.rebuilt += 1
+            return False
         if not backend.pending and backend.tape:
             shared = common_prefix(ids)
             if shared == len(backend.tape) and shared < len(ids):
@@ -386,7 +395,9 @@ class ModelService:
             )
             if slot_texts:
                 if not self._adopt_split(rendered, slot_texts, tokenizer):
-                    self._adopt(rendered)
+                    raise RequestError(
+                        "unable to safely encode content placeholders"
+                    )
             else:
                 self._adopt(rendered)
             thinking = ThinkingStreamFilter(

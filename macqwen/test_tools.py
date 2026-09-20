@@ -7,6 +7,7 @@ motivated the parser's leniency.
 """
 from __future__ import annotations
 
+import json
 import unittest
 
 from macqwen import tools
@@ -104,6 +105,57 @@ class ParseTests(unittest.TestCase):
         (name, args), = tools.parse_tool_calls(raw)
         self.assertEqual(args["start_line"], 3)
         self.assertEqual(args["path"], "notes.txt")
+
+    def test_quoted_and_short_parameters_preserve_payload_bytes(self):
+        quoted = (
+            '<tool_call><function=replace_text>'
+            '<parameter=path="  a.txt  "></parameter>'
+            '<parameter=old_text="old  \n\n"></parameter>'
+            '</function></tool_call>'
+        )
+        (name, args), = tools.parse_tool_calls(quoted)
+        self.assertEqual(name, "replace_text")
+        self.assertEqual(args["path"], "  a.txt  ")
+        self.assertEqual(args["old_text"], "old  \n\n")
+
+        short = (
+            "<tool_call><write_file>"
+            "<path>  a.txt  </path>"
+            "<content>  indented\nline2\n\n</content>"
+            "</write_file></tool_call>"
+        )
+        (name, args), = tools.parse_tool_calls(short)
+        self.assertEqual(name, "write_file")
+        self.assertEqual(args["path"], "  a.txt  ")
+        self.assertEqual(args["content"], "  indented\nline2\n")
+
+    def test_literal_protocol_tags_in_payload_are_not_deleted(self):
+        raw = (
+            "<tool_call><function=write_file>"
+            "<parameter=path>a.txt</parameter>"
+            "<parameter=content>literal </function> tag</parameter>"
+            "</function></tool_call>"
+        )
+        (name, args), = tools.parse_tool_calls(raw)
+        self.assertEqual(name, "write_file")
+        self.assertEqual(args["content"], "literal </function> tag")
+
+    def test_api_docs_pretty_render_keeps_documentation_unescaped(self):
+        result = {
+            "library": "/websites/ruby_sketchup",
+            "topic": "pushpull",
+            "documentation": "## pushpull(distance, copy = false)\n\nExample",
+        }
+        rendered = tools.render_tool_result("api_docs", result)
+        self.assertEqual(
+            rendered,
+            '{"library": "/websites/ruby_sketchup", "topic": "pushpull"}'
+            "\n## pushpull(distance, copy = false)\n\nExample",
+        )
+        self.assertNotIn("\\n## pushpull", rendered)
+        self.assertEqual(json.loads(tools.render_tool_result(
+            "api_docs", result, fmt="json"
+        )), result)
 
     def test_mutating_tools_are_named(self):
         self.assertEqual(

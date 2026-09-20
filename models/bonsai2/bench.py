@@ -32,6 +32,18 @@ COMPARISONS = {
     "fused-fwht": {"control": {"fused_fwht": False}, "fused": {"fused_fwht": True}},
     "quant-kv8": {"control": {}, "qkv8": {"quantized_kv": [8, 64]}},
     "quant-kv4": {"control": {}, "qkv4": {"quantized_kv": [4, 64]}},
+    "q4-attention": {
+        "q4-untiled": {
+            "quantized_kv": [4, 64], "allocator_cache_mb": 256,
+            "prefill_step_size": 512, "q4_attention_tiling": False,
+            "trace_memory": True,
+        },
+        "q4-tiled": {
+            "quantized_kv": [4, 64], "allocator_cache_mb": 256,
+            "prefill_step_size": 512, "q4_attention_tiling": True,
+            "trace_memory": True,
+        },
+    },
     "share-fwht": {"control": {}, "shared": {"share_fwht": True}},}
 DIAGNOSTIC_COMPARISONS = {"profile"}
 _ANALYSIS_REQUEST = "Using the numbered records, write a detailed neutral analysis of at least 300 words covering the observed patterns and exceptions."
@@ -194,6 +206,14 @@ def _mlx_memory() -> dict[str, int | None]:
     except (ImportError, AttributeError, RuntimeError, TypeError):
         pass
     return result
+def _reset_mlx_peak() -> None:
+    try:
+        import mlx.core as mx
+        reset = getattr(mx, "reset_peak_memory", None)
+        if reset is not None:
+            reset()
+    except (ImportError, AttributeError, RuntimeError):
+        pass
 def _disk() -> int | None:
     try:
         from models.flashnext.diskio import disk_bytes_read
@@ -212,12 +232,23 @@ def _shape(value: Any) -> tuple[int, ...] | None:
         return tuple(int(x) for x in value.shape)
     except (AttributeError, TypeError, ValueError):
         return None
+
+
+def _cache_array(value: Any) -> Any:
+    """Return the shaped storage array for full or quantized KV storage."""
+    if _shape(value) is not None:
+        return value
+    if isinstance(value, (tuple, list)) and value:
+        return value[0]
+    return None
+
+
 def cache_metrics(backend: Any) -> dict[str, Any]:
     try:
         caches = list(getattr(backend, "cache", ()) or ())
     except TypeError:
         caches = []
-    offsets, capacities, dtypes = [], [], []
+    offsets, capacities, dtypes, bits, group_sizes = [], [], [], [], []
     payload = allocated = capacity_bytes = 0
     for cache in caches:
         try:
@@ -225,10 +256,13 @@ def cache_metrics(backend: Any) -> dict[str, Any]:
         except (AttributeError, TypeError, ValueError):
             offset = None
         keys, values = getattr(cache, "keys", None), getattr(cache, "values", None)
-        key_shape, value_shape = _shape(keys), _shape(values)
+        key_array, value_array = _cache_array(keys), _cache_array(values)
+        key_shape, value_shape = _shape(key_array), _shape(value_array)
         capacity = key_shape[-2] if key_shape and len(key_shape) >= 2 else None
         offsets.append(offset); capacities.append(capacity)
-        dtypes.append(str(getattr(keys, "dtype", "")) or None)
+        dtypes.append(str(getattr(key_array, "dtype", "")) or None)
+        bits.append(getattr(cache, "bits", None))
+        group_sizes.append(getattr(cache, "group_size", None))
         try:
             nbytes = int(cache.nbytes)
             allocated += nbytes
@@ -241,7 +275,8 @@ def cache_metrics(backend: Any) -> dict[str, Any]:
         if offset is None or not key_shape or not value_shape:
             continue
         try:
-            key_size, value_size = int(keys.dtype.itemsize), int(values.dtype.itemsize)
+            key_size = int(key_array.dtype.itemsize)
+            value_size = int(value_array.dtype.itemsize)
         except (AttributeError, TypeError, ValueError):
             continue
         per_token = (math.prod(key_shape[:-2]) * key_shape[-1] * key_size +
@@ -249,8 +284,10 @@ def cache_metrics(backend: Any) -> dict[str, Any]:
         payload += offset * per_token
         if capacity is not None:
             capacity_bytes += capacity * per_token
-    return {"count": len(caches), "offsets": offsets, "capacities": capacities, "dtypes": dtypes,
-            "allocated_bytes": allocated, "capacity_bytes": capacity_bytes, "payload_bytes": payload}
+    return {"count": len(caches), "offsets": offsets, "capacities": capacities,
+            "dtypes": dtypes, "bits": bits, "group_sizes": group_sizes,
+            "allocated_bytes": allocated, "capacity_bytes": capacity_bytes,
+            "payload_bytes": payload}
 def snapshot(backend: Any, phase: str, *, os_probes: bool = True) -> dict[str, Any]:
     mlx, cache, process = _mlx_memory(), cache_metrics(backend), _memory()
     result = {"phase": phase, "time_ns": time.time_ns(), "mlx": mlx,
@@ -283,6 +320,9 @@ def _windows(arrivals: list[dict[str, Any]], window: int) -> list[dict[str, Any]
     return result
 def _vm_delta(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
     return {key: int(right.get(key, 0)) - int(left.get(key, 0)) for key in sorted(set(left) | set(right))}
+def _attention_events(backend: Any) -> list[dict[str, Any]]:
+    events = getattr(backend, "attention_events", None)
+    return list(events) if isinstance(events, (list, tuple)) else []
 class GenerationProfile:
     def __init__(self):
         self.profiles = {phase: cProfile.Profile() for phase in ("prefill", "decode")}
@@ -347,6 +387,11 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
             list(effective_kv)
             if isinstance(effective_kv, (tuple, list)) else None
         )
+        record["runtime_settings"] = (
+            backend.runtime_settings()
+            if hasattr(backend, "runtime_settings")
+            else {"prefill_step_size": effective_prefill_step, **constructor}
+        )
         import mlx.core as mx
         mx.random.seed(seed)
         record["snapshots"]["load"] = snapshot(backend, "load")
@@ -364,7 +409,9 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
             # exercises a live cache nor frames the turn correctly.
             _text, setup_stats = backend.generate(max_tokens=1)
             setup_tokens += int(getattr(setup_stats, "tokens", 0) or 0)
-            setup_tokens += backend.append_tool_results([tool_result])
+            setup_tokens += backend.append_tool_results(
+                [tool_result], enable_thinking=thinking
+            )
         if repeat_user is not None:
             _text, setup_stats = backend.generate(max_tokens=1)
             setup_tokens += int(getattr(setup_stats, "tokens", 0) or 0)
@@ -372,8 +419,47 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
         record.update({"template_tokens": template_tokens, "setup_tokens": setup_tokens,
                        "prompt_tokens": len(backend.pending), "options": options})
         prefill_at, generation_start = [None], time.perf_counter()
+        _reset_mlx_peak()
         record["snapshots"]["generation-start"] = snapshot(backend, "generation-start")
         read_start = _disk()
+        generation_snapshot = record["snapshots"]["generation-start"]
+        prefill_chunks = []
+        previous_progress = 0
+        previous_progress_at = generation_start
+        previous_vm = generation_snapshot.get("vm_counters", {})
+        previous_read = generation_snapshot.get("physical_read_bytes")
+
+        def on_prefill_progress(done, total):
+            nonlocal previous_progress, previous_progress_at, previous_vm, previous_read
+            if done <= previous_progress:
+                return
+            now = time.perf_counter()
+            phase = "completion" if done >= total else "chunk"
+            current = snapshot(
+                backend, f"prefill-{phase}-{done}", os_probes=True
+            )
+            current_vm = current.get("vm_counters", {})
+            current_read = current.get("physical_read_bytes")
+            current["progress"] = {
+                "done": int(done),
+                "total": int(total),
+                "chunk_tokens": int(done - previous_progress),
+                "duration_s": now - previous_progress_at,
+            }
+            current["vm_counters_delta"] = _vm_delta(
+                previous_vm, current_vm
+            )
+            current["physical_read_bytes_delta"] = (
+                current_read - previous_read
+                if current_read is not None and previous_read is not None
+                else None
+            )
+            prefill_chunks.append(current)
+            previous_progress = int(done)
+            previous_progress_at = now
+            previous_vm = current_vm
+            previous_read = current_read
+
         def on_prefilled():
             prefill_at[0] = time.perf_counter()
             record["snapshots"]["prefill"] = snapshot(backend, "prefill", os_probes=False)
@@ -386,6 +472,7 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
             profiler.start()
         try:
             text, model_stats = backend.generate(max_tokens=horizon, on_prefilled=on_prefilled,
+                                                 on_prefill_progress=on_prefill_progress,
                                                  on_decode_token=on_token)
         finally:
             if profiler is not None:
@@ -399,6 +486,8 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
             pass
         sync_done = time.perf_counter()
         record["snapshots"]["decode"] = snapshot(backend, "decode")
+        record["prefill_chunks"] = prefill_chunks
+        record["attention_events"] = _attention_events(backend)
         tokens = [item["token"] for item in arrivals]
         count = int(getattr(model_stats, "tokens", 0) or 0)
         if count and len(tokens) != count:
@@ -437,6 +526,10 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
             return 1
         return 0
     except BaseException as error:
+        if "prefill_chunks" in locals():
+            record["prefill_chunks"] = prefill_chunks
+        if backend is not None:
+            record["attention_events"] = _attention_events(backend)
         if arrivals:
             record["tokens"] = [item["token"] for item in arrivals]
             record["token_digest"] = _digest(record["tokens"])
@@ -571,11 +664,23 @@ def run_comparison(*, checkpoint: str, comparison: str, record_path: str, fixtur
             if item.get("type") == "validation" and item.get("arm_id") == arm_id)
         rows[condition].append(row)
     names, expected, validation_failures = list(conditions), None, 0
+
+    def clean_arm(row):
+        return (
+            row.get("status") == "raw"
+            and row.get("child_returncode", 0) == 0
+            and not row.get("child_validation_failures")
+        )
+
+    # A raw row can still have failed child validation. Never let such a row
+    # define the digest expected from the clean reference arm.
+    reference = next((row for row in rows[names[0]] if clean_arm(row)), None)
+    if sampling == "greedy" and reference is not None:
+        expected = reference.get("token_digest")
     for row in (item for name in names for item in rows[name]):
-        if sampling != "greedy" or row.get("status") != "raw":
+        if sampling != "greedy" or not clean_arm(row):
             continue
-        passed = expected is None or row.get("token_digest") == expected
-        expected = expected or row.get("token_digest")
+        passed = expected is not None and row.get("token_digest") == expected
         validation_failures += not passed
         row["validation"] = {"passed": passed, "reason": "digest matched" if passed else "token_mismatch"}
         append_jsonl(record_path, {"type": "validation", "arm_id": row["arm_id"],

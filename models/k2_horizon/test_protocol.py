@@ -125,6 +125,7 @@ class ProtocolTests(unittest.TestCase):
             def __init__(self):
                 self.turns = list(turns)
                 self.tool_results = []
+                self.tool_thinking_flags = []
 
             def generate(self, max_tokens, out, **_kwargs):
                 raw, stats = self.turns.pop(0)
@@ -135,8 +136,9 @@ class ProtocolTests(unittest.TestCase):
             def check_invariant(self):
                 return True
 
-            def append_tool_results(self, results):
+            def append_tool_results(self, results, enable_thinking=True):
                 self.tool_results.append(results)
+                self.tool_thinking_flags.append(enable_thinking)
 
         loop = Loop()
         repo = Mock()
@@ -145,6 +147,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(reason, "answer")
         repo.call.assert_called_once_with("list_dir", {"path": "."})
         self.assertEqual(len(loop.tool_results), 1)
+        self.assertEqual(loop.tool_thinking_flags, [False])
         self.assertEqual(loop.turns, [])
 
 

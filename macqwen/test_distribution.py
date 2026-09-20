@@ -19,14 +19,20 @@ class DistributionTests(unittest.TestCase):
         changelog = (ROOT / "CHANGELOG.md").read_text()
         self.assertIn(f"## MACQWEN {data['project']['version']} ", changelog)
 
-    def test_pinned_dependencies_match_the_requirements_file(self):
+    def test_shared_runtime_dependencies_are_pinned_in_project_metadata(self):
         data = tomllib.loads((ROOT / "pyproject.toml").read_text())
-        packaged = set(data["project"]["optional-dependencies"]["flashnext"])
-        requirements = {
-            line.strip() for line in (ROOT / "requirements-flashnext.txt").read_text().splitlines()
-            if line.strip() and not line.startswith("#")
-        }
-        self.assertEqual(packaged, requirements)
+        self.assertEqual(
+            set(data["project"]["dependencies"]),
+            {
+                "mlx==0.32.2",
+                "mlx-lm==0.31.3",
+                "mlx-vlm==0.6.17",
+                "transformers==5.16.1",
+                "numpy==2.5.2",
+                "requests==2.34.2",
+                "huggingface-hub==1.29.0",
+            },
+        )
 
     def test_ci_and_release_automation_exist(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()

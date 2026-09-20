@@ -51,6 +51,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from macqwen.measurement import MeasurementRun, validate_path
+
 PROMPT = ("<|im_start|>user\nExplique a fotossintese em duas frases."
           "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
 
@@ -59,6 +61,8 @@ PROMPT = ("<|im_start|>user\nExplique a fotossintese em duas frases."
 # alive so the process can publish that failure from ``atexit``. The parent
 # benchmark does not load a model merely by importing this module.
 _ACTIVE_EVIDENCE = None
+_MEASUREMENT_RUN = None
+_MEASUREMENT_ARMS = set()
 
 
 def write_evidence(path, payload: dict) -> None:
@@ -115,8 +119,17 @@ def _flush_incomplete_evidence() -> None:
 
 def _record_terminal_failure(error: BaseException) -> None:
     """Persist the exception that stopped a command-line benchmark."""
+    global _MEASUREMENT_RUN, _MEASUREMENT_ARMS
     state = _ACTIVE_EVIDENCE
     if state is None:
+        if _MEASUREMENT_RUN is not None:
+            _MEASUREMENT_RUN.failure(
+                str(error) or "benchmark terminated before completion",
+                error_type=type(error).__name__,
+            )
+            _MEASUREMENT_RUN.finish("completed_with_failures")
+            _MEASUREMENT_RUN = None
+            _MEASUREMENT_ARMS.clear()
         return
     payload = state["payload"]
     payload["status"] = "failed"
@@ -146,6 +159,14 @@ def _record_terminal_failure(error: BaseException) -> None:
         write_evidence(state["path"], payload)
     except OSError:
         pass
+    if _MEASUREMENT_RUN is not None:
+        _MEASUREMENT_RUN.failure(
+            str(error) or "benchmark terminated before completion",
+            error_type=type(error).__name__,
+        )
+        _MEASUREMENT_RUN.finish("completed_with_failures")
+        _MEASUREMENT_RUN = None
+        _MEASUREMENT_ARMS.clear()
 
 
 atexit.register(_flush_incomplete_evidence)
@@ -1261,7 +1282,7 @@ def report_drift(results) -> None:
 
 
 def main() -> None:
-    global _ACTIVE_EVIDENCE
+    global _ACTIVE_EVIDENCE, _MEASUREMENT_RUN, _MEASUREMENT_ARMS
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--arms", type=int, default=8,
@@ -1280,6 +1301,10 @@ def main() -> None:
                         help="reload the model for every arm in reversed rounds; "
                              "needed for settings that take effect at load")
     parser.add_argument("--json", default="", help="write the summary here")
+    parser.add_argument(
+        "--record", default="",
+        help="write canonical append-only JSONL evidence under FlashNext measurements",
+    )
     args = parser.parse_args()
 
     conditions = COMPARISONS[args.compare]
@@ -1335,6 +1360,23 @@ def main() -> None:
     provenance = benchmark_provenance(checkpoint)
     evidence.update(provenance)
     evidence["runtime_source_fingerprints"] = provenance["source_fingerprints"]
+    if args.record:
+        record_path = validate_path(
+            Path(args.record), Path(__file__).resolve().parents[2], "flashnext"
+        )
+        _MEASUREMENT_RUN = MeasurementRun(
+            record_path, runtime="flashnext", experiment=args.compare,
+            metadata={
+                "comparison": args.compare,
+                "tokens": args.tokens,
+                "arms": args.arms,
+                "drop": args.drop,
+                "fresh_arms": args.fresh_arms,
+                "conditions": conditions,
+                "provenance": provenance,
+            },
+        )
+        _MEASUREMENT_RUN.start()
     if args.json:
         write_evidence(args.json, evidence)
     g64_preflight = None
@@ -1398,6 +1440,30 @@ def main() -> None:
             payload["failure"] = failure
         write_evidence(_ACTIVE_EVIDENCE["path"], payload)
 
+    def publish_measurement_arm(round_index, name, row):
+        if _MEASUREMENT_RUN is None:
+            return
+        key = (round_index, name)
+        if key in _MEASUREMENT_ARMS:
+            return
+        _MEASUREMENT_ARMS.add(key)
+        _MEASUREMENT_RUN.arm(
+            arm_id=f"round-{round_index + 1}-{name}", condition=name,
+            round_index=round_index,
+            command=["models/flashnext/bench_production.py"],
+            metrics={
+                "common": {
+                    "generation_rate_tps": row.get("gen_rate"),
+                    "tail_rate_tps": row.get("tail_rate"),
+                    "physical_mb_per_token": row.get("mb_per_token"),
+                    "elapsed_seconds": row.get("elapsed_s"),
+                },
+                "flashnext": row,
+            },
+            tokens=list(row.get("ids", ())),
+            token_digest=row.get("token_sha256"),
+        )
+
     if args.fresh_arms:
         # Fresh mode creates a new backend for every arm, while the arm order
         # still alternates in reversed rounds. Stop only after a full round so
@@ -1451,6 +1517,7 @@ def main() -> None:
                     backend = FlashNextBackend()
                     def preserve_raw(row, arm_name=name, arm_round=round_index):
                         collected[arm_name].append(row)
+                        publish_measurement_arm(arm_round, arm_name, row)
                         persist_progress(arm_round, arm_name)
                     try:
                         row = arm(
@@ -1517,6 +1584,7 @@ def main() -> None:
                 persist_progress(round_index, name)
                 def preserve_raw(row, arm_name=name, arm_round=round_index):
                     collected[arm_name].append(row)
+                    publish_measurement_arm(arm_round, arm_name, row)
                     persist_progress(arm_round, arm_name)
                 row = arm(
                     backend, args.tokens, meter, run_began,
@@ -1602,6 +1670,12 @@ def main() -> None:
         write_evidence(args.json, payload)
         _ACTIVE_EVIDENCE = None
         print(f"\n  wrote {args.json}")
+    if _MEASUREMENT_RUN is not None:
+        _MEASUREMENT_RUN.finish(
+            "completed", conditions=results, raw_arms=collected,
+        )
+        _MEASUREMENT_RUN = None
+        _MEASUREMENT_ARMS.clear()
 
 
 if __name__ == "__main__":

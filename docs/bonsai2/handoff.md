@@ -95,11 +95,28 @@ Do not retry these without a new measured premise:
 - loading through stock `mlx_lm.load` without the bundled runtime;
 - vision input before the text-only baseline passes its quality gate.
 
+## Current handoff — 2026-09-19
+
+We completed the pending P1/P2 correctness batch: natural reasoning closure
+now disarms before lookahead can force a duplicate close; tool-result content
+uses the safe encoder and malformed sentinel renders fail closed; accepted
+tool formats preserve payload bytes and literal protocol tags; benchmark
+fixtures and digest references are filtered by clean-arm state; and the Bonsai
+and K2 protocol doubles accept `enable_thinking`.
+
+The retained uncommitted checkpoint and budget fixes are part of this work.
+The full shared suite passes (276 tests), and the complete Bonsai suite passes
+all 105 tests in the available Python 3.12 MLX runtime after installing the
+declared `mlx-vlm==0.6.17` dependency and Pillow. Before merging, run compile
+checks and the required live execution validation with the bundled runtime.
+No live benchmark or promotion claim is made yet; use fresh child processes
+and the interleaved reverse-order protocol when execution is available.
+
 ## Next work
 
-Baselines are established: 5.5 tok/s product at 2k with 10.43 GB peak, 4.0
-tok/s at 16k with 13.42 GB peak. Open items are the 16k allocator
-confirmation, the full shared-transform comparison, stop-retention
-continuation checks, and 8-bit KV quality validation. Record evidence in
-[`research.md`](research.md) and raw arms under
+Baselines remain 5.5 tok/s product at 2k with 10.43 GB peak and 4.0 tok/s at
+16k with 13.42 GB peak. After execution validation, the open research items
+are the 16k allocator confirmation, the full shared-transform comparison,
+stop-retention continuation checks, and 8-bit KV quality validation. Record
+new evidence in [`research.md`](research.md) and raw arms under
 [`measurements/`](measurements/).

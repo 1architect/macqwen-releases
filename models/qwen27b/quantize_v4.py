@@ -444,6 +444,13 @@ def cmd_build(args):
         src_f = REF / name
         if src_f.exists():
             shutil.copy2(src_f, out / name)
+    assets = out / "bf16-ends"
+    for name in ("embed.bf16", "head.bf16", "meta.json"):
+        src_f = ends / name
+        if not src_f.is_file():
+            raise SystemExit(f"missing BF16 end asset: {src_f}")
+        assets.mkdir(exist_ok=True)
+        shutil.copy2(src_f, assets / name)
 
     flush(f"\nwrote {out}  {total/1e9:.2f} GB in {time.time()-t0:.0f}s")
 

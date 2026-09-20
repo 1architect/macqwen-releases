@@ -1,14 +1,15 @@
-# FlashNext terminal test suite
+# FlashNext live-test provider
+
+The terminal itself is project-owned. Start it with ./tests/run.sh from the
+repository root; this directory supplies FlashNext's discovered case_*.py
+providers and runtime-specific commands.
 
 This terminal uses the same colors, prompts, progress glow, and compact command
 language as `chat.sh`. It does not run a test until we type `/run TEST`
 and confirms with `yes`.
 
-Start it with:
-
-```bash
-./models/flashnext/tests/run.sh
-```
+The compatibility launcher ./models/flashnext/tests/run.sh selects FlashNext
+explicitly and forwards to the project terminal.
 
 Run trusted performance tests in Apple Terminal. An embedded Codex terminal
 activates the Codex renderer, GPU service, and WindowServer while the benchmark
@@ -53,7 +54,7 @@ Primary commands:
 The suite requires at least three pairs for interleaved tests.
 Use `auto` or `automatic` to clear an explicit checkpoint.
 
-The terminal discovers every `case_*.py` file in this folder. Adding a file
+The project terminal discovers every case_*.py file in this folder. Adding a file
 does not require a central registry change.
 
 Each case file must provide `TEST`, `TESTS`, or `get_tests()`. Every returned
@@ -69,8 +70,8 @@ Each case file must provide `TEST`, `TESTS`, or `get_tests()`. Every returned
 Case files can also supply environment controls, a custom live metric parser,
 and a custom interpreter. This lets a new file test model behavior that the
 main terminal does not know yet.
-The terminal keeps ownership of commands, confirmation, live display, result
-storage, and interruption.
+The project terminal keeps ownership of commands, confirmation, live display,
+canonical JSONL result storage, and interruption.
 
 The catalog has three evidence levels:
 

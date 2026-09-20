@@ -25,7 +25,7 @@ class UITests(unittest.TestCase):
         self.assertEqual(human_size(4_000_000), "4 MB")
 
     def test_token_limit_text(self):
-        self.assertEqual(token_limit_text(-1), "off")
+        self.assertEqual(token_limit_text(-1), "unlimited")
         self.assertEqual(token_limit_text(512), "512")
 
     def test_thinking_hidden_by_default(self):

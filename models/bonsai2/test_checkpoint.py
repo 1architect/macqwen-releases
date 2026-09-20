@@ -24,6 +24,11 @@ def checkpoint(root: Path, name: str = "Ternary-Bonsai-2-27B-mlx-2bit") -> Path:
     (path / "model.safetensors.index.json").write_text(json.dumps({
         "weight_map": {"weight": "model-00001-of-00001.safetensors"}
     }))
+    runtime = path / "runtime"
+    runtime.mkdir()
+    for filename in ("artifact.py", "vision_artifact.py", "codec.py"):
+        (runtime / filename).write_text("VALUE = 1\n")
+    (runtime / "runtime.py").write_text("class Packed:\n    pass\n")
     return path
 
 
@@ -42,6 +47,16 @@ class CheckpointTests(unittest.TestCase):
                 (expected / "tokenizer.json").unlink()
                 self.assertEqual(installed(), [])
 
+    def test_discovery_rejects_a_checkpoint_without_its_loader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            expected = checkpoint(root)
+            (expected / "runtime" / "codec.py").unlink()
+            with patch.dict(os.environ, {"MACQWEN_MODEL_ROOT": str(root)}, clear=False):
+                self.assertEqual(installed(), [])
+                with self.assertRaisesRegex(ValueError, "runtime/codec.py"):
+                    resolve_bonsai2(expected)
+
     def test_malformed_shard_names_are_incompatible_not_errors(self):
         import json
         import tempfile
@@ -54,6 +69,8 @@ class CheckpointTests(unittest.TestCase):
             {"weight": "sub/dir.safetensors"},
             {"weight": 42},
             {"weight": ".hidden.safetensors"},
+            {"weight": ["model-00001-of-00001.safetensors"]},
+            {"weight": {"name": "model-00001-of-00001.safetensors"}},
         ):
             with self.subTest(bad_map=bad_map):
                 with tempfile.TemporaryDirectory() as directory:
@@ -83,6 +100,8 @@ class CheckpointTests(unittest.TestCase):
             (runtime / "vision_artifact.py").write_text("VALUE = 2\n")
             self.assertFalse(runtime_available(root))
             (runtime / "runtime.py").write_text("class Packed:\n    pass\n")
+            (runtime / "artifact.py").write_text("VALUE = 1\n")
+            (runtime / "codec.py").write_text("VALUE = 1\n")
             self.assertTrue(runtime_available(root))
 
     def test_single_safetensors_without_index_is_compatible(self):
@@ -98,6 +117,11 @@ class CheckpointTests(unittest.TestCase):
             (path / "tokenizer.json").touch()
             (path / "tokenizer_config.json").touch()
             (path / "model.safetensors").touch()
+            runtime = path / "runtime"
+            runtime.mkdir()
+            for filename in ("artifact.py", "vision_artifact.py", "codec.py"):
+                (runtime / filename).touch()
+            (runtime / "runtime.py").write_text("class Packed:\n    pass\n")
             environment = {
                 "MACQWEN_MODEL_ROOT": str(root),
                 "MACQWEN_BONSAI2_MODEL": "",

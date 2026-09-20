@@ -47,6 +47,14 @@ def truly_resident(store, name: str, row: int) -> bool:
     return all(byte & 1 for byte in buffer.raw[:pages])
 
 
+def _configure_residency_environment(cap: int) -> None:
+    """Select the read mode and tracker settings before backend import."""
+    os.environ["FLASHNEXT_READ"] = "resident"
+    os.environ["FLASHNEXT_TRACK_RESIDENT"] = "1"
+    os.environ["FLASHNEXT_RESIDENT_ROWS"] = str(cap)
+    os.environ.setdefault("FLASHNEXT_TOPK_THRESHOLD", "0.85")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model")
@@ -56,10 +64,7 @@ def main() -> None:
 
     # The gate only runs on the `resident` read path. Set this before the
     # backend is imported: routing reads the default at import time.
-    os.environ["FLASHNEXT_READ"] = "resident"
-    os.environ["FLASHNEXT_TRACK_RESIDENT"] = "1"
-    os.environ["FLASHNEXT_RESIDENT_ROWS"] = str(args.cap)
-    os.environ.setdefault("FLASHNEXT_TOPK_THRESHOLD", "0.85")
+    _configure_residency_environment(args.cap)
 
     from macqwen.backends.flashnext import FlashNextBackend
 

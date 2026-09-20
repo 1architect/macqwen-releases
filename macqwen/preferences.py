@@ -102,34 +102,36 @@ DEFAULTS = {name: default for name, (default, _) in SCHEMA.items()}
 
 
 def answer_limit(values: dict, default: int = DEFAULT_ANSWER_TOKENS) -> int:
-    """Return the answer allowance after resolving the default sentinel."""
+    """Return the answer allowance; ``-1`` means no generation cap."""
     saved = values.get("max_tokens", default)
-    return saved if saved > 0 else default
+    return saved if saved > 0 or saved == -1 else default
 
 
 def think_limit(values: dict) -> int:
-    """Return extra reasoning capacity, or zero when it is disabled."""
+    """Return extra reasoning capacity, zero when disabled, or ``-1``."""
     if not values.get("thinking_enabled", False):
         return 0
     saved = values.get("think_budget", DEFAULT_THINK_TOKENS)
-    return saved if saved > 0 else 0
+    return saved if saved > 0 or saved == -1 else 0
 
 
 def separate_think_limit(values: dict) -> int | None:
     """Return the interactive reasoning quota.
 
-    ``-1`` keeps the historical shared total budget. A positive value
-    reserves that many tokens for reasoning before the answer quota starts.
+    ``-1`` means unlimited reasoning. A positive value reserves that many
+    tokens for reasoning before the answer quota starts.
     """
     if not values.get("thinking_enabled", False):
         return 0
     saved = values.get("think_budget", DEFAULT_THINK_TOKENS)
-    return saved if saved > 0 else None
+    return saved if saved > 0 or saved == -1 else None
 
 
 def generation_limit(values: dict, default: int = DEFAULT_ANSWER_TOKENS) -> int:
     """Return the total ceiling for callers with one generation limit."""
-    return answer_limit(values, default) + think_limit(values)
+    answer = answer_limit(values, default)
+    think = think_limit(values)
+    return -1 if answer < 0 or think < 0 else answer + think
 
 # the two chats disagreed on this name; the explicit one wins
 RENAMED = {"show_think": "show_thinking"}

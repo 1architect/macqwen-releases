@@ -97,7 +97,7 @@ class Context7:
         hits = self.search(library, limit=1)
         return hits[0]["id"] if hits else None
 
-    def docs(self, library, topic=None, tokens=1500):
+    def docs(self, library, topic=None, tokens=1000):
         lib = self.resolve(library)
         if not lib:
             return {"error": f"No documentation indexed for {library!r}."}
@@ -105,7 +105,7 @@ class Context7:
         if topic:
             url += f"&topic={urllib.parse.quote(topic[:80])}"
         try:
-            body, hit = self._cached(url)
+            body, _ = self._cached(url)
         except (HTTPError, URLError) as e:
             return {"error": f"Context7 unavailable: {getattr(e, 'reason', e)}"}
         if not body.strip():
@@ -113,13 +113,7 @@ class Context7:
         return {
             "library": lib,
             "topic": topic,
-            "cached": hit,
             "documentation": body[: tokens * 6],
-            "instruction": (
-                "This is the real signature from the library's own reference. "
-                "Use it exactly as written. Do not adapt it from memory, and do "
-                "not assume an overload that is not shown here."
-            ),
         }
 
     # ------------------------------------------------------------- signatures

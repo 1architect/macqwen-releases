@@ -74,6 +74,62 @@ class GenerationTimingTests(unittest.TestCase):
         self.assertAlmostEqual(fast.gen_tps, 1 / 0.35)
         self.assertAlmostEqual(slow.gen_tps, fast.gen_tps)
 
+    def test_retained_stop_reuses_cache_for_tool_error(self):
+        engine = engine_module.FrankensteinEngine.__new__(
+            engine_module.FrankensteinEngine
+        )
+        engine.pending = [1, 2]
+        engine.tape = []
+        engine.model = object()
+
+        class Tokenizer:
+            eos_token_ids = [999]
+
+            @staticmethod
+            def encode(text, add_special_tokens=False):
+                del add_special_tokens
+                return [ord(character) for character in text]
+
+        engine.tokenizer = Tokenizer()
+        engine.cache = [SimpleNamespace(offset=0, nbytes=0)]
+        engine.sampler = None
+        engine.logits_processors = None
+        engine.prefill_step_size = 1
+        engine.kv_bits = None
+        engine.kv_group_size = 64
+        engine.quantized_kv_start = 8192
+        engine.loop_guard = False
+        engine.turn = 0
+        engine.stats = []
+        engine.turn_closed = True
+        engine.cache_bytes = lambda: (0, 0)
+        prompts = []
+        outputs = iter(((65, 999), (66, 999)))
+
+        def responses(_model, _tokenizer, prompt, **_kwargs):
+            prompts.append(len(prompt))
+            engine.cache[0].offset += len(prompt)
+            for value in next(outputs):
+                engine.cache[0].offset += 1
+                yield SimpleNamespace(
+                    token=value, text="", prompt_tps=5.0,
+                    generation_tps=1.0, peak_memory=0.0,
+                    finish_reason="stop" if value == 999 else None,
+                )
+
+        with patch.object(engine_module, "stream_generate", responses), \
+                patch.object(engine_module, "host_mem", return_value=(0.0, 0.0)), \
+                patch.object(engine_module.mx, "get_active_memory", return_value=0), \
+                patch.object(engine_module.mx, "get_cache_memory", return_value=0):
+            engine.generate(max_tokens=4, echo=False)
+            engine.append_tool_results(["FileNotFoundError: missing.txt"])
+            added = len(engine.pending)
+            engine.generate(max_tokens=4, echo=False)
+
+        self.assertEqual(prompts, [2, added])
+        self.assertTrue(engine.turn_closed)
+        self.assertEqual(engine.cache_tokens, len(engine.tape))
+
 
 if __name__ == "__main__":
     unittest.main()

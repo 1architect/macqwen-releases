@@ -7,6 +7,13 @@ from pathlib import Path
 
 from .settings import ALIASES, CHECKPOINT_ENV
 
+_RUNTIME_FILES = (
+    "runtime/runtime.py",
+    "runtime/artifact.py",
+    "runtime/vision_artifact.py",
+    "runtime/codec.py",
+)
+
 
 def _json(path: Path) -> dict:
     try:
@@ -31,9 +38,7 @@ def runtime_available(path: Path) -> bool:
     imports must exist, and the transform module must define Packed.
     """
     runtime = path / "runtime"
-    if not (runtime / "runtime.py").is_file():
-        return False
-    if not (runtime / "vision_artifact.py").is_file():
+    if not all((path / name).is_file() for name in _RUNTIME_FILES):
         return False
     try:
         return "class Packed" in (runtime / "runtime.py").read_text()
@@ -62,12 +67,18 @@ def compatible(path: Path) -> bool:
         "tokenizer.json",
         "tokenizer_config.json",
     )
-    if not all((path / name).is_file() for name in required):
+    if not all((path / name).is_file() for name in required) or not runtime_available(path):
         return False
     index = _json(path / "model.safetensors.index.json")
     weight_map = index.get("weight_map")
     if isinstance(weight_map, dict) and weight_map:
-        shards = set(weight_map.values())
+        # Values must be plain filenames before set() touches them: a
+        # list or dict value would crash discovery with TypeError instead
+        # of marking the checkpoint incompatible.
+        values = list(weight_map.values())
+        if not all(isinstance(value, str) for value in values):
+            return False
+        shards = set(values)
         if (
             not shards
             or not all(_sane_shard_name(shard) for shard in shards)
@@ -93,8 +104,16 @@ def resolve_bonsai2(requested: str | os.PathLike[str] | None = None) -> Path:
         if not path.is_absolute():
             path = root / path
         if not compatible(path):
+            missing = [
+                name for name in ("config.json", *required_files(path))
+                if not (path / name).is_file()
+            ]
+            if _json(path / "config.json").get("model_type") != "prism_hadamard_qwen35":
+                missing.append("compatible config.json")
             raise ValueError(
-                f"incomplete or incompatible Bonsai-2 checkpoint: {path}"
+                f"incomplete or incompatible Bonsai-2 checkpoint: {path}\n"
+                f"missing or invalid: {', '.join(sorted(set(missing)))}\n"
+                f"repair: resume the checkpoint download into {path} and try again"
             )
         return path.resolve()
 
@@ -107,3 +126,19 @@ def resolve_bonsai2(requested: str | os.PathLike[str] | None = None) -> Path:
         )
     lines = "\n".join(f"  --checkpoint {path}" for path in choices)
     raise ValueError("choose a Bonsai-2 checkpoint:\n" + lines)
+
+
+def required_files(path: Path) -> list[str]:
+    """Return files that make the checkpoint loadable, including its loader."""
+    required = ["tokenizer.json", "tokenizer_config.json", *_RUNTIME_FILES]
+    index = _json(path / "model.safetensors.index.json")
+    weight_map = index.get("weight_map")
+    if isinstance(weight_map, dict) and weight_map:
+        values = list(weight_map.values())
+        if all(isinstance(value, str) and _sane_shard_name(value) for value in values):
+            required.extend(sorted(set(values)))
+        else:
+            required.append("model.safetensors.index.json")
+    elif not (path / "model.safetensors").is_file():
+        required.append("model.safetensors")
+    return required

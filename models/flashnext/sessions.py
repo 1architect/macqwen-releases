@@ -32,6 +32,17 @@ _TEMP_NAME = re.compile(
 )
 _HEADER_LIMIT = 16 * 1024 * 1024
 _CHECKSUM_PLACEHOLDER = "UNSET-" + "0" * 58
+# Every local file that can change cache state must invalidate saved sessions.
+_ENGINE_FILES = (
+    "adaptive_topk.py",
+    "expert_cache.py",
+    "loader.py",
+    "ngram.py",
+    "patch_rmsnorm.py",
+    "prefill.py",
+    "qsa_chunk.py",
+    "store.py",
+)
 
 
 class SessionError(RuntimeError):
@@ -274,21 +285,7 @@ def _engine_fingerprint(language: Any) -> str:
     paths: set[Path] = set()
     local_paths: set[Path] = set()
     local = Path(__file__).resolve().parent
-    for name in (
-        # Every local file that decides what lands in the cache. `qsa_chunk`
-        # replaces `Qwen4ExpAttention.__call__`, so a change to its mask moves
-        # the attention state; `prefill` chooses which path ingests the prompt.
-        # A session restored against changed code would be silently wrong, so
-        # both belong in the fingerprint.
-        "adaptive_topk.py",
-        "expert_cache.py",
-        "loader.py",
-        "ngram.py",
-        "patch_rmsnorm.py",
-        "prefill.py",
-        "qsa_chunk.py",
-        "store.py",
-    ):
+    for name in _ENGINE_FILES:
         path = local / name
         if path.is_file():
             paths.add(path)

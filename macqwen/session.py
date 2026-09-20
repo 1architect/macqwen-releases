@@ -20,8 +20,10 @@ import re
 import signal
 import subprocess
 import sys
+from threading import Event, Thread
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -32,6 +34,7 @@ from macqwen.api_keys import (
     sanitized_environment,
 )
 from macqwen.agent import Limits, run_agent
+from macqwen.backends.base import GenerationCancelled
 from macqwen.profiles import system_prompt, tools_for
 from macqwen.reasoning_policy import (
     effective_reasoning_effort,
@@ -52,6 +55,95 @@ from macqwen.ui import (
     filter_thinking,
     rss_gb,
 )
+
+
+class _TurnTelemetry:
+    """Small fallback report for a turn stopped before its backend returned."""
+
+    def __init__(self, pending: int):
+        self.started = time.perf_counter()
+        self.prefilled_at = None
+        self.prompt_done = 0
+        self.prompt_total = pending
+        self.tokens = 0
+        self.decode_started = None
+
+    def progress(self, done: int, total: int) -> None:
+        self.prompt_done = max(self.prompt_done, int(done))
+        self.prompt_total = int(total)
+        if done >= total:
+            self.prefilled()
+
+    def prefilled(self) -> None:
+        if self.prefilled_at is None:
+            self.prefilled_at = time.perf_counter()
+            self.decode_started = self.prefilled_at
+
+    def token(self, _value: int, _piece: str) -> None:
+        self.prefilled()
+        self.tokens += 1
+
+    def stats(self):
+        now = time.perf_counter()
+        prefill_seconds = (
+            (self.prefilled_at or now) - self.started
+        )
+        decode_seconds = (
+            now - self.decode_started if self.decode_started is not None else 0.0
+        )
+        prompt_tokens = self.prompt_done or self.prompt_total
+        return SimpleNamespace(
+            finish="interrupted",
+            tokens=self.tokens,
+            rate=self.tokens / decode_seconds if decode_seconds else 0.0,
+            seconds=decode_seconds,
+            prompt_tokens=prompt_tokens,
+            prompt_rate=prompt_tokens / prefill_seconds if prefill_seconds else 0.0,
+            prefill_seconds=prefill_seconds,
+            tail_tokens=0,
+            tail_seconds=0.0,
+        )
+
+
+def _run_generation(call):
+    """Run model work away from the signal-handling terminal loop."""
+    stop = Event()
+    result = []
+    error = []
+
+    def worker():
+        try:
+            result.append(call(stop.is_set))
+        except BaseException as exc:
+            error.append(exc)
+
+    thread = Thread(target=worker, name="macqwen-generation")
+    thread.start()
+    presses = 0
+    while thread.is_alive():
+        try:
+            time.sleep(0.05)
+        except KeyboardInterrupt:
+            presses += 1
+            stop.set()
+    thread.join()
+    if error and not presses:
+        raise error[0]
+    return (result[0] if result else None), error[0] if error else None, presses
+
+
+def _backend_generate(backend, kwargs, should_cancel):
+    """Pass cancellation only to backends that implement the shared hook."""
+    try:
+        parameters = inspect.signature(backend.generate).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "should_cancel" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        kwargs["should_cancel"] = should_cancel
+    return backend.generate(**kwargs)
 
 
 def ask_approval(name: str, args: dict, input_fn=input) -> bool:
@@ -308,7 +400,11 @@ def _effective_turn_budgets(
         # total or turn 2,048 total tokens into 2,048 + 4,096.
         total = answer
     else:
-        total = answer if think is None else answer + think
+        total = (
+            -1
+            if answer < 0 or think is None or think < 0
+            else answer + think
+        )
     return answer, requested_think, think, total
 
 
@@ -714,16 +810,28 @@ def main() -> int:
     print(commands.render_help(session.profile) + "\n")
 
     glow = IngestGlow()
+    interrupt_level = 0
+
+    def handle_interrupt(level: int) -> bool:
+        if level == 1:
+            print(f"\n{C['dim']}answer stopped; Ctrl+C again closes the conversation, "
+                  f"a third time quits{C['0']}\n")
+            return False
+        if level == 2:
+            session.reset()
+            print(f"\n{C['dim']}conversation closed; Ctrl+C again quits{C['0']}\n")
+            return False
+        print()
+        return True
+
     while session.running:
         try:
             prompt = read_prompt(f"{C['b']}you>{C['0']} ")
         except KeyboardInterrupt:
-            print(f"\n{C['dim']}(Ctrl+C again or /quit to leave){C['0']}")
-            try:
-                prompt = read_prompt(f"{C['b']}you>{C['0']} ")
-            except (EOFError, KeyboardInterrupt):
-                print()
+            interrupt_level += 1
+            if handle_interrupt(interrupt_level):
                 return 0
+            continue
         except EOFError:
             print()
             return 0
@@ -735,16 +843,24 @@ def main() -> int:
             if answered is not None:
                 if answered:
                     print(answered + "\n")
+                interrupt_level = 0
                 continue
 
             if session.profile == "agent":
-                run_turn_agent(session, prompt)
+                presses = run_turn_agent(session, prompt)
             else:
-                run_turn_plain(session, prompt, glow)
+                presses = run_turn_plain(session, prompt, glow)
+            if presses:
+                interrupt_level += presses
+                if handle_interrupt(interrupt_level):
+                    return 0
+            else:
+                interrupt_level = 0
         except KeyboardInterrupt:
             glow.finish()
-            session.reset()
-            print(f"\n{C['dim']}generation interrupted; conversation reset{C['0']}\n")
+            interrupt_level += 1
+            if handle_interrupt(interrupt_level):
+                return 0
     if session.server_requested:
         from macqwen.server import serve
 
@@ -771,7 +887,7 @@ def open_or_continue(session, prompt: str) -> None:
             prompt, enable_thinking=session.preferences["thinking_enabled"])
 
 
-def run_turn_plain(session, prompt: str, glow: IngestGlow) -> None:
+def run_turn_plain(session, prompt: str, glow: IngestGlow) -> int:
     open_or_continue(session, prompt)
     prefs = session.preferences
     answer_budget, _, think_budget, limit = _effective_turn_budgets(
@@ -781,6 +897,7 @@ def run_turn_plain(session, prompt: str, glow: IngestGlow) -> None:
         prefs["thinking_enabled"], prefs["show_thinking"]
     )
     animator = AsyncWordAnimator(enabled=prefs["animate"])
+    telemetry = _TurnTelemetry(len(session.backend.pending))
 
     def show(piece: str) -> None:
         visible = thinking.feed(piece)
@@ -795,35 +912,59 @@ def run_turn_plain(session, prompt: str, glow: IngestGlow) -> None:
             answer_budget,
             think_budget,
         )
+    def progress(done, total):
+        telemetry.progress(done, total)
+        glow.update(done, total)
+
+    def prefilled():
+        telemetry.prefilled()
+        glow.finish()
+
+    generate_kwargs = {
+        "max_tokens": limit,
+        "out": show if prefs["stream_answers"] else None,
+        "on_prefilled": prefilled,
+        "on_prefill_progress": progress,
+        "on_decode_token": telemetry.token,
+    }
     try:
-        # the glow belongs to the prefill; decoding prints the answer over it
-        text, stats = session.backend.generate(
-            max_tokens=limit,
-            out=show if prefs["stream_answers"] else None,
-            on_prefilled=glow.finish,
-            on_prefill_progress=glow.update,
+        result, error, presses = _run_generation(
+            lambda should_cancel: _backend_generate(
+                session.backend, generate_kwargs, should_cancel
+            )
         )
     except KeyboardInterrupt:
+        # Keep direct callers safe; terminal-driven calls are handled by the
+        # worker above and use the staged Ctrl-C policy in main().
         animator.cancel()
         session.reset()
         print(f"\n{C['dim']}generation interrupted; conversation reset{C['0']}\n")
-        return
+        return 0
     finally:
         if hasattr(session.backend, "_interactive_budgets"):
             session.backend._interactive_budgets = budget_state
         glow.finish()
-    if prefs["stream_answers"]:
-        tail = thinking.finish()
-        if tail:
-            animator.feed(tail, C["gray"] if thinking.inside else "")
-        animator.finish(C["gray"] if thinking.inside else "")
-    if not prefs["stream_answers"]:
-        visible, _ = filter_thinking(
-            text, prefs["thinking_enabled"], prefs["show_thinking"]
-        )
-        if visible:
-            animator.feed(visible)
-            animator.finish()
+    interrupted = bool(presses)
+    if interrupted:
+        animator.cancel()
+        if error is not None and not isinstance(error, GenerationCancelled):
+            raise error
+        text, stats = result if result is not None else ("", telemetry.stats())
+    else:
+        text, stats = result
+    if not interrupted:
+        if prefs["stream_answers"]:
+            tail = thinking.finish()
+            if tail:
+                animator.feed(tail, C["gray"] if thinking.inside else "")
+            animator.finish(C["gray"] if thinking.inside else "")
+        if not prefs["stream_answers"]:
+            visible, _ = filter_thinking(
+                text, prefs["thinking_enabled"], prefs["show_thinking"]
+            )
+            if visible:
+                animator.feed(visible)
+                animator.finish()
     elapsed = time.time() - began
     tail_tokens = getattr(stats, "tail_tokens", 0)
     tail_seconds = getattr(stats, "tail_seconds", 0.0)
@@ -838,6 +979,7 @@ def run_turn_plain(session, prompt: str, glow: IngestGlow) -> None:
           f"finish {getattr(stats, 'finish', 'unknown')}{C['0']}\n")
     if getattr(stats, "finish", None) == "length":
         print("Generation limit reached. Use /config tokens to inspect the answer limit.\n")
+    return presses
 
 
 def run_benchmark(session, prompt: str, ready_seconds: float) -> dict:
@@ -1105,7 +1247,7 @@ def token_stats_text(stats_items, context: int, elapsed: float) -> str:
     )
 
 
-def run_turn_agent(session, prompt: str) -> None:
+def run_turn_agent(session, prompt: str) -> int:
     open_or_continue(session, prompt)
     prefs = session.preferences
     answer_budget, requested_think, think_budget, limit = _effective_turn_budgets(
@@ -1123,6 +1265,7 @@ def run_turn_agent(session, prompt: str) -> None:
     animator = [AsyncWordAnimator(enabled=prefs["animate"])]
     ui = AgentUI()
     turn_stats = []
+    telemetry = _TurnTelemetry(len(session.backend.pending))
 
     def feed_model_text(piece=""):
         visible = protocol[0].feed(thinking[0].feed(str(piece)))
@@ -1169,24 +1312,22 @@ def run_turn_agent(session, prompt: str) -> None:
             think_budget,
         )
     try:
-        reason = run_agent(
-            session.backend, session.tools, out,
-            Limits(
-                # A shared budget uses the one total ceiling. Separate quotas
-                # use the answer allowance here because run_agent adds
-                # think_tokens to it. The REAP xhigh cap remains in the
-                # backend's interactive budget tuple for shared turns.
-                max_tokens=limit if requested_think is None else answer_budget,
-                # ``run_agent`` adds this value to max_tokens. In shared mode
-                # the cap is enforced by the backend, while the generation
-                # call must retain the one total ceiling.
-                think_tokens=0 if requested_think is None else think_budget,
-            ),
-            approve=ask_approval if prefs["approval"] == "ask" else None,
-            model_out=model_out,
-            model_done=model_done,
-            ui=ui,
-            on_stats=turn_stats.append,
+        result, error, presses = _run_generation(
+            lambda should_cancel: run_agent(
+                session.backend, session.tools, out,
+                Limits(
+                    max_tokens=limit if requested_think is None else answer_budget,
+                    think_tokens=0 if requested_think is None else think_budget,
+                ),
+                approve=ask_approval if prefs["approval"] == "ask" else None,
+                model_out=model_out,
+                model_done=model_done,
+                ui=ui,
+                on_stats=turn_stats.append,
+                on_prefill_progress=telemetry.progress,
+                on_decode_token=telemetry.token,
+                should_cancel=should_cancel,
+            )
         )
     except KeyboardInterrupt:
         ui.finish()
@@ -1196,9 +1337,20 @@ def run_turn_agent(session, prompt: str) -> None:
     finally:
         if hasattr(session.backend, "_interactive_budgets"):
             session.backend._interactive_budgets = budget_state
+    if presses:
+        ui.finish()
+        if animator[0] is not None:
+            animator[0].cancel()
+        if error is not None and not isinstance(error, GenerationCancelled):
+            raise error
+        reason = "interrupted"
+        turn_stats.append(telemetry.stats())
+    else:
+        reason = result
     elapsed = time.time() - began
     print(f"\n{C['dim']}{token_stats_text(turn_stats, len(session.backend.tape), elapsed)}"
           f"\nstopped: {reason}{C['0']}\n")
+    return presses
 
 
 if __name__ == "__main__":

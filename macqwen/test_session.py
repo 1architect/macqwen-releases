@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import signal
+import sys
 import tempfile
+import threading
+import time
 from contextlib import redirect_stdout
 from io import StringIO
 from types import SimpleNamespace
-import sys
 import unittest
 from unittest.mock import patch
-from pathlib import Path
 
 from macqwen import preferences
+from macqwen.backends.base import GenerationCancelled
 from macqwen.session import (
     Session,
     _effective_turn_budgets,
@@ -18,6 +23,7 @@ from macqwen.session import (
     run_benchmark,
     run_turn_plain,
     token_stats_text,
+    _run_generation,
 )
 from macqwen.ui import IngestGlow
 
@@ -87,6 +93,55 @@ class FakeTools:
 
 
 class SessionTests(unittest.TestCase):
+    def test_generation_runner_observes_ctrl_c_while_worker_is_busy(self):
+        def work(should_cancel):
+            while not should_cancel():
+                time.sleep(0.01)
+            raise GenerationCancelled
+
+        timer = threading.Timer(
+            0.05, lambda: os.kill(os.getpid(), signal.SIGINT)
+        )
+        timer.start()
+        try:
+            result, error, presses = _run_generation(work)
+        finally:
+            timer.cancel()
+
+        self.assertIsNone(result)
+        self.assertIsInstance(error, GenerationCancelled)
+        self.assertEqual(presses, 1)
+
+    def test_ctrl_c_stages_close_then_quit(self):
+        class LoadedBackend(FakeBackend):
+            def __init__(self):
+                self.tape = []
+                self.pending = []
+                self.reset_called = 0
+
+            def reset(self):
+                self.reset_called += 1
+
+        backend = LoadedBackend()
+        with tempfile.TemporaryDirectory() as root, \
+                patch.object(sys, "argv", [
+                    "session.py", "--model", "qwen27b",
+                    "--model-path", str(Path(root) / "model"),
+                    "--preferences-file", str(Path(root) / "preferences.json"),
+                    "--api-keys-file", str(Path(root) / "keys.json"),
+                ]), \
+                patch("macqwen.session.build_backend", return_value=backend), \
+                patch("macqwen.session.read_prompt", side_effect=(
+                    "hello", KeyboardInterrupt, KeyboardInterrupt, KeyboardInterrupt,
+                )), \
+                patch("macqwen.session.run_turn_plain", return_value=1), \
+                redirect_stdout(StringIO()) as output:
+            self.assertEqual(main(), 0)
+
+        self.assertEqual(backend.reset_called, 1)
+        self.assertIn("answer stopped", output.getvalue())
+        self.assertIn("conversation closed", output.getvalue())
+
     def test_seed_is_applied_after_backend_load_before_generation(self):
         import mlx.core as mx
 
@@ -137,7 +192,9 @@ class SessionTests(unittest.TestCase):
                 thinking_enabled=True,
                 effort="xhigh",
                 max_tokens=2048,
-                think_budget=-1,
+                # Zero exercises the legacy shared-total sentinel before
+                # preference-file migration turns it into the default.
+                think_budget=0,
             )
 
             answer, requested, think, total = _effective_turn_budgets(
@@ -160,7 +217,7 @@ class SessionTests(unittest.TestCase):
                 thinking_enabled=True,
                 effort="xhigh",
                 max_tokens=8192,
-                think_budget=-1,
+                think_budget=0,
             )
 
             answer, requested, think, total = _effective_turn_budgets(

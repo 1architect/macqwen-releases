@@ -49,6 +49,17 @@ class PreferenceTests(unittest.TestCase):
         self.assertEqual(preferences.think_limit(values), 512)
         self.assertEqual(preferences.generation_limit(values), 632)
 
+    def test_negative_limits_remain_unlimited(self):
+        values = dict(
+            preferences.DEFAULTS,
+            thinking_enabled=True,
+            max_tokens=-1,
+            think_budget=-1,
+        )
+        self.assertEqual(preferences.answer_limit(values), -1)
+        self.assertEqual(preferences.separate_think_limit(values), -1)
+        self.assertEqual(preferences.generation_limit(values), -1)
+
     def test_unused_zero_thinking_budget_migrates_to_the_new_default(self):
         self.path.write_text(json.dumps({"think_budget": 0}))
         values = preferences.load(self.path)

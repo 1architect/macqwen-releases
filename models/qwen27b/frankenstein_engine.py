@@ -25,6 +25,8 @@ from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.utils import load_tokenizer
 
+from macqwen.backends.base import GenerationCancelled
+
 def patch_lm_head_last_token():
     """Apply lm_head only to the final position.
 
@@ -934,7 +936,7 @@ class FrankensteinEngine:
                         break
             finally:
                 body_seconds += time.perf_counter() - body_began
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, GenerationCancelled):
             # Every token yielded is already in the cache, so stopping here
             # leaves tape and cache consistent. The turn stays open and the
             # next segment closes it with <|im_end|>.

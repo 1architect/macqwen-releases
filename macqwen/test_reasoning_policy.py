@@ -59,6 +59,15 @@ class ReasoningPolicyTests(unittest.TestCase):
                 think_budget_status(None, "xhigh", path),
             )
 
+    def test_explicit_no_cap_bypasses_reap_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = checkpoint(Path(directory) / "reap", True)
+            self.assertEqual(effective_think_budget(-1, "xhigh", path), -1)
+            self.assertEqual(
+                think_budget_status(-1, "xhigh", path),
+                "think-tokens=unlimited",
+            )
+
     def test_keeps_lower_reap_efforts(self):
         with tempfile.TemporaryDirectory() as directory:
             path = checkpoint(Path(directory) / "reap", True)

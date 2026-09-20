@@ -139,19 +139,22 @@ class BackendTests(unittest.TestCase):
         )
         self.assertEqual(tokenizer.messages[1]["think"], "")
 
-    def test_im_end_stop_is_retained_with_the_live_cache(self):
-        # The close token is already consumed into every cache layer, so
-        # retaining it keeps tape and cache identical with no replay.
-        backend, _tokenizer = self.backend(retain_stop=True)
+    def test_im_end_stop_stays_out_of_the_live_cache(self):
+        # The stop is sampled but never fed through the recurrent model, so
+        # the next tool/user append can reuse the live cache directly.
+        backend, _tokenizer = self.backend()
         backend.pending = [10, 11]
         backend.cache = [KVCache()]
         backend.cache[0].offset = 0
+        prompts = []
 
         def generate_step(prompt, _model, **options):
+            prompts.append(len(prompt))
             backend.cache[0].offset += len(prompt)
             options["prompt_progress_callback"](len(prompt), len(prompt))
             for value in (65, 66, 999):
-                backend.cache[0].offset += 1
+                if value not in backend.stops:
+                    backend.cache[0].offset += 1
                 yield value, None
 
         with patch("mlx_lm.generate.generate_step", generate_step):
@@ -160,12 +163,105 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(text, "AB")
         self.assertEqual(stats.finish, "stop")
         self.assertEqual(stats.tokens, 2)
-        self.assertEqual(backend.tape, [10, 11, 65, 66, 999])
-        self.assertTrue(backend.turn_closed)
+        self.assertEqual(backend.tape, [10, 11, 65, 66])
+        self.assertFalse(backend.turn_closed)
         self.assertFalse(backend._replay_needed)
         self.assertTrue(backend.check_invariant())
 
-    def test_retention_stays_off_by_default(self):
+        backend.append_tool_results(["FileNotFoundError: missing.txt"])
+        added = len(backend.pending)
+        with patch("mlx_lm.generate.generate_step", generate_step):
+            backend.generate(3)
+
+        self.assertEqual(prompts, [2, added])
+        self.assertFalse(backend._replay_needed)
+        self.assertTrue(backend.check_invariant())
+
+    def test_stop_aware_model_skips_only_post_prefill_stop_calls(self):
+        import mlx.core as mx
+
+        from models.bonsai2.backend import _NonConsumingStopModel
+
+        calls = []
+
+        def model(inputs, cache=None):
+            del cache
+            calls.append(inputs.tolist())
+            return mx.zeros((1, inputs.shape[-1], 7))
+
+        wrapped = _NonConsumingStopModel(
+            model, prompt_length=3, prefill_step_size=2, stops={999}
+        )
+        wrapped(mx.array([[10]], dtype=mx.uint32))
+        wrapped(mx.array([[11]], dtype=mx.uint32))
+        wrapped(mx.array([[999]], dtype=mx.uint32))
+        wrapped(mx.array([[12]], dtype=mx.uint32))
+
+        self.assertEqual(calls, [[[10]], [[11]], [[12]]])
+
+    def test_stop_aware_model_keeps_logits_metadata_only(self):
+        import mlx.core as mx
+
+        from models.bonsai2.backend import _NonConsumingStopModel
+
+        def model(inputs, cache=None):
+            del cache
+            return mx.ones((1, inputs.shape[-1], 7), dtype=mx.float16)
+
+        wrapped = _NonConsumingStopModel(
+            model, prompt_length=2, prefill_step_size=2, stops={999}
+        )
+        wrapped(mx.array([[10]], dtype=mx.uint32))
+        self.assertEqual(wrapped._last_logits_shape, (1, 1, 7))
+        self.assertEqual(wrapped._last_logits_dtype, mx.float16)
+        self.assertFalse(hasattr(wrapped, "_last_logits"))
+        with patch.object(mx, "zeros_like", side_effect=AssertionError):
+            skipped = wrapped(mx.array([[999]], dtype=mx.uint32))
+        self.assertEqual(tuple(skipped.shape), (1, 1, 7))
+        self.assertEqual(skipped.dtype, mx.float16)
+
+    def test_q4_attention_tiles_absolute_causal_rows_without_touching_cache(self):
+        import mlx.core as mx
+
+        from models.bonsai2.backend import _bonsai_quantized_attention
+
+        class Cache:
+            bits = 4
+            group_size = 64
+            offset = 10
+
+        queries = mx.ones((1, 4, 6, 2), dtype=mx.float16)
+        keys = (
+            mx.zeros((1, 2, 10, 1), dtype=mx.uint32),
+            mx.ones((1, 2, 10, 1), dtype=mx.float16),
+            mx.zeros((1, 2, 10, 1), dtype=mx.float16),
+        )
+        values = keys
+        calls = []
+
+        def stock(tile, tile_keys, tile_values, *, cache, scale, mask):
+            calls.append({
+                "shape": tuple(tile.shape),
+                "keys": tuple(item.shape for item in tile_keys),
+                "values": tuple(item.shape for item in tile_values),
+                "cache": cache,
+                "scale": scale,
+                "mask": mask,
+            })
+            return tile
+
+        output = _bonsai_quantized_attention(
+            stock, queries, keys, values, Cache(), 1.0, "causal", 1
+        )
+        self.assertEqual(tuple(output.shape), tuple(queries.shape))
+        self.assertEqual(len(calls), 6)
+        self.assertTrue(all(call["keys"][0][-2] == 10 for call in calls))
+        self.assertTrue(all(call["values"][0][-2] == 10 for call in calls))
+        self.assertEqual(calls[0]["mask"].tolist()[0], [True] * 5 + [False] * 5)
+        self.assertEqual(calls[-1]["mask"].tolist()[0], [True] * 10)
+        self.assertEqual(Cache.offset, 10)
+
+    def test_eos_stop_reuses_the_live_cache(self):
         backend, _tokenizer = self.backend()
         backend.pending = [10, 11]
         backend.cache = [KVCache()]
@@ -175,7 +271,8 @@ class BackendTests(unittest.TestCase):
             backend.cache[0].offset += len(prompt)
             options["prompt_progress_callback"](len(prompt), len(prompt))
             for value in (65, 999):
-                backend.cache[0].offset += 1
+                if value not in backend.stops:
+                    backend.cache[0].offset += 1
                 yield value, None
 
         with patch("mlx_lm.generate.generate_step", generate_step):
@@ -184,9 +281,10 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(stats.finish, "stop")
         self.assertEqual(backend.tape, [10, 11, 65])
         self.assertFalse(backend.turn_closed)
-        self.assertTrue(backend._replay_needed)
+        self.assertFalse(backend._replay_needed)
+        self.assertTrue(backend.check_invariant())
 
-    def test_other_stops_keep_the_replay_recovery_path(self):
+    def test_other_stops_reuse_the_live_cache(self):
         backend, _tokenizer = self.backend()
         backend.pending = [10, 11]
         backend.cache = [KVCache()]
@@ -196,7 +294,8 @@ class BackendTests(unittest.TestCase):
             backend.cache[0].offset += len(prompt)
             options["prompt_progress_callback"](len(prompt), len(prompt))
             for value in (65, 1):
-                backend.cache[0].offset += 1
+                if value not in backend.stops:
+                    backend.cache[0].offset += 1
                 yield value, None
 
         with patch("mlx_lm.generate.generate_step", generate_step):
@@ -205,7 +304,8 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(stats.finish, "stop")
         self.assertEqual(backend.tape, [10, 11, 65])
         self.assertFalse(backend.turn_closed)
-        self.assertTrue(backend._replay_needed)
+        self.assertFalse(backend._replay_needed)
+        self.assertTrue(backend.check_invariant())
 
     def test_cache_invariant_checks_every_layer_offset(self):
         backend, _tokenizer = self.backend()
@@ -218,9 +318,8 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(backend.check_invariant())
 
     def test_pristine_replay_state_is_valid(self):
-        # After a normal stop the replacement cache is empty while the tape
-        # is authoritative. That state must read valid: the next turn
-        # replays the tape instead of continuing a broken cache.
+        # A fallback replay state remains valid when a runtime reports that
+        # its cache cannot continue from the tape.
         backend, _tokenizer = self.backend()
         backend.tape = [10, 11]
         backend.cache = []
@@ -240,8 +339,9 @@ class BackendTests(unittest.TestCase):
                 item.offset += len(prompt)
             options["prompt_progress_callback"](len(prompt), len(prompt))
             for value in (65, 999):
-                for item in backend.cache:
-                    item.offset += 1
+                if value not in backend.stops:
+                    for item in backend.cache:
+                        item.offset += 1
                 yield value, None
 
         with patch("mlx_lm.generate.generate_step", generate_step):
@@ -249,7 +349,8 @@ class BackendTests(unittest.TestCase):
 
         self.assertEqual(backend.tape, [10, 11, 65])
         self.assertFalse(backend.turn_closed)
-        self.assertTrue(backend._replay_needed)
+        self.assertFalse(backend._replay_needed)
+        self.assertTrue(backend.check_invariant())
 
     def test_synchronous_generation_setup_failure_replays_tape(self):
         backend, _tokenizer = self.backend()
@@ -264,6 +365,29 @@ class BackendTests(unittest.TestCase):
 
         self.assertEqual(backend.tape, [10])
         self.assertEqual(backend.pending, [])
+        self.assertTrue(backend._replay_needed)
+        self.assertFalse(backend.turn_closed)
+
+    def test_cancellation_keeps_the_replay_recovery_path(self):
+        backend, _tokenizer = self.backend()
+        backend.pending = [10]
+        backend.cache = [KVCache()]
+        backend.cache[0].offset = 0
+
+        def generate_step(prompt, _model, **options):
+            backend.cache[0].offset += len(prompt)
+            options["prompt_progress_callback"](len(prompt), len(prompt))
+            backend.cache[0].offset += 1
+            yield 65, None
+
+        def interrupt(*_args):
+            raise KeyboardInterrupt
+
+        with patch("mlx_lm.generate.generate_step", generate_step):
+            with self.assertRaises(KeyboardInterrupt):
+                backend.generate(2, on_decode_token=interrupt)
+
+        self.assertEqual(backend.tape, [10, 65])
         self.assertTrue(backend._replay_needed)
         self.assertFalse(backend.turn_closed)
 
@@ -442,6 +566,66 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(len(seen), stats.tokens + 1)
         self.assertFalse(backend._replay_needed)
 
+    def test_natural_close_before_forced_boundary_keeps_one_close_and_answer_budget(self):
+        backend, _tokenizer = self.backend()
+        backend.pending = [10]
+        backend.thinking_enabled = True
+        backend._interactive_budgets = (2, 3)
+        backend.cache = [KVCache()]
+        backend.cache[0].offset = 0
+
+        def generate_step(prompt, _model, **options):
+            import mlx.core as mx
+
+            options["prompt_progress_callback"](len(prompt), len(prompt))
+            backend.cache[0].offset += len(prompt)
+            sampler = options["sampler"]
+            candidates = iter((101, 9998, 103, 104, 105))
+
+            def sample():
+                candidate = next(candidates)
+                return sampler(
+                    mx.where(mx.arange(10000) == candidate, 1.0, 0.0)
+                )
+
+            current = sample()
+            while True:
+                upcoming = sample()
+                backend.cache[0].offset += 1
+                yield current, None
+                current = upcoming
+
+        with patch("mlx_lm.generate.generate_step", generate_step):
+            _text, stats = backend.generate(100)
+
+        # The natural close is sampled immediately before the old forced
+        # boundary. Lookahead must disarm forcing before it samples again.
+        self.assertEqual(stats.tokens, 4)
+        self.assertEqual(backend.tape[-4:], [101, 9998, 103, 104])
+        self.assertEqual(backend.tape[-4:].count(9998), 1)
+        self.assertFalse(backend._replay_needed)
+        self.assertTrue(backend.check_invariant())
+
+    def test_unlimited_budget_reaches_generate_step_without_a_cap(self):
+        backend, _tokenizer = self.backend()
+        backend.pending = [10]
+        backend.thinking_enabled = True
+        backend._interactive_budgets = (-1, -1)
+        seen = []
+
+        def generate_step(prompt, _model, **options):
+            seen.append(options["max_tokens"])
+            options["prompt_progress_callback"](len(prompt), len(prompt))
+            yield 65, None
+            yield 1, None
+
+        with patch("mlx_lm.generate.generate_step", generate_step):
+            text, stats = backend.generate(-1)
+
+        self.assertEqual(seen, [-1])
+        self.assertEqual(text, "A")
+        self.assertEqual(stats.finish, "stop")
+
     def test_capped_answer_emits_its_last_accepted_token(self):
         backend, _tokenizer = self.backend()
         backend.pending = [10]
@@ -538,6 +722,16 @@ class BackendTests(unittest.TestCase):
                         "role": "assistant", "content": "", "tool_calls": [{
                             "name": "read_file", "arguments": bad}]}])
 
+    def test_malformed_budgets_fail_before_tape_moves(self):
+        backend, _tokenizer = self.backend()
+        backend.pending = [10, 11]
+        backend.thinking_enabled = True
+        backend._interactive_budgets = ("nope", 3)
+        with self.assertRaises(ValueError):
+            backend.generate(100)
+        self.assertEqual(backend.pending, [10, 11])
+        self.assertEqual(backend.tape, [])
+
     def test_answer_budget_caps_after_forced_closure(self):
         backend, _tokenizer = self.backend()
         backend.pending = [10]
@@ -607,6 +801,21 @@ class BackendTests(unittest.TestCase):
         sampler.end_thinking()
         self.assertFalse(sampler.armed)
         self.assertEqual(int(sampler(peak(102))), 102)
+        self.assertFalse(sampler.forced_last)
+
+    def test_forcing_sampler_disarms_when_natural_close_is_sampled_ahead(self):
+        import mlx.core as mx
+
+        from models.bonsai2.backend import _ForcingSampler
+
+        inner = lambda logits: mx.argmax(logits.reshape(-1), axis=-1).reshape(1)
+        sampler = _ForcingSampler(inner, 3, 9998)
+        peak = lambda want: mx.where(mx.arange(10000) == want, 1.0, 0.0)
+
+        self.assertEqual(int(sampler(peak(101))), 101)
+        self.assertEqual(int(sampler(peak(9998))), 9998)
+        self.assertFalse(sampler.armed)
+        self.assertEqual(int(sampler(peak(103))), 103)
         self.assertFalse(sampler.forced_last)
 
     def test_checkpoint_identity_covers_tokenizer_and_template(self):
@@ -766,6 +975,39 @@ class BackendTests(unittest.TestCase):
         with patch.dict(os.environ, {"MACQWEN_BONSAI2_KV": "2"}):
             with self.assertRaisesRegex(ValueError, "MACQWEN_BONSAI2_KV"):
                 self.backend()
+
+    def test_configure_reports_effective_runtime_and_kv_settings(self):
+        backend, _tokenizer = self.backend()
+        text = backend.configure("")
+        self.assertIn("fused-fwht          on", text)
+        self.assertIn("kv-cache            fp32", text)
+        self.assertEqual(backend.configure("kv-cache"), "kv-cache            fp32")
+
+        backend.tape = [10]
+        backend.turn_closed = True
+        self.assertEqual(
+            backend.configure("kv-cache 8"),
+            "kv-cache            8-bit (group 64)",
+        )
+        self.assertEqual(backend.quantized_kv, (8, 64))
+        self.assertTrue(backend._replay_needed)
+        self.assertTrue(backend.turn_closed)
+
+        self.assertEqual(
+            backend.configure("kv-cache off"),
+            "kv-cache            fp32",
+        )
+        self.assertIsNone(backend.quantized_kv)
+
+        backend.quantized_kv = (8, 64)
+        text = backend.configure("")
+        self.assertIn("kv-cache            8-bit (group 64)", text)
+        self.assertEqual(
+            backend.configure("kv-cache"),
+            "kv-cache            8-bit (group 64)",
+        )
+        with self.assertRaisesRegex(ValueError, "expects 4, 8"):
+            backend.configure("kv-cache nonsense")
 
     def test_rotating_cache_is_rejected_on_reset(self):
         backend, _tokenizer = self.backend()

@@ -323,9 +323,58 @@ class GateIsReachableTests(unittest.TestCase):
         self.assertEqual(self.consulted(store, [1, 2]), [])
 
     def test_the_benchmark_selects_the_mode_the_gate_needs(self):
-        import inspect
+        from types import ModuleType
 
         from models.flashnext import bench_residency
 
-        source = inspect.getsource(bench_residency.main)
-        self.assertIn('os.environ["FLASHNEXT_READ"] = "resident"', source)
+        seen = {}
+
+        class FakeStore:
+            _read_mode = "resident"
+            _track_residency = True
+            _resident_cap = 17
+
+            def believed_resident(self, _name, _row):
+                return False
+
+        class FakeBackend:
+            def __init__(self, model_path=None):
+                del model_path
+                seen["constructor"] = dict(os.environ)
+                self.store = FakeStore()
+
+            def reset(self):
+                pass
+
+            def append_text(self, _prompt):
+                pass
+
+            def generate(self, max_tokens):
+                del max_tokens
+
+        module = ModuleType("macqwen.backends.flashnext")
+        module.FlashNextBackend = FakeBackend
+        real_import = __import__("builtins").__import__
+
+        def importing(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "macqwen.backends.flashnext":
+                seen["import"] = dict(os.environ)
+                return module
+            return real_import(name, globals, locals, fromlist, level)
+
+        with (
+            unittest.mock.patch.dict(os.environ, {}, clear=True),
+            unittest.mock.patch.object(
+                __import__("sys"), "argv", ["bench_residency.py", "--cap", "17"]
+            ),
+            unittest.mock.patch("builtins.__import__", side_effect=importing),
+            unittest.mock.patch("builtins.print"),
+        ):
+            bench_residency.main()
+
+        for point in ("import", "constructor"):
+            with self.subTest(point=point):
+                self.assertEqual(seen[point]["FLASHNEXT_READ"], "resident")
+                self.assertEqual(seen[point]["FLASHNEXT_TRACK_RESIDENT"], "1")
+                self.assertEqual(seen[point]["FLASHNEXT_RESIDENT_ROWS"], "17")
+                self.assertEqual(seen[point]["FLASHNEXT_TOPK_THRESHOLD"], "0.85")

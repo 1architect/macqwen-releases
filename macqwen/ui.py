@@ -32,7 +32,7 @@ def human_size(size: int) -> str:
 
 
 def token_limit_text(limit: int) -> str:
-    return "off" if limit < 0 else str(limit)
+    return "unlimited" if limit < 0 else str(limit)
 
 
 def rss_gb() -> float:

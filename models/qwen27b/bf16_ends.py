@@ -32,6 +32,22 @@ def flush(*a):
     print(*a, flush=True)
 
 
+def assets_dir(model_path):
+    """Return BF16 assets shipped beside the V4 checkpoint."""
+    path = Path(model_path).expanduser()
+    try:
+        declared = json.loads((path / "config.json").read_text()).get(
+            "external_embedding"
+        )
+    except (OSError, TypeError, ValueError):
+        declared = None
+    if isinstance(declared, str):
+        candidate = path / Path(declared).parent
+        if candidate.is_relative_to(path):
+            return candidate
+    return path / "bf16-ends"
+
+
 def st_header(path):
     with open(path, "rb") as f:
         n = struct.unpack("<Q", f.read(8))[0]
@@ -131,19 +147,19 @@ class ShortlistHead(nn.Module):
         return out.reshape(B, T, V)
 
 
-def attach_ssd_ends(model, k=1024, verbose=True):
+def attach_ssd_ends(model, assets, k=1024, verbose=True):
     """Move both ends of a loaded V4 model onto the SSD at exact BF16.
 
     The build ships a 2-bit embedding purely so stock mlx_lm can load it. That
     copy is dropped here and the RAM goes back. The 2-bit head stays, but only
     to rank the vocabulary: the logits that matter come from exact BF16 rows.
     """
-    meta = json.loads((OUT / "meta.json").read_text())
+    meta = json.loads((assets / "meta.json").read_text())
     mx.eval(model.parameters())
     before = mx.get_active_memory() / 1e9
     lm = model.language_model
-    lm.model.embed_tokens = SSDEmbedding(OUT / "embed.bf16", meta["embed_shape"])
-    lm.lm_head = ShortlistHead(lm.lm_head, OUT / "head.bf16", meta["head_shape"], k)
+    lm.model.embed_tokens = SSDEmbedding(assets / "embed.bf16", meta["embed_shape"])
+    lm.lm_head = ShortlistHead(lm.lm_head, assets / "head.bf16", meta["head_shape"], k)
     mx.clear_cache()
     after = mx.get_active_memory() / 1e9
     if verbose:
@@ -163,7 +179,7 @@ def load_v4(path, k=1024, verbose=True):
     q5.TextModel.__call__ = last_only     # the shortlist ranks one position
 
     model, tok = _load(path)
-    attach_ssd_ends(model, k=k, verbose=verbose)
+    attach_ssd_ends(model, assets_dir(path), k=k, verbose=verbose)
     return model, tok
 
 
@@ -195,7 +211,8 @@ def load_v4_lean(path, k=1024, verbose=True):
 
     path = _Path(path)
     config = json.loads((path / "config.json").read_text())
-    meta = json.loads((OUT / "meta.json").read_text())
+    assets = assets_dir(path)
+    meta = json.loads((assets / "meta.json").read_text())
     EMB = "language_model.model.embed_tokens"
     config.get("quantization", {}).pop(EMB, None)
     config.get("quantization_config", {}).pop(EMB, None)
@@ -212,7 +229,7 @@ def load_v4_lean(path, k=1024, verbose=True):
     # The swap happens here, before quantisation sizes anything and before a
     # single embedding byte is read.
     model.language_model.model.embed_tokens = SSDEmbedding(
-        OUT / "embed.bf16", meta["embed_shape"])
+        assets / "embed.bf16", meta["embed_shape"])
     weights = {w: v for w, v in weights.items() if "embed_tokens" not in w}
 
     quant = config.get("quantization")
@@ -233,7 +250,7 @@ def load_v4_lean(path, k=1024, verbose=True):
     resident = mx.get_active_memory() / 1e9
 
     model.language_model.lm_head = ShortlistHead(
-        model.language_model.lm_head, OUT / "head.bf16", meta["head_shape"], k)
+        model.language_model.lm_head, assets / "head.bf16", meta["head_shape"], k)
     mx.clear_cache()
     if verbose:
         flush(f"BF16 ends: resident {resident:.2f} GB, embedding never loaded, "

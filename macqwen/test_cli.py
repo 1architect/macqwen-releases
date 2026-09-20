@@ -12,16 +12,79 @@ from macqwen import cli
 
 
 class LauncherTests(unittest.TestCase):
+    def test_default_launch_uses_the_only_installed_checkpoint(self):
+        checkpoint = Path("/models/only")
+        with patch("macqwen.cli.installed_checkpoints", return_value=[
+            ("bonsai2", checkpoint),
+        ]):
+            self.assertEqual(
+                cli._default_checkpoint_args(["--profile", "plain"]),
+                [
+                    "--profile", "plain", "--model", "bonsai2",
+                    "--checkpoint", str(checkpoint),
+                ],
+            )
+
+    def test_default_launch_asks_when_multiple_checkpoints_exist(self):
+        choices = [
+            ("flashnext", Path("/models/oq4")),
+            ("bonsai2", Path("/models/bonsai2")),
+        ]
+        with patch("macqwen.cli.installed_checkpoints", return_value=choices), \
+                patch.object(cli.sys.stdin, "isatty", return_value=True), \
+                patch("builtins.input", return_value="2"):
+            selected = cli._default_checkpoint_args([])
+        self.assertEqual(
+            selected,
+            ["--model", "bonsai2", "--checkpoint", "/models/bonsai2"],
+        )
+
     def test_flashnext_child_environment_has_backend_chat_preset(self):
         from models.flashnext.settings.launch import CHAT_ENV
 
         with tempfile.TemporaryDirectory() as root:
             python = Path(root, "python")
             python.touch()
-            with patch.dict(os.environ, {"MACQWEN_FLASHNEXT_PYTHON": str(python)}, clear=False):
+            with patch.dict(os.environ, {"MACQWEN_FLASHNEXT_PYTHON": str(python)}, clear=False), \
+                    patch("macqwen.cli._supports_python", return_value=True):
                 _command, child_env = cli.command(["--model", "flashnext"])
         for key, value in CHAT_ENV.items():
             self.assertEqual(child_env[key], value)
+
+    def test_bonsai_uses_the_shared_runtime_environment(self):
+        shared = cli.MANAGED_PYTHON
+        with patch.dict(os.environ, {
+            "MACQWEN_PYTHON": "",
+            "MACQWEN_BONSAI2_PYTHON": "",
+            "VIRTUAL_ENV": "/unrelated/venv",
+        }, clear=False), \
+                patch("macqwen.cli._supports_python", side_effect=lambda path, model: path == shared), \
+                patch("macqwen.cli.setup_environment"):
+            self.assertEqual(cli._interpreter("bonsai2"), shared)
+
+    def test_first_launch_prepares_the_managed_environment_and_retries(self):
+        with patch("macqwen.cli._supports_python", side_effect=(False, True)), \
+                patch("macqwen.cli.setup_environment") as setup:
+            self.assertEqual(cli._interpreter("flashnext"), cli.MANAGED_PYTHON)
+        setup.assert_called_once_with(["--venv", str(cli.MANAGED_ENV)])
+
+    def test_repeated_launch_reuses_the_managed_environment(self):
+        with patch("macqwen.cli._supports_python", return_value=True), \
+                patch("macqwen.cli.setup_environment") as setup:
+            self.assertEqual(cli._interpreter("flashnext"), cli.MANAGED_PYTHON)
+            self.assertEqual(cli._interpreter("bonsai2"), cli.MANAGED_PYTHON)
+        setup.assert_not_called()
+
+    def test_explicit_override_is_rejected_when_its_runtime_is_wrong(self):
+        with tempfile.TemporaryDirectory() as root:
+            python = Path(root, "python")
+            python.touch()
+            with patch.dict(
+                os.environ, {"MACQWEN_PYTHON": str(python)}, clear=False
+            ), patch("macqwen.cli._supports_python", return_value=False), \
+                    patch("macqwen.cli._python_runtime_error", return_value="mlx 0.31"):
+                with self.assertRaisesRegex(SystemExit, "MACQWEN_PYTHON.*mlx 0.31"):
+                    cli._interpreter("flashnext")
 
     def test_explicit_flashnext_environment_override_wins(self):
         with tempfile.TemporaryDirectory() as root:
@@ -34,7 +97,7 @@ class LauncherTests(unittest.TestCase):
                     "FLASHNEXT_SLAB_GLOBAL": "56",
                 },
                 clear=False,
-            ):
+            ), patch("macqwen.cli._supports_python", return_value=True):
                 _command, child_env = cli.command(["--model", "flashnext"])
         self.assertEqual(child_env["FLASHNEXT_SLAB_GLOBAL"], "56")
 
@@ -49,7 +112,7 @@ class LauncherTests(unittest.TestCase):
                     "FLASHNEXT_METAL_RUNTIME": "0",
                 },
                 clear=False,
-            ):
+            ), patch("macqwen.cli._supports_python", return_value=True):
                 _command, child_env = cli.command(["--model", "flashnext"])
         self.assertEqual(child_env["FLASHNEXT_METAL_RUNTIME"], "0")
 
@@ -80,7 +143,7 @@ class LauncherTests(unittest.TestCase):
                 os.environ,
                 {"MACQWEN_FLASHNEXT_PYTHON": str(python)},
                 clear=False,
-            ):
+            ), patch("macqwen.cli._supports_python", return_value=True):
                 command, _ = cli.command([
                     "--preferences-file", str(preferences_file),
                 ])
@@ -91,7 +154,8 @@ class LauncherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             python = Path(root, "python")
             python.touch()
-            with patch.dict(os.environ, {"MACQWEN_FLASHNEXT_PYTHON": str(python)}, clear=False):
+            with patch.dict(os.environ, {"MACQWEN_FLASHNEXT_PYTHON": str(python)}, clear=False), \
+                    patch("macqwen.cli._supports_python", return_value=True):
                 command, _ = cli.command([
                     "--model", "flashnext", "--profile", "agent",
                     "--seed", "17",
@@ -107,7 +171,7 @@ class LauncherTests(unittest.TestCase):
             python.touch()
             with patch.dict(
                 os.environ, {"MACQWEN_FLASHNEXT_PYTHON": str(python)}, clear=False
-            ):
+            ), patch("macqwen.cli._supports_python", return_value=True):
                 command, _ = cli.command(["--checkpoint", "oq4"])
         index = command.index("--model-path")
         self.assertEqual(command[index + 1], "oq4")
@@ -118,7 +182,7 @@ class LauncherTests(unittest.TestCase):
             python.touch()
             with patch.dict(
                 os.environ, {"MACQWEN_FLASHNEXT_PYTHON": str(python)}, clear=False
-            ):
+            ), patch("macqwen.cli._supports_python", return_value=True):
                 command, _ = cli.command([
                     "--model", "flashnext", "--profile", "plain",
                     "--max-tokens", "32", "--think-budget", "4096",
@@ -128,14 +192,14 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(command[command.index("--think-budget") + 1], "4096")
         self.assertIn("--benchmark-json", command)
 
-    def test_setup_installs_the_pinned_extra_in_a_local_environment(self):
+    def test_setup_installs_the_shared_runtime_in_a_local_environment(self):
         with tempfile.TemporaryDirectory() as root:
             target = Path(root, ".venv")
             with patch("macqwen.cli.subprocess.check_call") as check_call:
                 cli.setup_environment(["--venv", str(target)])
         commands = check_call.call_args_list
         self.assertEqual(commands[0].args[0][-2:], ["venv", str(target.resolve())])
-        self.assertIn("[flashnext]", commands[-1].args[0][-1])
+        self.assertEqual(commands[-1].args[0][-1], str(cli.ROOT))
 
     def test_slash_server_alias_starts_server_mode(self):
         with tempfile.TemporaryDirectory() as root:
@@ -143,7 +207,7 @@ class LauncherTests(unittest.TestCase):
             python.touch()
             with patch.dict(
                 os.environ, {"MACQWEN_FLASHNEXT_PYTHON": str(python)}, clear=False
-            ):
+            ), patch("macqwen.cli._supports_python", return_value=True):
                 command, _ = cli.command(["/server"])
         self.assertIn("--server", command)
         self.assertEqual(command[command.index("--model") + 1], "flashnext")
@@ -155,11 +219,27 @@ class LauncherTests(unittest.TestCase):
             model = Path(root, "model")
             model.mkdir()
             (model / "config.json").write_text(json.dumps({"vocab_size": 248320}))
+            for filename in (
+                "tokenizer.json", "tokenizer_config.json", "chat_template.jinja",
+                "model-00001-of-00001.safetensors",
+            ):
+                (model / filename).touch()
+            (model / "model.safetensors.index.json").write_text(json.dumps({
+                "weight_map": {"weight": "model-00001-of-00001.safetensors"}
+            }))
+            assets = model / "bf16-ends"
+            assets.mkdir()
+            (assets / "embed.bf16").write_bytes(b"\0\0")
+            (assets / "head.bf16").write_bytes(b"\0\0")
+            (assets / "meta.json").write_text(json.dumps({
+                "embed_shape": [1, 1], "head_shape": [1, 1],
+            }))
             environment = {
                 "MACQWEN_QWEN27B_PYTHON": str(python),
                 "MACQWEN_MODEL": str(model),
             }
-            with patch.dict(os.environ, environment, clear=False):
+            with patch.dict(os.environ, environment, clear=False), \
+                    patch("macqwen.cli._supports_python", return_value=True):
                 command, child_env = cli.command(["--model", "qwen27b"])
         selected = Path(command[command.index("--model-path") + 1])
         self.assertEqual(selected, model.resolve())

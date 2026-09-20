@@ -151,7 +151,7 @@ class SettingTests(unittest.TestCase):
         self.assertEqual(self.session.preferences["max_tokens"], 512)
         output = commands.dispatch(self.session, "/max-tokens off")
         self.assertEqual(self.session.preferences["max_tokens"], -1)
-        self.assertIn("default (2048)", output)
+        self.assertIn("unlimited", output)
 
     def test_thinking_budget_accepts_a_limit_and_off(self):
         commands.dispatch(self.session, "/think-budget 384")
@@ -310,22 +310,16 @@ if __name__ == "__main__":
 
 
 class EffortLevelTests(unittest.TestCase):
-    """`/effort` carried its own copy of the level list and rejected `high`
-    after the schema gained it. The command and the schema now read the same
-    tuple, and this test fails if anyone splits them again."""
+    """Every advertised effort level must work through the command path."""
 
-    def test_the_command_accepts_every_schema_level(self):
-        from macqwen.preferences import EFFORT_LEVELS, SCHEMA
+    def test_dispatch_accepts_every_effort_level(self):
+        from macqwen.preferences import EFFORT_LEVELS
 
-        _, valid = SCHEMA["effort"]
         for level in EFFORT_LEVELS:
-            self.assertTrue(valid(level), level)
-
-    def test_the_command_body_holds_no_second_copy(self):
-        import inspect
-
-        from macqwen import commands
-
-        body = inspect.getsource(commands._effort)
-        self.assertIn("EFFORT_LEVELS", body)
-        self.assertNotIn('"xhigh"', body)
+            with self.subTest(level=level):
+                session = FakeSession()
+                self.assertEqual(
+                    commands.dispatch(session, f"/effort {level}"),
+                    f"effort: {level}",
+                )
+                self.assertEqual(session.preferences["effort"], level)

@@ -563,3 +563,35 @@ Output-changing work also requires the sampled quality gate in
 We keep ternary weights, every context token, all layers, and current model
 semantics for milestone 1. Vision input, changed reasoning budgets, disk
 offload, KV recomputation, and speculative decoding are outside this scope.
+
+## 2026-09-19 — Boundary and protocol regression closure
+
+We closed the remaining correctness gaps from the previous handoff without
+changing model defaults. The forcing sampler now inspects a naturally sampled
+`</think>` before the next sampler call, so a lookahead immediately before the
+think-budget boundary cannot add a second close. The backend routes token
+observation through the wrapper, and the regression covers one close, the full
+answer allowance, and an aligned tape with no replay marker.
+
+Server content substitution now protects `tool` history as well as user and
+system content. If a template drops or repeats a sentinel, we fail the
+request closed instead of feeding placeholders or unprotected content into
+the model. Tests cover complete multi-result tool histories and both malformed
+sentinel cases.
+
+The shared tool parser now keeps quoted and short-form string payload bytes,
+leaving only structural boundary newlines and typed scalar conversion to
+normalize whitespace. Whole-body protocol-tag stripping is gone; the Bonsai
+translator-to-parser hostile-content tests continue to preserve literal tags.
+
+The cached-tool benchmark fixture passes its explicit thinking mode through
+tool-result framing and its test verifies the generated-cache state before the
+append. Greedy digest validation chooses its reference only from a clean first
+arm, so a failed raw control cannot poison later filtering. Bonsai and K2
+protocol doubles now accept and assert the propagated thinking setting.
+
+The shared suite passed locally under the available Python 3.12 MLX runtime
+(276 tests), and the complete Bonsai suite now passes all 105 tests after
+installing the declared `mlx-vlm==0.6.17` dependency and its required Pillow
+runtime. Live checkpoint execution and benchmark validation remain outstanding,
+so no benchmark result is promoted by this patch.

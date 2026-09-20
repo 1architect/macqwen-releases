@@ -37,7 +37,7 @@ For 27B see Qwen3.8-27B research runtime.
 You need an Apple Silicon Mac, Python 3.12, a fast SSD, and enough free space
 for one checkpoint. We test on an M4 Mac with 16 GB of unified memory.
 
-Clone MACQWEN and create its Python environment:
+Clone MACQWEN and create our managed Python environment:
 
 ```bash
 git clone https://github.com/1architect/macqwen-releases.git
@@ -56,6 +56,13 @@ Start chatting:
 
 ```bash
 ./chat.sh --checkpoint oq4
+```
+
+Run the project live-test terminal. It asks which installed model/checkpoint
+to test and discovers that runtime's cases automatically:
+
+```bash
+./tests/run.sh
 ```
 
 MACQWEN remembers the selected checkpoint. After the first run, `./chat.sh` is
@@ -102,8 +109,11 @@ automatically. Otherwise, select it by alias or full path:
 ./chat.sh --checkpoint /path/to/a/compatible-checkpoint
 ```
 
-Set `MACQWEN_MODEL_ROOT` when checkpoints are outside `~/models`.
-Set `MACQWEN_FLASHNEXT_PYTHON` when the Python environment uses another path.
+Set `MACQWEN_MODEL_ROOT` when checkpoints are outside `~/models`. MACQWEN
+creates and reuses `.venv` for every supported model; the first launch also
+prepares it automatically if setup has not run yet. Developers can explicitly
+override it with `MACQWEN_PYTHON` or a model-specific `MACQWEN_*_PYTHON`
+variable, and MACQWEN validates that override against the pinned runtime.
 
 ## Flash-Next routing modes
 
@@ -177,7 +187,6 @@ Start it with the `k2` checkpoint alias:
 
 K2-Horizon supplies its MLX model implementation in `model.py`. Loading this
 checkpoint executes that local file, so only use a checkpoint source we trust.
-Set `MACQWEN_K2_HORIZON_PYTHON` if it needs a different Python environment.
 
 Read the [K2-Horizon brief](docs/k2_horizon/brief.md) for current status, the
 [research record](docs/k2_horizon/research.md) for measured decisions, and the
@@ -204,7 +213,7 @@ Start it with the `b2` checkpoint alias:
 
 Bonsai-2 requires its checkpoint-supplied `runtime/` loader. Loading this
 checkpoint executes that local code, so only use a checkpoint source we trust.
-Set `MACQWEN_BONSAI2_PYTHON` if it needs a different Python environment.
+MACQWEN checks that loader before selecting the checkpoint.
 
 Read the [Bonsai-2 brief](docs/bonsai2/brief.md) for current status, the
 [research record](docs/bonsai2/research.md) for measured decisions, and the
@@ -212,12 +221,12 @@ Read the [Bonsai-2 brief](docs/bonsai2/brief.md) for current status, the
 
 ### Qwen3.8-27B research runtime
 
-This runtime requires a custom MLX environment and a compatible local V4 checkpoint.
-The repository does not provide a ready V4 checkpoint.
+This runtime uses the shared managed MLX environment and a compatible local V4
+checkpoint. The repository does not provide a ready V4 checkpoint; supported
+V4 builds must include their `bf16-ends/` assets beside the weights.
 
 ```bash
-MACQWEN_QWEN27B_PYTHON=/path/to/python \
-  ./chat.sh BUILD --profile plain
+./chat.sh BUILD --profile plain
 ```
 
 Read the [Qwen3.8-27B handoff](docs/qwen27b/handoff.md) for setup and validation details.
@@ -317,10 +326,11 @@ The Flash-Next loader checks the checkpoint configuration, index, and required s
 ## Repository layout
 
 ```text
-macqwen/                 Shared chat, commands, settings, and tools
+macqwen/                 Shared chat, commands, settings, tools, and test engine
+tests/                   Project live-test terminal launcher and documentation
 models/flashnext/        Flash-Next runtime and benchmarks
 models/flashnext/settings/ FlashNext setting registry and launch defaults
-models/flashnext/tests/  FlashNext interactive research test catalog
+models/flashnext/tests/  FlashNext live-test provider and case catalog
 models/k2_horizon/       K2-Horizon runtime, protocol adapter, settings, and tests
 models/bonsai2/          Bonsai-2 runtime, ternary kernels, settings, and tests
 models/qwen27b/          Qwen3.8-27B runtime and research utilities
@@ -331,7 +341,9 @@ docs/k2_horizon/         K2-Horizon brief, research, handoff, and measurements
 docs/bonsai2/            Bonsai-2 brief, research, handoff, and measurements
 ```
 
-`chat.sh` selects the model, checkpoint, and Python environment before loading the runtime.
+`chat.sh` selects the model and complete checkpoint, then loads it in our
+managed runtime. `tests/run.sh` uses the same selection rules and writes live
+records under `docs/<runtime>/measurements/`.
 
 ## Tests
 

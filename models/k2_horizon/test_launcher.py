@@ -18,7 +18,7 @@ class LauncherTests(unittest.TestCase):
                 os.environ,
                 {"MACQWEN_K2_HORIZON_PYTHON": str(python)},
                 clear=False,
-            ):
+            ), patch("macqwen.cli._supports_python", return_value=True):
                 command, _ = cli.command([
                     "--model", "k2-horizon", "--checkpoint", "k2",
                 ])

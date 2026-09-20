@@ -118,6 +118,35 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(backend.tape, [10, 11, 65, 66])
         self.assertTrue(backend.check_invariant())
 
+    def test_tool_continuation_prefills_only_added_tokens_after_stop(self):
+        backend, _tokenizer = self.backend()
+        backend.pending = [10, 11]
+        backend.cache = [KVCache()]
+        backend.cache[0].offset = 0
+        prompts = []
+        outputs = iter(((65, 999), (66, 999)))
+
+        def generate_step(prompt, _model, **options):
+            prompts.append(len(prompt))
+            for item in backend.cache:
+                item.offset += len(prompt)
+            options["prompt_progress_callback"](len(prompt), len(prompt))
+            for value in next(outputs):
+                for item in backend.cache:
+                    item.offset += 1
+                yield value, None
+
+        with patch("mlx_lm.generate.generate_step", generate_step):
+            backend.generate(2)
+            backend.append_tool_results(["tool failed"])
+            added = len(backend.pending)
+            backend.generate(2)
+
+        self.assertEqual(prompts, [2, added])
+        self.assertEqual(backend.tape[-1], 66)
+        self.assertFalse(backend._replay_needed)
+        self.assertTrue(backend.check_invariant())
+
     def test_cache_invariant_checks_every_layer_offset(self):
         backend, _tokenizer = self.backend()
         backend.tape = [10, 11]

@@ -53,8 +53,6 @@ FUNCTION_RE = re.compile(
 SHORT_FUNCTION_RE = re.compile(
     r"\s*<([A-Za-z_][A-Za-z0-9_]*)>(.*?)(?:</function>|</>)?\s*$", re.S)
 
-STRAY_TAG_RE = re.compile(r"</?(?:tool_call|function)\s*>")
-
 PARAM_RE = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.S)
 
 PARAM_VALUE_RE = re.compile(
@@ -63,7 +61,7 @@ PARAM_VALUE_RE = re.compile(
 )
 
 SHORT_PARAM_RE = re.compile(
-    r"<([A-Za-z_][A-Za-z0-9_]*)>\s*(.*?)\s*</(?:\1|parameter)>", re.S
+    r"<([A-Za-z_][A-Za-z0-9_]*)>\n?(.*?)\n?</(?:\1|parameter)>", re.S
 )
 
 def _unescape_argument(value: str) -> str:
@@ -90,14 +88,13 @@ def parse_tool_calls(text):
         if not match:
             continue
         name, body = match.groups()
-        body = STRAY_TAG_RE.sub("", body)
         allowed = PARAM_TYPES.get(name, {})
         if not allowed:
             continue
         args = {}
         for key, _, raw in PARAM_VALUE_RE.findall(body):
             if key in allowed:
-                args[key] = _unescape_argument(raw.strip())
+                args[key] = _unescape_argument(raw)
         for key, raw in PARAM_RE.findall(body):
             if key not in allowed:
                 continue
@@ -146,6 +143,11 @@ def parse_tool_calls(text):
 def render_tool_result(name, result, fmt="pretty"):
     if fmt == "json" or not isinstance(result, dict):
         return json.dumps(result, ensure_ascii=False)
+    documentation = result.get("documentation")
+    if name == "api_docs" and isinstance(documentation, str):
+        head = {k: v for k, v in result.items() if k != "documentation"}
+        prefix = json.dumps(head, ensure_ascii=False)
+        return f"{prefix}\n{documentation}" if head else documentation
     if "content" in result:
         head = {k: v for k, v in result.items() if k != "content"}
         return json.dumps(head, ensure_ascii=False) + "\n" + result["content"]

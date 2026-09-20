@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -14,30 +13,55 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from macqwen import preferences
-from macqwen.checkpoints import resolve_qwen27b
+from macqwen.checkpoints import installed_checkpoints, resolve_qwen27b
 from models.bonsai2.settings import (
     MODEL_NAME as BONSAI2,
     PYTHON_ENV as BONSAI2_PYTHON_ENV,
-    REQUIRED_MODULES as BONSAI2_MODULES,
 )
 from models.k2_horizon.settings import (
     MODEL_NAME as K2_HORIZON,
     PYTHON_ENV as K2_HORIZON_PYTHON_ENV,
-    REQUIRED_MODULES as K2_HORIZON_MODULES,
 )
 
 
 PYTHON_ENV = {
+    "shared": "MACQWEN_PYTHON",
     "flashnext": "MACQWEN_FLASHNEXT_PYTHON",
     BONSAI2: BONSAI2_PYTHON_ENV,
     K2_HORIZON: K2_HORIZON_PYTHON_ENV,
     "qwen27b": "MACQWEN_QWEN27B_PYTHON",
 }
-REQUIRED_MODULES = {
-    "flashnext": ("mlx", "mlx_vlm", "transformers"),
-    BONSAI2: BONSAI2_MODULES,
-    K2_HORIZON: K2_HORIZON_MODULES,
-    "qwen27b": ("mlx",),
+MANAGED_ENV = ROOT / ".venv"
+MANAGED_PYTHON = MANAGED_ENV / "bin" / "python"
+RUNTIME_VERSIONS = {
+    "mlx": "0.32.2",
+    "mlx-lm": "0.31.3",
+    "mlx-vlm": "0.6.17",
+    "transformers": "5.16.1",
+    "numpy": "2.5.2",
+    "requests": "2.34.2",
+    "huggingface-hub": "1.29.0",
+}
+RUNTIME_PROBES = {
+    "flashnext": """
+from mlx_vlm.utils import (apply_generation_config_defaults, get_model_and_args,
+                           load_config, update_module_configs)
+""",
+    BONSAI2: """
+from mlx_vlm.models.qwen3_5 import Model, ModelConfig
+from mlx_vlm.utils import load_config
+""",
+    K2_HORIZON: """
+from mlx_lm import load, stream_generate
+from mlx_lm.models.cache import KVCache, RotatingKVCache, make_prompt_cache
+""",
+    "qwen27b": """
+from mlx_lm import load, stream_generate
+from mlx_lm.models.cache import (ArraysCache, KVCache, QuantizedKVCache,
+                                 make_prompt_cache)
+from mlx_lm.sample_utils import make_logits_processors, make_sampler
+from mlx_lm.utils import load_tokenizer
+""",
 }
 
 
@@ -80,47 +104,94 @@ def _qwen27b_path(requested: str | None, build: str | None) -> Path:
         raise SystemExit(str(exc)) from exc
 
 
-def _supports_current_python(model: str) -> bool:
-    return all(importlib.util.find_spec(name) is not None for name in REQUIRED_MODULES[model])
+def _runtime_probe(model: str) -> str:
+    versions = repr(RUNTIME_VERSIONS)
+    return f"""
+from importlib.metadata import PackageNotFoundError, version
+import sys
+
+expected = {versions}
+for package, wanted in expected.items():
+    try:
+        found = version(package)
+    except PackageNotFoundError:
+        raise SystemExit(f"missing package {{package}}")
+    if found != wanted:
+        raise SystemExit(f"{{package}} {{found}}, expected {{wanted}}")
+
+import mlx.core as mx
+import mlx.nn as nn
+if not hasattr(mx, "array") or not hasattr(mx, "fast") or not hasattr(nn, "Module"):
+    raise SystemExit("MLX backend API is incomplete")
+{RUNTIME_PROBES[model]}
+"""
+
+
+def _python_runtime_error(path: Path, model: str) -> str | None:
+    try:
+        result = subprocess.run(
+            [str(path), "-c", _runtime_probe(model)],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return str(exc)
+    if result.returncode == 0:
+        return None
+    detail = (result.stderr or result.stdout).strip().splitlines()
+    return detail[-1][:240] if detail else f"probe exited with {result.returncode}"
 
 
 def _supports_python(path: Path, model: str) -> bool:
-    imports = "; ".join(f"import {name}" for name in REQUIRED_MODULES[model])
+    return _python_runtime_error(path, model) is None
+
+
+def _setup_failure(operation: str, error: BaseException) -> SystemExit:
+    detail = getattr(error, "stderr", None) or str(error)
+    return SystemExit(
+        f"MACQWEN setup failed during {operation}: {detail}\n"
+        "Retry with './chat.sh setup'."
+    )
+
+
+def _run_setup_step(operation: str, command: list[str]) -> None:
+    print(f"MACQWEN setup: {operation}", flush=True)
     try:
-        result = subprocess.run(
-            [str(path), "-c", imports],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0
+        subprocess.check_call(command)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise _setup_failure(operation, exc) from exc
 
 
 def _interpreter(model: str) -> Path:
-    override = os.environ.get(PYTHON_ENV[model])
+    override_name = next(
+        (name for name in (PYTHON_ENV[model], PYTHON_ENV["shared"])
+         if os.environ.get(name)),
+        None,
+    )
+    override = os.environ.get(override_name) if override_name else None
     if override:
         path = Path(override).expanduser()
-        if path.is_file():
-            return path
-        raise SystemExit(f"missing Python environment: {path}")
+        if not path.is_file():
+            raise SystemExit(f"missing Python environment override {override_name}: {path}")
+        if not _supports_python(path, model):
+            reason = _python_runtime_error(path, model) or "runtime probe failed"
+            raise SystemExit(
+                f"Python environment override {override_name} is incompatible "
+                f"with {model}: {reason}"
+            )
+        return path
 
-    candidates = []
-    if os.environ.get("VIRTUAL_ENV"):
-        candidates.append(Path(os.environ["VIRTUAL_ENV"]) / "bin" / "python")
-    candidates.append(ROOT / (".venv-qwen27b" if model == "qwen27b" else ".venv") / "bin" / "python")
-    for path in candidates:
-        if path.is_file() and _supports_python(path, model):
-            return path
-    if _supports_current_python(model):
-        return Path(sys.executable)
-    variable = PYTHON_ENV[model]
-    raise SystemExit(
-        f"no compatible Python environment found for {model}; run './chat.sh setup' "
-        f"or set {variable}"
-    )
+    if not _supports_python(MANAGED_PYTHON, model):
+        setup_environment(["--venv", str(MANAGED_ENV)])
+    if not _supports_python(MANAGED_PYTHON, model):
+        reason = _python_runtime_error(MANAGED_PYTHON, model) or "runtime probe failed"
+        raise SystemExit(
+            f"managed MACQWEN environment is incompatible with {model}: {reason}\n"
+            "Retry with './chat.sh setup'."
+        )
+    return MANAGED_PYTHON
 
 
 def setup_environment(argv: list[str]) -> int:
@@ -133,12 +204,54 @@ def setup_environment(argv: list[str]) -> int:
         creator = shutil.which("python3.12") or ""
     if not creator:
         raise SystemExit("Python 3.12 is required; install it, then run setup again")
-    subprocess.check_call([creator, "-m", "venv", str(target)])
+    _run_setup_step("create the managed Python environment", [creator, "-m", "venv", str(target)])
     python = target / "bin" / "python"
-    subprocess.check_call([str(python), "-m", "pip", "install", "--upgrade", "pip"])
-    subprocess.check_call([str(python), "-m", "pip", "install", "-e", f"{ROOT}[flashnext]"])
+    _run_setup_step(
+        "upgrade pip",
+        [str(python), "-m", "pip", "install", "--upgrade", "pip"],
+    )
+    _run_setup_step(
+        "install MACQWEN and its shared runtime",
+        [str(python), "-m", "pip", "install", "-e", str(ROOT)],
+    )
     print(f"MACQWEN environment ready: {target}")
     return 0
+
+
+def _default_checkpoint_args(argv: list[str]) -> list[str]:
+    """Select the only installed checkpoint, or ask before loading one."""
+    if argv and (argv[0] == "setup" or not argv[0].startswith("-")):
+        return argv
+    if any(
+        value in ("--model", "--model-path", "--checkpoint")
+        or value.startswith(("--model=", "--model-path=", "--checkpoint="))
+        for value in argv
+    ):
+        return argv
+
+    choices = installed_checkpoints()
+    if not choices:
+        return argv
+    if len(choices) == 1:
+        model, path = choices[0]
+        return [*argv, "--model", model, "--checkpoint", str(path)]
+
+    print("Multiple compatible checkpoints found:", file=sys.stderr)
+    for index, (model, path) in enumerate(choices, 1):
+        print(f"  {index}. {model}: {path}", file=sys.stderr)
+    if not sys.stdin.isatty():
+        raise SystemExit(
+            "choose a checkpoint with --model and --checkpoint before loading"
+        )
+    try:
+        answer = input(f"Choose a checkpoint [1-{len(choices)}]: ").strip()
+        index = int(answer) - 1
+    except (EOFError, ValueError):
+        raise SystemExit("invalid checkpoint choice") from None
+    if not 0 <= index < len(choices):
+        raise SystemExit("invalid checkpoint choice")
+    model, path = choices[index]
+    return [*argv, "--model", model, "--checkpoint", str(path)]
 
 
 def command(argv: list[str]) -> tuple[list[str], dict[str, str]]:
@@ -201,7 +314,7 @@ def main() -> int:
     warning = branch_sync_warning()
     if warning:
         print(warning, file=sys.stderr)
-    executable, environment = command(sys.argv[1:])
+    executable, environment = command(_default_checkpoint_args(sys.argv[1:]))
     os.execvpe(executable[0], executable, environment)
     return 0
 

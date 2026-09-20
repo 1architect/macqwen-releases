@@ -11,7 +11,7 @@ import re
 import tempfile
 import time
 
-from macqwen.backends.base import DecodeTimer
+from macqwen.backends.base import DecodeTimer, GenerationCancelled
 from macqwen.conversation import Conversation, EXTRA_REASONING
 from macqwen.sampling import Sampler, Sampling
 from macqwen.text import stream_decode
@@ -286,6 +286,7 @@ class K2HorizonBackend(Conversation):
         on_prefilled=None,
         on_prefill_progress=None,
         on_decode_token=None,
+        should_cancel=None,
     ) -> tuple[str, Stats]:
         if not self.pending:
             return "", Stats()
@@ -304,8 +305,13 @@ class K2HorizonBackend(Conversation):
         timer = None
         prefilled = False
 
+        def check_cancel():
+            if should_cancel is not None and should_cancel():
+                raise GenerationCancelled
+
         def progress(done, total):
             nonlocal prefill_seconds, timer, prefilled
+            check_cancel()
             if on_prefill_progress is not None:
                 on_prefill_progress(done, total)
             if done >= total and not prefilled:
@@ -317,6 +323,7 @@ class K2HorizonBackend(Conversation):
 
         steps = None
         try:
+            check_cancel()
             steps = generate_step(
                 mx.array(prompt),
                 self.model,
@@ -369,6 +376,7 @@ class K2HorizonBackend(Conversation):
                     with residency:
                         try:
                             for token, _logprobs in steps:
+                                check_cancel()
                                 value = int(token)
                                 if value in self.stops:
                                     stop_seen = True

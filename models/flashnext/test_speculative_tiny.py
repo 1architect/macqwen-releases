@@ -17,6 +17,7 @@ from models.flashnext.adaptive_topk import (
     set_threshold,
 )
 from models.flashnext.patch_rmsnorm import apply as patch_norm
+from models.flashnext.prefill import prefill_target
 from models.flashnext.qwen4_verifier import Qwen4ExactSpeculativeVerifier
 from models.flashnext.speculative import (
     FastDraftGreedy,
@@ -222,6 +223,28 @@ class SpeculativeTinyTest(unittest.TestCase):
         self.assertIsNone(decoder.draft_language)
         self.assertIsNone(decoder.draft_cache)
         self.assertIsNone(decoder.draft_next)
+
+    def test_speculative_stop_keeps_cache_for_tool_append(self):
+        target = tiny_language()
+        prompt = mx.array([[3, 7, 11]], dtype=mx.uint32)
+
+        decoder = FastDraftGreedy(target, SimpleNamespace(_read_mode="pread"), depth=2)
+        decoder.append(prompt)
+        stop = int(decoder.next_main.item())
+        self.assertEqual(list(decoder.generate(16, {stop})), [])
+
+        decoder.append(mx.array([[4]], dtype=mx.uint32))
+        actual = int(decoder.next_main.item())
+
+        expected_language = tiny_language()
+        expected_cache = expected_language.make_cache()
+        expected = prefill_target(
+            expected_language,
+            mx.concatenate([prompt, mx.array([[4]], dtype=mx.uint32)], axis=1),
+            expected_cache,
+        )
+        expected_next = int(expected[2].item())
+        self.assertEqual(actual, expected_next)
 
     def test_transient_release_is_idempotent(self):
         target = tiny_language()

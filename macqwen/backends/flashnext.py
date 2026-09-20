@@ -13,7 +13,7 @@ import time
 
 import mlx.core as mx
 
-from macqwen.backends.base import DecodeTimer
+from macqwen.backends.base import DecodeTimer, GenerationCancelled
 from macqwen.checkpoints import resolve_flashnext
 from macqwen.conversation import Conversation
 from macqwen.model_settings import FLASHNEXT_DEFAULTS
@@ -160,6 +160,7 @@ class FlashNextBackend(Conversation):
         self._store = None
         self._decoder = None
         self._fused_pending = routing_profile == "fused-quality"
+        self._replay_needed = False
         from models.flashnext.routing import RoutingProfile, prewarm_enabled
 
         self.routing = RoutingProfile(
@@ -328,6 +329,18 @@ class FlashNextBackend(Conversation):
         self.tape = []
         self.pending = []
         self.turn_closed = True
+        self._replay_needed = False
+        self.language._position_ids = None
+        self.language._rope_deltas = None
+
+    def _mark_replay_needed(self) -> None:
+        """Discard a partial cache while keeping the transcript."""
+        if self._decoder is not None:
+            self.cache = self._decoder.target_cache
+        self._decoder = None
+        self.cache = self.language.make_cache()
+        self._replay_needed = bool(self.tape)
+        self.turn_closed = False
         self.language._position_ids = None
         self.language._rope_deltas = None
 
@@ -388,7 +401,8 @@ class FlashNextBackend(Conversation):
         return len(self.tape)
 
     def generate(self, max_tokens: int, out=None, on_prefilled=None,
-                 on_prefill_progress=None, on_decode_token=None) -> tuple[str, Stats]:
+                 on_prefill_progress=None, on_decode_token=None,
+                 should_cancel=None) -> tuple[str, Stats]:
         """Feed everything pending through the model, then decode a reply.
 
         `on_prefilled` fires once the prompt is in the cache and before the
@@ -435,10 +449,16 @@ class FlashNextBackend(Conversation):
             and not separate_budgets
         ):
             decoder = self._start_fused_decoder()
-        ids = mx.array(self.pending)[None]
+        prompt = list(self.tape) + self.pending if self._replay_needed else list(self.pending)
+        ids = mx.array(prompt)[None]
         prompt_tokens = int(ids.shape[1])
         self.tape.extend(self.pending)
         self.pending = []
+        self._replay_needed = False
+
+        def check_cancel():
+            if should_cancel is not None and should_cancel():
+                raise GenerationCancelled
 
         prefill_began = time.perf_counter()
         self.routing.reset()
@@ -452,6 +472,7 @@ class FlashNextBackend(Conversation):
         completed_layers = set()
 
         def layer_completed(layer_id):
+            check_cancel()
             completed_layers.add(layer_id)
             if on_prefill_progress is not None and streamed_layers:
                 confirmed = max(0, len(completed_layers) - 1)
@@ -462,6 +483,7 @@ class FlashNextBackend(Conversation):
             on_prefill_progress(0, prompt_tokens)
         set_prefill_progress(layer_completed)
         try:
+            check_cancel()
             if decoder is None:
                 _, token = prefill_language(
                     self.language, ids, self.cache, sampler=Sampler(self.sampling)
@@ -469,6 +491,9 @@ class FlashNextBackend(Conversation):
             else:
                 decoder.append(ids)
                 self.cache = decoder.target_cache
+        except GenerationCancelled:
+            self._mark_replay_needed()
+            raise
         finally:
             set_prefill_progress(None)
         prefill_seconds = time.perf_counter() - prefill_began
@@ -536,6 +561,7 @@ class FlashNextBackend(Conversation):
         )
         try:
             for index, value in enumerate(tokens):
+                check_cancel()
                 produced.append(value)
                 self.tape.append(value)
                 if self.routing.after_token(index + 1, max_tokens):
@@ -577,6 +603,9 @@ class FlashNextBackend(Conversation):
                 self.turn_closed = False
             else:
                 self.turn_closed = False
+        except GenerationCancelled:
+            self._mark_replay_needed()
+            raise
         finally:
             if decoder is not None:
                 decoder.set_route_observer(None)

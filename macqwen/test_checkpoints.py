@@ -18,6 +18,30 @@ def flashnext(root: Path, name: str, model_type: str = "qwen4_exp") -> Path:
         "weight_map": {"weight": "model-00001-of-00001.safetensors"}
     }))
     (path / "model-00001-of-00001.safetensors").touch()
+    for filename in ("tokenizer.json", "tokenizer_config.json"):
+        (path / filename).touch()
+    return path
+
+
+def qwen27b(root: Path, name: str = "qwen") -> Path:
+    path = root / name
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps({"vocab_size": 248320}))
+    for filename in (
+        "tokenizer.json", "tokenizer_config.json", "chat_template.jinja",
+        "model-00001-of-00001.safetensors",
+    ):
+        (path / filename).touch()
+    (path / "model.safetensors.index.json").write_text(json.dumps({
+        "weight_map": {"weight": "model-00001-of-00001.safetensors"}
+    }))
+    assets = path / "bf16-ends"
+    assets.mkdir()
+    (assets / "embed.bf16").write_bytes(b"\0\0")
+    (assets / "head.bf16").write_bytes(b"\0\0")
+    (assets / "meta.json").write_text(json.dumps({
+        "embed_shape": [1, 1], "head_shape": [1, 1],
+    }))
     return path
 
 
@@ -49,6 +73,14 @@ class CheckpointTests(unittest.TestCase):
             (path / "model-00001-of-00001.safetensors").unlink()
             with patch.dict(os.environ, {"MACQWEN_MODEL_ROOT": str(root)}, clear=False):
                 self.assertEqual(installed_flashnext(), [])
+
+    def test_partial_download_explains_how_to_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = flashnext(root, "partial")
+            (path / "model-00001-of-00001.safetensors").unlink()
+            with self.assertRaisesRegex(ValueError, "model-00001-of-00001.safetensors"):
+                resolve_flashnext(path)
 
     def test_multiple_checkpoints_require_an_explicit_choice(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -110,11 +142,17 @@ class CheckpointTests(unittest.TestCase):
     def test_qwen27b_discovery_uses_config_instead_of_a_local_name(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            expected = root / "any-name"
-            expected.mkdir()
-            (expected / "config.json").write_text(json.dumps({"vocab_size": 248320}))
+            expected = qwen27b(root, "any-name")
             with patch.dict(os.environ, {"MACQWEN_MODEL_ROOT": str(root)}, clear=False):
                 self.assertEqual(resolve_qwen27b(), expected.resolve())
+
+    def test_qwen27b_incomplete_bf16_assets_explain_the_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            expected = qwen27b(root)
+            (expected / "bf16-ends" / "head.bf16").unlink()
+            with self.assertRaisesRegex(ValueError, "bf16-ends/head.bf16"):
+                resolve_qwen27b(expected)
 
 
 if __name__ == "__main__":

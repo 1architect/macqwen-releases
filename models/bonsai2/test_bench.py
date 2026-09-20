@@ -23,6 +23,21 @@ class BenchTests(unittest.TestCase):
         self.assertEqual(effective, 256)
         self.assertEqual(constructor, {})
 
+    def test_q4_attention_comparison_pins_precision_allocator_and_chunk(self):
+        arms = bench.COMPARISONS["q4-attention"]
+        self.assertEqual(
+            {tuple(arm["quantized_kv"]) for arm in arms.values()}, {(4, 64)}
+        )
+        self.assertEqual(
+            {arm["allocator_cache_mb"] for arm in arms.values()}, {256}
+        )
+        self.assertEqual(
+            {arm["prefill_step_size"] for arm in arms.values()}, {512}
+        )
+        self.assertEqual(
+            {arm["q4_attention_tiling"] for arm in arms.values()}, {False, True}
+        )
+
     def test_context_fixtures_are_numbered_and_scaled(self):
         for name, count in (("context-2k", 128), ("context-8k", 384), ("context-16k", 768)):
             _system, prompt, _tool, _repeat = bench.FIXTURES[name]
@@ -348,8 +363,25 @@ class BenchTests(unittest.TestCase):
     def test_cached_tool_fixture_generates_before_appending_results(self):
         backend = Mock(pending=[1, 2])
         backend.open_conversation.return_value = 2
-        backend.append_tool_results.return_value = 3
-        backend.generate.return_value = ("t", SimpleNamespace(tokens=1))
+        cache_at_append = {}
+
+        def generate(*_args, **_kwargs):
+            backend.tape.extend(backend.pending)
+            backend.pending = []
+            return "t", SimpleNamespace(tokens=1)
+
+        def append_tool_results(results, enable_thinking=True):
+            cache_at_append.update({
+                "pending": list(backend.pending),
+                "tape": list(backend.tape),
+                "enable_thinking": enable_thinking,
+                "results": list(results),
+            })
+            backend.pending.extend([3])
+            return 3
+
+        backend.append_tool_results.side_effect = append_tool_results
+        backend.generate.side_effect = generate
         backend.check_invariant.return_value = True
         backend.quantized_kv = None
         backend.tape = []
@@ -376,6 +408,49 @@ class BenchTests(unittest.TestCase):
         )
         # The cache must hold a generated turn before tool results frame it.
         self.assertLess(setup_generate, append)
+        backend.open_conversation.assert_called_once_with(
+            "Use tool results as context.", bench._ANALYSIS_REQUEST,
+            tools=None, enable_thinking=False, reasoning_effort="medium",
+        )
+        backend.append_tool_results.assert_called_once_with(
+            ['{"setting":"example","value":42}'], enable_thinking=False,
+        )
+        self.assertEqual(cache_at_append["pending"], [])
+        self.assertEqual(cache_at_append["tape"], [1, 2])
+
+    def test_digest_reference_comes_from_a_clean_control_arm(self):
+        def runner(command, **_kwargs):
+            args = {
+                command[index]: command[index + 1]
+                for index in range(len(command) - 1)
+                if command[index].startswith("--")
+                and not command[index + 1].startswith("--")
+            }
+            round_index = int(args["--round"])
+            condition = args["--condition"]
+            tokens = [999] if condition == "control" and round_index == 0 else [1]
+            bench.append_jsonl(args["--record"], {
+                "type": "arm", "arm_id": args["--arm-id"],
+                "condition": condition, "round": round_index,
+                "status": "raw", "tokens": tokens,
+                "token_digest": bench._digest(tokens),
+                "stats": {"rate_tps": 10},
+            })
+            return SimpleNamespace(
+                returncode=3 if condition == "control" and round_index == 0 else 0,
+                stderr="failed control" if round_index == 0 and condition == "control" else "",
+            )
+
+        with TemporaryDirectory() as directory:
+            summary = bench.run_comparison(
+                checkpoint=str(Path(directory) / "missing"),
+                comparison="allocator", record_path=Path(directory) / "digest.jsonl",
+                rounds=2, runner=runner,
+            )
+        self.assertEqual(summary["failed_arms"], 1)
+        self.assertEqual(summary["validation_failures"], 0)
+        self.assertEqual(summary["expected_greedy_digest"], bench._digest([1]))
+        self.assertEqual(summary["paired"]["allocator-256"]["pair_count"], 1)
 
 
 if __name__ == "__main__":
