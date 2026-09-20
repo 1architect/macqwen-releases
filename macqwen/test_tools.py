@@ -172,6 +172,127 @@ class ParseTests(unittest.TestCase):
                 self.assertIn(required, tools.PARAM_TYPES[name])
 
 
+class CoerceScalarTests(unittest.TestCase):
+    """One shared rule for both parsers: strict int, explicit bool."""
+
+    INTEGER_OK = [("3", 3), (" 3 ", 3), ("+3", 3), ("-2", -2), ("007", 7)]
+    INTEGER_BAD = ["3.0", "3.7", "banana", "", "nan", "inf", "0x10", "1_0"]
+    NUMBER_OK = [("3", 3.0), ("3.0", 3.0), ("3.7", 3.7), (" 2.5 ", 2.5)]
+    NUMBER_BAD = ["banana", "", "nan", "inf", "-inf"]
+    BOOLEAN_OK = [
+        ("true", True), ("True", True), (" TRUE ", True), ("1", True),
+        ("yes", True), ("YES", True), ("on", True),
+        ("false", False), ("False", False), (" FALSE ", False), ("0", False),
+        ("no", False), ("off", False),
+    ]
+    BOOLEAN_BAD = ["banana", "", "2", "maybe", "truthy"]
+
+    def test_integer_table(self):
+        for raw, expected in self.INTEGER_OK:
+            with self.subTest(raw=raw):
+                self.assertEqual(tools.coerce_scalar(raw, "integer"), expected)
+        for raw in self.INTEGER_BAD:
+            with self.subTest(raw=raw):
+                with self.assertRaises(tools.ToolCallValidationError):
+                    tools.coerce_scalar(raw, "integer")
+
+    def test_number_table(self):
+        for raw, expected in self.NUMBER_OK:
+            with self.subTest(raw=raw):
+                self.assertEqual(tools.coerce_scalar(raw, "number"), expected)
+        for raw in self.NUMBER_BAD:
+            with self.subTest(raw=raw):
+                with self.assertRaises(tools.ToolCallValidationError):
+                    tools.coerce_scalar(raw, "number")
+
+    def test_boolean_table(self):
+        for raw, expected in self.BOOLEAN_OK:
+            with self.subTest(raw=raw):
+                self.assertIs(tools.coerce_scalar(raw, "boolean"), expected)
+        for raw in self.BOOLEAN_BAD:
+            with self.subTest(raw=raw):
+                with self.assertRaises(tools.ToolCallValidationError):
+                    tools.coerce_scalar(raw, "boolean")
+
+    def test_array_and_object_table(self):
+        self.assertEqual(tools.coerce_scalar("[1, 2]", "array"), [1, 2])
+        self.assertEqual(tools.coerce_scalar("[]", "array"), [])
+        self.assertEqual(
+            tools.coerce_scalar('{"a": 1}', "object"), {"a": 1}
+        )
+        self.assertEqual(tools.coerce_scalar("{}", "object"), {})
+        for kind, raw in (
+            ("array", '{"a": 1}'), ("array", "3"), ("array", "banana"),
+            ("array", ""), ("object", "[1]"), ("object", "3"),
+            ("object", "banana"), ("object", ""),
+        ):
+            with self.subTest(kind=kind, raw=raw):
+                with self.assertRaises(tools.ToolCallValidationError):
+                    tools.coerce_scalar(raw, kind)
+
+    def test_plain_strings_pass_through(self):
+        self.assertEqual(tools.coerce_scalar("banana", "string"), "banana")
+        self.assertEqual(tools.coerce_scalar("3.7", "string"), "3.7")
+        self.assertEqual(
+            tools.coerce_scalar("  padded  ", "string"), "  padded  "
+        )
+        self.assertEqual(tools.coerce_scalar("banana", None), "banana")
+
+    def test_error_names_tool_and_parameter(self):
+        with self.assertRaisesRegex(
+            tools.ToolCallValidationError, "read_file.*start_line"
+        ):
+            tools.coerce_scalar("3.7", "integer", tool="read_file",
+                                key="start_line")
+
+
+def _int_call_xml(value, quoted=False):
+    param = (
+        f'<parameter=start_line="{value}"></parameter>' if quoted
+        else f"<parameter=start_line>\n{value}\n</parameter>"
+    )
+    return (
+        "<tool_call>\n<function=read_file>\n<parameter=path>\nnotes.txt\n"
+        f"</parameter>\n{param}\n</function>\n</tool_call>"
+    )
+
+
+class ParseCoercionTests(unittest.TestCase):
+    def test_integer_table_through_parser(self):
+        for raw, expected in CoerceScalarTests.INTEGER_OK:
+            with self.subTest(raw=raw):
+                (name, args), = tools.parse_tool_calls(_int_call_xml(raw))
+                self.assertEqual(args["start_line"], expected)
+
+    def test_bad_integers_raise_through_parser(self):
+        for raw in CoerceScalarTests.INTEGER_BAD:
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(
+                    tools.ToolCallValidationError, "start_line"
+                ):
+                    tools.parse_tool_calls(_int_call_xml(raw))
+
+    def test_quoted_params_coerce_equally(self):
+        (name, args), = tools.parse_tool_calls(_int_call_xml("3", quoted=True))
+        self.assertEqual(args["start_line"], 3)
+        with self.assertRaises(tools.ToolCallValidationError):
+            tools.parse_tool_calls(_int_call_xml("3.7", quoted=True))
+
+    def test_short_params_coerce_equally(self):
+        ok = (
+            "<tool_call><function=read_file><parameter=path>notes.txt"
+            "</parameter><start_line>3</start_line></function></tool_call>"
+        )
+        (name, args), = tools.parse_tool_calls(ok)
+        self.assertEqual(args["start_line"], 3)
+        bad = ok.replace("<start_line>3</start_line>",
+                         "<start_line>banana</start_line>")
+        with self.assertRaisesRegex(
+            tools.ToolCallValidationError, "start_line"
+        ):
+            tools.parse_tool_calls(bad)
+
+
 class DifferentialTests(unittest.TestCase):
     """The extracted parser must agree with the one it came from."""
 

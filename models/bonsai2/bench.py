@@ -754,6 +754,23 @@ def _stop_token_sync_stats(backend: Any) -> dict[str, Any]:
     return dict(stats) if isinstance(stats, dict) else {}
 
 
+def _decode_trace(backend: Any) -> list[dict[str, Any]]:
+    trace = getattr(backend, "decode_trace", None)
+    if not isinstance(trace, (list, tuple)):
+        return []
+    result = []
+    for item in trace:
+        if isinstance(item, dict):
+            result.append(
+                {
+                    "next_s": float(item.get("next_s", 0.0) or 0.0),
+                    "host_s": float(item.get("host_s", 0.0) or 0.0),
+                    "total_s": float(item.get("total_s", 0.0) or 0.0),
+                }
+            )
+    return result
+
+
 def _progress(arm_id: str, phase: str, **values) -> None:
     payload = {"arm": arm_id, "pid": os.getpid(), "phase": phase, **values}
     print("BonsaiProgress " + json.dumps(payload, sort_keys=True, default=str), flush=True)
@@ -1307,6 +1324,7 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
         record["speculative_stats"] = _speculative_stats(backend)
         record["fused_fwht"] = _fused_fwht_stats(backend)
         record["stop_token_sync"] = _stop_token_sync_stats(backend)
+        record["decode_trace"] = _decode_trace(backend)
         try:
             provenance_after = provenance_manifest(checkpoint)
         except BaseException as error:
@@ -1464,6 +1482,7 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
             record["speculative_stats"] = _speculative_stats(backend)
             record["fused_fwht"] = _fused_fwht_stats(backend)
             record["stop_token_sync"] = _stop_token_sync_stats(backend)
+            record["decode_trace"] = _decode_trace(backend)
         if arrivals:
             record["tokens"] = [item["token"] for item in arrivals]
             record["token_digest"] = _digest(record["tokens"])

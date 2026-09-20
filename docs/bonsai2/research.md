@@ -774,3 +774,118 @@ on a thread with no cache affinity, tracked with thread-local storage
 so recycled thread idents cannot fool the check. We pin this with a
 worker-reuse test, a two-thread replay test, and a live two-turn check
 with no replay and a holding cache invariant.
+
+## 2026-09-20 — Decode host vs MLX split
+
+We measure host time outside MLX/Metal per decode token.
+
+We add two perf counters in our decode loop. `next_s` covers
+`next(steps_iter)`, including model forward, sampler graph build, and
+all MLX eval and sync waits. `host_s` covers tape append, sampler
+observe, `stream_decode`, protocol feed, and callbacks, excluding
+terminal emit through `DecodeTimer`. Our change adds no `mx.eval`,
+no warmup, no sleep, and no cache flush. Our bench exports the trace
+as `decode_trace` alongside `stop_token_sync`.
+
+We run three fresh baseline arms. Our fixture is `question-only`
+with 23 prompt tokens and 32 greedy output tokens. Our seed is 7.
+Our defaults hold, including prepared QMM metadata on. All arms
+complete with digest `cdb7ac707f12`. Decode rates are 9.178, 9.388,
+and 9.302 tok/s. Our record is
+[`20260920-decode-outside-split.jsonl`](measurements/20260920-decode-outside-split.jsonl).
+
+We report steady tokens only, excluding token 1. Token 1 carries the
+prefill boundary and measures 1,141 to 2,353 ms.
+
+| Metric | Result |
+|---|---|
+| Steady total, median | 106.9 ms per token |
+| Host post, median | 0.1207 ms per token |
+| Host post, mean | 0.1245 ms per token |
+| Median host share | 0.1139% of the token |
+| Per-arm host medians | 0.1371, 0.1390, 0.1175 ms |
+
+Our bench harness adds its own spikes. Resource sampling and progress
+pipe add about 6.4 to 6.7 ms on every third token. We exclude those
+spikes from our production claim. Our base set holds 63 tokens under
+1.0 ms host time.
+
+Our `stop_token_sync` reports 20.31 to 24.16 ms per token over 32
+calls. This `.item()` waits for prior GPU sampler output inside the
+model call. We count it as Metal wait, not host compute. It lives
+inside `next_s`.
+
+Our prior `cProfile` bounds total Python at about 5% of wall. At
+107 ms that is about 5.4 ms per token. Our direct host is 0.12 ms of
+that total. The remainder is Python graph build inside `next()`.
+About 95% of the token remains in MLX/Metal execution and sync waits.
+
+We keep this as diagnostic evidence. It changes no default and
+promotes no optimization. Our `decode_trace` stays as diagnostic
+infrastructure with the existing attention, QMM, Q2, FWHT, and stop
+sync counters.
+
+## 2026-09-20 — Necessary GPU work vs MLX bubbles
+
+We split our steady 106.9 ms decode token into necessary work and
+bubbles. Our scope stays question-only with no context-1k arm.
+
+We parse our safetensors header only, loading no weights. Our
+language-model pack holds 7,673,714,688 bytes: 6.256 GiB packed
+`uint32` weights plus 0.391 GiB scales, 0.391 GiB biases, 0.109 GiB
+F32 signs and metadata, and 0.782 GiB F16 tables. Each decode token
+touches all 401 non-embedding projections plus `lm_head`, so weight
+traffic is about 7.7 GB per token. GDN state adds about 0.3 GB
+read plus write per token. KV payload is 7.2 MB at this context.
+Total necessary traffic is about 8.2 GB per token.
+
+We probe our achievable device roof with a resident 180 MB `float16`
+sum. Cold run measures 41.8 GB/s and warm run measures 90.7 GB/s.
+At 90 GB/s, 8.2 GB needs about 91 ms. Our measured token is
+106.9 ms. Necessary memory traffic therefore covers about 80 to 85%
+of the token. The 15 to 20 ms remainder holds FWHT math, attention
+softmax, GDN recurrence, norms, sampler, Python build, and any
+barrier or fence wait.
+
+We rule four bubble sources near zero in steady state. Disk reads
+are 507,904 bytes on warm arms with zero pageout. MLX cache holds
+steady at 52 MB against 8.67 GB active. Wired limit stays off, so
+residency commits nothing. Host post-processing measures 0.1207 ms
+median, or 0.11% of the token. One-ahead overlap hides most Python
+build behind GPU execution because GPU work exceeds host work by
+about 20 to 1.
+
+We attempt one single-token `.gputrace` capture with
+`MTL_CAPTURE_ENABLED=1`. Without the flag, capture fails closed
+with `Capture layer is not inserted`. With the flag, capture opens
+and closes cleanly around our token 4 to 5 window. The bundle
+measures 8.3 GB on disk, matching the expected single-token size.
+Capture stop perturbs token 5 by 2,932 ms host, so the captured
+window is diagnostic only and never a production timing. Our derived
+record is
+[`20260920-decode-gpu-split.jsonl`](measurements/20260920-decode-gpu-split.jsonl),
+holding both attempts, token walls, counters, and the size note.
+The 8 GB bundle itself stays out of our repo. Sum versus union
+inspection needs Xcode GPU tools and stays open. Even if our full
+15 to 20 ms remainder were bubbles, bubbles cap at about 15 to 20%
+and necessary work floors at about 80%.
+
+We run no further capture or comparison on this question. Our
+machine stays cool and our evidence stands on the header parse,
+the roofline probe, the retained split arms, and one gated capture.
+
+We recapture one single-token bundle for Xcode at your request. It
+lives at `~/Downloads/bonsai-decode-1tok.gputrace` with 8.3 GB on
+disk. Our derived record is
+[`20260920-decode-gpu-xcode.jsonl`](measurements/20260920-decode-gpu-xcode.jsonl)
+with the same 6 greedy tokens, token walls, counters, and size note.
+Token 5 carries the capture stop cost and stays diagnostic only.
+
+You read 135.286 ms of GPU span in Xcode for our token 4 to 5
+window. That window holds about 1.2 to 1.3 steady tokens of GPU work
+plus one-ahead lookahead, so it correctly exceeds our 106.9 ms
+steady wall. Your counters confirm our bound: active cores near
+100%, bandwidth peak 85.5 GiB/s against our 90.7 GB/s roofline probe,
+and ALU utilization 46.53% at the cursor. That is a memory-bound
+signature. Necessary traffic near 8.2 GB per token explains the wall,
+and MLX bubbles stay capped at about 15 to 20%.

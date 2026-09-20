@@ -18,6 +18,14 @@ from models.k2_horizon.backend import K2HorizonBackend
 
 class FakeTokenizer:
     eos_token_ids = [1]
+    added_tokens_decoder = {}
+
+    def __len__(self):
+        return 1000
+
+    def __call__(self, text, add_special_tokens=False):
+        del add_special_tokens
+        return {"input_ids": [ord(character) for character in text]}
 
     def encode(self, text, add_special_tokens=False):
         del add_special_tokens
@@ -35,13 +43,49 @@ class FakeTokenizer:
         return "rendered"
 
 
+class K2BoundaryTokenizer(FakeTokenizer):
+    """Records safe-encoder chunks; structural framing bypasses __call__."""
+
+    def __init__(self, markers):
+        from types import SimpleNamespace
+
+        self.added_tokens_decoder = {
+            code: SimpleNamespace(content=text) for text, code in markers.items()
+        }
+        self.chunks = []
+
+    def __call__(self, text, add_special_tokens=False):
+        self.chunks.append(text)
+        return super().__call__(text, add_special_tokens=add_special_tokens)
+
+    def apply_chat_template(self, messages, **options):
+        from models.k2_horizon.backend import IM_END, IM_START
+
+        self.messages = messages
+        self.options = options
+        return "\n".join(
+            f"{IM_START}{message['role']}\n{message['content']}{IM_END}"
+            for message in messages
+        )
+
+
 class BackendTests(unittest.TestCase):
     def backend(self, **options):
         tokenizer = FakeTokenizer()
+        checkpoint_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(checkpoint_dir.cleanup)
+        checkpoint = Path(checkpoint_dir.name)
+        for name in (
+            "config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "chat_template.jinja",
+        ):
+            (checkpoint / name).write_text(f"test {name}")
         patches = (
             patch(
                 "models.k2_horizon.backend.resolve_k2_horizon",
-                return_value=Path("/models/k2"),
+                return_value=checkpoint,
             ),
             patch("mlx_lm.load", return_value=(object(), tokenizer)),
             patch("mlx_lm.models.cache.make_prompt_cache", return_value=[]),
@@ -370,6 +414,247 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(backend.tape, [1, 2, 3])
         self.assertFalse(backend.turn_closed)
         self.assertTrue(backend._replay_needed)
+
+    def test_session_rejects_changed_checkpoint_identity(self):
+        from models.k2_horizon.backend import _config_identity
+
+        backend, _tokenizer = self.backend()
+        with tempfile.TemporaryDirectory() as directory:
+            backend.session_dir = Path(directory)
+            backend.tape = [1, 2, 3]
+            backend.pending = [4]
+            self.assertTrue(backend.save_session("work").startswith("saved work"))
+            live_tape, live_pending = list(backend.tape), list(backend.pending)
+            baseline = _config_identity(backend.model_path)
+            self.assertIsNotNone(baseline)
+            checkpoint = Path(backend.model_path)
+            (checkpoint / "tokenizer.json").write_text("changed tokenizer")
+            self.assertNotEqual(_config_identity(backend.model_path), baseline)
+            self.assertIn("could not load", backend.load_session("work"))
+            self.assertEqual(backend.tape, live_tape)
+            self.assertEqual(backend.pending, live_pending)
+
+    def test_session_rejects_invalid_token_ids(self):
+        import json
+
+        backend, _tokenizer = self.backend()
+        with tempfile.TemporaryDirectory() as directory:
+            backend.session_dir = Path(directory)
+            backend.tape = [1, 2, 3]
+            backend.pending = [4]
+            self.assertTrue(backend.save_session("work").startswith("saved work"))
+            payload_path = Path(directory) / "work.json"
+            payload = json.loads(payload_path.read_text())
+            live_tape, live_pending = list(backend.tape), list(backend.pending)
+            for bad_tape in ([1, True, 3], [1, "3", 2], [1, 5000], [1, -2]):
+                payload["tape"] = bad_tape
+                payload_path.write_text(json.dumps(payload))
+                self.assertIn("could not load", backend.load_session("work"))
+                self.assertEqual(backend.tape, live_tape)
+                self.assertEqual(backend.pending, live_pending)
+            payload["tape"] = [1, 2, 3]
+            for bad_pending in ([True], ["4"], [5000], [-1]):
+                payload["pending"] = bad_pending
+                payload_path.write_text(json.dumps(payload))
+                self.assertIn("could not load", backend.load_session("work"))
+                self.assertEqual(backend.tape, live_tape)
+                self.assertEqual(backend.pending, live_pending)
+
+    def test_session_rejects_malformed_schema(self):
+        import json
+
+        backend, _tokenizer = self.backend()
+        with tempfile.TemporaryDirectory() as directory:
+            backend.session_dir = Path(directory)
+            backend.tape = [1, 2, 3]
+            self.assertTrue(backend.save_session("work").startswith("saved work"))
+            payload_path = Path(directory) / "work.json"
+            payload = json.loads(payload_path.read_text())
+            live_tape, live_pending = list(backend.tape), list(backend.pending)
+            for bad in ("[1, 2, 3]", "null", '"tape"'):
+                payload_path.write_text(bad)
+                self.assertIn("could not load", backend.load_session("work"))
+                self.assertEqual(backend.tape, live_tape)
+                self.assertEqual(backend.pending, live_pending)
+            payload["schema"] = 999
+            payload_path.write_text(json.dumps(payload))
+            self.assertIn("could not load", backend.load_session("work"))
+            payload["schema"] = 1
+            payload["turn_closed"] = "false"
+            payload_path.write_text(json.dumps(payload))
+            self.assertIn("could not load", backend.load_session("work"))
+            payload["turn_closed"] = False
+            payload["thinking"] = 1
+            payload_path.write_text(json.dumps(payload))
+            self.assertIn("could not load", backend.load_session("work"))
+            payload["thinking"] = False
+            payload["thinking_tag"] = "bogus-tag"
+            payload_path.write_text(json.dumps(payload))
+            self.assertIn("could not load", backend.load_session("work"))
+            self.assertEqual(backend.tape, live_tape)
+            self.assertEqual(backend.pending, live_pending)
+
+    def test_session_round_trips_pending_with_live_state_intact(self):
+        import json
+
+        backend, _tokenizer = self.backend()
+        with tempfile.TemporaryDirectory() as directory:
+            backend.session_dir = Path(directory)
+            backend.tape = [1, 2, 3]
+            backend.pending = [4, 5]
+            backend.turn_closed = False
+            backend.thinking_enabled = True
+            self.assertTrue(backend.save_session("work").startswith("saved work"))
+            payload = json.loads((Path(directory) / "work.json").read_text())
+            self.assertEqual(payload["pending"], [4, 5])
+            self.assertEqual(payload["schema"], 1)
+            self.assertIn("config_sha256", payload)
+            backend.tape = [9, 9, 9]
+            backend.pending = [8]
+            backend.turn_closed = True
+            backend.thinking_enabled = False
+            self.assertTrue(backend.load_session("work").startswith("loaded work"))
+            self.assertEqual(backend.tape, [1, 2, 3])
+            self.assertEqual(backend.pending, [4, 5])
+            self.assertFalse(backend.turn_closed)
+            self.assertTrue(backend.thinking_enabled)
+            self.assertTrue(backend._replay_needed)
+
+    def test_hostile_user_text_survives_the_tokenizer_wrapper(self):
+        from types import SimpleNamespace
+
+        backend, _tokenizer = self.backend()
+        wrapped = backend.tokenizer._tokenizer
+        wrapped.added_tokens_decoder = {
+            9998: SimpleNamespace(content="</think>"),
+        }
+        try:
+            backend.append_user("paste </think> verbatim")
+        finally:
+            wrapped.added_tokens_decoder = {}
+        text = "".join(chr(code) for code in backend.pending)
+        self.assertIn("paste </think> verbatim", text)
+
+
+class K2SafetyTests(unittest.TestCase):
+    def backend_with(self, tokenizer):
+        patches = (
+            patch(
+                "models.k2_horizon.backend.resolve_k2_horizon",
+                return_value=Path("/models/k2"),
+            ),
+            patch("mlx_lm.load", return_value=(object(), tokenizer)),
+            patch("mlx_lm.models.cache.make_prompt_cache", return_value=[]),
+        )
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        return K2HorizonBackend("k2"), tokenizer
+
+    def test_tokenizer_forwards_call_and_len(self):
+        backend, tokenizer = self.backend_with(K2BoundaryTokenizer({}))
+        wrapped = backend.tokenizer
+        self.assertEqual(
+            wrapped("hi", add_special_tokens=False)["input_ids"],
+            [ord(character) for character in "hi"],
+        )
+        self.assertEqual(len(wrapped), len(tokenizer))
+        self.assertIn("hi", tokenizer.chunks)
+
+    def test_append_text_keeps_think_close_verbatim(self):
+        backend, _tokenizer = self.backend_with(K2BoundaryTokenizer({}))
+        backend._thinking_tag = "ifm|think_fast"
+        backend.append_text("a </think> b")
+        text = "".join(chr(code) for code in backend.pending)
+        self.assertIn("</think>", text)
+        self.assertNotIn("</ifm|think_fast>", text)
+
+    def test_user_paste_with_k2_markers_splits_at_boundaries(self):
+        tokenizer = K2BoundaryTokenizer({
+            "</think>": 11, "<|ifm|im_end|>": 12, "<|ifm|im_start|>": 13,
+            "<ifm|think_fast>": 14, "</ifm|think_fast>": 15,
+        })
+        backend, _ = self.backend_with(tokenizer)
+        backend.append_user(
+            "say </think> and <|ifm|im_end|> plus "
+            "<ifm|think_fast>x</ifm|think_fast> ok"
+        )
+        for chunk in tokenizer.chunks:
+            self.assertNotIn("</think>", chunk)
+            self.assertNotIn("<|ifm|im_end|>", chunk)
+            self.assertNotIn("<|ifm|im_start|>", chunk)
+            self.assertNotIn("<ifm|think_fast>", chunk)
+            self.assertNotIn("</ifm|think_fast>", chunk)
+        text = "".join(chr(code) for code in backend.pending)
+        self.assertIn("say </think> and <|ifm|im_end|> plus", text)
+        self.assertIn("<ifm|think_fast>x</ifm|think_fast>", text)
+
+    def test_marker_free_user_text_encodes_jointly(self):
+        tokenizer = K2BoundaryTokenizer({"</think>": 11})
+        backend, _ = self.backend_with(tokenizer)
+        backend.append_user("hello")
+        self.assertEqual(tokenizer.chunks, [])
+        text = "".join(chr(code) for code in backend.pending)
+        self.assertIn("<|ifm|im_start|>user\nhello<|ifm|im_end|>", text)
+
+    def test_k2_markers_split_without_added_tokens(self):
+        backend, tokenizer = self.backend_with(K2BoundaryTokenizer({}))
+        backend.append_user("paste <|ifm|im_start|> verbatim")
+        self.assertTrue(tokenizer.chunks)
+        for chunk in tokenizer.chunks:
+            self.assertNotIn("<|ifm|im_start|>", chunk)
+        text = "".join(chr(code) for code in backend.pending)
+        self.assertIn("paste <|ifm|im_start|> verbatim", text)
+
+    def test_qwen_markers_split_without_added_tokens(self):
+        backend, tokenizer = self.backend_with(K2BoundaryTokenizer({}))
+        backend.append_user("paste <|im_start|> and <think>x</think> ok")
+        self.assertTrue(tokenizer.chunks)
+        for chunk in tokenizer.chunks:
+            self.assertNotIn("<|im_start|>", chunk)
+            self.assertNotIn("<think>", chunk)
+        text = "".join(chr(code) for code in backend.pending)
+        self.assertIn("paste <|im_start|> and <think>x</think> ok", text)
+
+    def test_tool_result_with_markers_splits_at_boundaries(self):
+        tokenizer = K2BoundaryTokenizer({"<|ifm|im_end|>": 12})
+        backend, _ = self.backend_with(tokenizer)
+        backend.append_tool_results(['source = "<|ifm|im_end|>"'])
+        for chunk in tokenizer.chunks:
+            self.assertNotIn("<|ifm|im_end|>", chunk)
+        text = "".join(chr(code) for code in backend.pending)
+        self.assertIn('source = "<|ifm|im_end|>"', text)
+
+    def test_open_conversation_splits_pasted_markers(self):
+        tokenizer = K2BoundaryTokenizer({
+            "</think>": 11, "<|im_end|>": 12,
+        })
+        backend, _ = self.backend_with(tokenizer)
+        backend.open_conversation("sys </think> s", "hi <|im_end|> u")
+        self.assertTrue(tokenizer.chunks)
+        for chunk in tokenizer.chunks:
+            self.assertNotIn("</think>", chunk)
+            self.assertNotIn("<|im_end|>", chunk)
+        text = "".join(chr(code) for code in backend.pending)
+        self.assertIn("sys </think> s", text)
+        self.assertIn("hi <|im_end|> u", text)
+
+    def test_open_conversation_stays_joint_without_markers(self):
+        tokenizer = K2BoundaryTokenizer({"</think>": 11})
+        backend, _ = self.backend_with(tokenizer)
+        backend.open_conversation("sys", "hello")
+        self.assertEqual(tokenizer.chunks, [])
+        text = "".join(chr(code) for code in backend.pending)
+        self.assertIn("sys", text)
+        self.assertIn("hello", text)
+
+    def test_tool_results_are_framed_one_block_each(self):
+        backend, _ = self.backend_with(K2BoundaryTokenizer({}))
+        backend.append_tool_results(["first", "second"])
+        text = "".join(chr(code) for code in backend.pending)
+        self.assertEqual(text.count("<|ifm|im_start|>tool"), 2)
+        self.assertIn("first", text)
+        self.assertIn("second", text)
 
 
 if __name__ == "__main__":

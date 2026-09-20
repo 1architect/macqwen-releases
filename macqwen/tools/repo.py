@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import signal
 import subprocess
 import tempfile
 from pathlib import Path
@@ -155,8 +156,13 @@ class Repo:
         try:
             from macqwen.tools.code_check import check, report
         except ImportError:
-            return []
-        errors, warnings = check(path, content, project_root=self.root)
+            return ["verification unavailable: code_check not installed; "
+                    "write proceeded without verification"]
+        try:
+            errors, warnings = check(path, content, project_root=self.root)
+        except Exception as exc:
+            return [f"verification unavailable: {exc}; "
+                    "write proceeded without verification"]
         if errors:
             # An index cannot see every gem, mixin or metaprogrammed method.
             # Refuse once with the specific names; if the model comes back with
@@ -225,29 +231,79 @@ class Repo:
     def run_command(self, command, timeout_seconds=120):
         timeout = min(max(1, int(timeout_seconds)), 300)
         environment = sanitized_environment()
+        process = subprocess.Popen(
+            ["/bin/zsh", "-c", command], cwd=self.root,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=environment, errors="replace",
+            start_new_session=True,
+        )
         try:
-            result = subprocess.run(
-                ["/bin/zsh", "-c", command], cwd=self.root,
-                capture_output=True, text=True, timeout=timeout,
-                env=environment, errors="replace",
-            )
-            stdout, stderr = result.stdout, result.stderr
+            stdout, stderr = process.communicate(timeout=timeout)
+            stdout = stdout or ""
+            stderr = stderr or ""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", "replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", "replace")
             limit = 30_000
             truncated = len(stdout) > limit or len(stderr) > limit
             return {
-                "exit_code": result.returncode,
+                "exit_code": process.returncode,
                 "stdout": stdout[-limit:],
                 "stderr": stderr[-limit:],
                 "truncated": truncated,
                 "cwd": str(self.root),
+                "timed_out": False,
             }
         except subprocess.TimeoutExpired as error:
+            # Kill the whole process group, mirroring
+            # testsuite/runner._stop_process_group: the shell may have
+            # spawned descendants (sleep, builds, servers) that outlive a
+            # direct-child kill and hold files or ports.
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except (OSError, ProcessLookupError, PermissionError):
+                pass
+            try:
+                stdout, stderr = process.communicate(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except (OSError, ProcessLookupError, PermissionError):
+                    try:
+                        process.kill()
+                    except (OSError, ProcessLookupError, PermissionError):
+                        pass
+                try:
+                    stdout, stderr = process.communicate(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    stdout = error.stdout or ""
+                    stderr = error.stderr or ""
+                    if isinstance(stdout, bytes):
+                        stdout = stdout.decode("utf-8", "replace")
+                    if isinstance(stderr, bytes):
+                        stderr = stderr.decode("utf-8", "replace")
+            # A descendant can ignore SIGTERM while the controller exits
+            # cleanly, so escalate the owned group after reaping as well.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError, PermissionError):
+                pass
+            if stdout is None:
+                stdout = error.stdout or ""
+            if stderr is None:
+                stderr = error.stderr or ""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", "replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", "replace")
             return {
                 "exit_code": 124,
-                "stdout": (error.stdout or "")[-30_000:],
-                "stderr": ((error.stderr or "") + f"\nTimed out after {timeout}s")[-30_000:],
+                "stdout": stdout[-30_000:],
+                "stderr": (stderr + f"\nTimed out after {timeout}s")[-30_000:],
                 "truncated": False,
                 "cwd": str(self.root),
+                "timed_out": True,
             }
 
     def call(self, name, args):

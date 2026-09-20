@@ -452,5 +452,155 @@ class SessionTests(unittest.TestCase):
             self.assertFalse(preferences_path.exists())
 
 
+class PreparedQmmSessionTests(unittest.TestCase):
+    def _bonsai_args(self, **overrides):
+        args = SimpleNamespace(
+            model_path="/models/b2",
+            prefill_step_size=512,
+            session_dir=None,
+            prepared_qmm="on",
+        )
+        for key, value in overrides.items():
+            setattr(args, key, value)
+        return args
+
+    def test_default_on_and_explicit_off_construct_different_settings(self):
+        from macqwen.session import build_backend
+
+        captured = {}
+
+        class FakeBonsai:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.prepared_qmm_metadata = kwargs["prepared_qmm_metadata"]
+                self._setting_sources = {}
+
+        prefs = dict(preferences.DEFAULTS)
+        with patch("models.bonsai2.backend.BonsaiBackend", FakeBonsai):
+            build_backend("bonsai2", self._bonsai_args(prepared_qmm="on"), prefs)
+            on_value = captured["prepared_qmm_metadata"]
+            build_backend("bonsai2", self._bonsai_args(prepared_qmm="off"), prefs)
+            off_value = captured["prepared_qmm_metadata"]
+        self.assertTrue(on_value)
+        self.assertFalse(off_value)
+        self.assertNotEqual(on_value, off_value)
+
+    def test_missing_flag_defaults_to_on(self):
+        from macqwen.session import build_backend
+
+        captured = {}
+
+        class FakeBonsai:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.prepared_qmm_metadata = kwargs["prepared_qmm_metadata"]
+                self._setting_sources = {}
+
+        args = SimpleNamespace(
+            model_path="/models/b2", prefill_step_size=512, session_dir=None
+        )
+        prefs = dict(preferences.DEFAULTS)
+        with patch("models.bonsai2.backend.BonsaiBackend", FakeBonsai):
+            build_backend("bonsai2", args, prefs)
+        self.assertTrue(captured["prepared_qmm_metadata"])
+
+    def test_cli_parsing_default_on_explicit_off_and_rejects_bad(self):
+        from macqwen.session import build_backend
+
+        seen = {}
+
+        def fake_build(name, args, prefs):
+            seen["prepared_qmm"] = getattr(args, "prepared_qmm", None)
+            return FakeBackend()
+
+        with tempfile.TemporaryDirectory() as root, patch.object(
+            sys, "argv", [
+                "session.py", "--model", "qwen27b",
+                "--model-path", str(Path(root) / "model"),
+                "--preferences-file", str(Path(root) / "preferences.json"),
+                "--api-keys-file", str(Path(root) / "keys.json"),
+            ]), patch(
+                "macqwen.session.build_backend", side_effect=fake_build
+            ), patch(
+                "macqwen.session.read_prompt", side_effect=("/quit",)
+            ), redirect_stdout(StringIO()):
+            self.assertEqual(main(), 0)
+        self.assertEqual(seen["prepared_qmm"], "on")
+
+        with tempfile.TemporaryDirectory() as root, patch.object(
+            sys, "argv", [
+                "session.py", "--model", "qwen27b",
+                "--model-path", str(Path(root) / "model"),
+                "--preferences-file", str(Path(root) / "preferences.json"),
+                "--api-keys-file", str(Path(root) / "keys.json"),
+                "--prepared-qmm", "off",
+            ]), patch(
+                "macqwen.session.build_backend", side_effect=fake_build
+            ), patch(
+                "macqwen.session.read_prompt", side_effect=("/quit",)
+            ), redirect_stdout(StringIO()):
+            self.assertEqual(main(), 0)
+        self.assertEqual(seen["prepared_qmm"], "off")
+
+        with tempfile.TemporaryDirectory() as root, patch.object(
+            sys, "argv", [
+                "session.py", "--model", "qwen27b",
+                "--model-path", str(Path(root) / "model"),
+                "--preferences-file", str(Path(root) / "preferences.json"),
+                "--api-keys-file", str(Path(root) / "keys.json"),
+                "--prepared-qmm", "maybe",
+            ]), redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit):
+                main()
+
+    def test_source_reporting_cli_vs_default(self):
+        from macqwen.session import build_backend
+
+        class FakeBonsai:
+            def __init__(self, **kwargs):
+                self.prepared_qmm_metadata = kwargs["prepared_qmm_metadata"]
+
+        prefs = dict(preferences.DEFAULTS)
+        with patch("models.bonsai2.backend.BonsaiBackend", FakeBonsai):
+            with patch.object(sys, "argv", ["session.py"]):
+                backend = build_backend(
+                    "bonsai2", self._bonsai_args(prepared_qmm="on"), prefs
+                )
+                self.assertEqual(
+                    backend._setting_sources.get("prepared-qmm"), "default"
+                )
+            with patch.object(
+                sys, "argv", ["session.py", "--prepared-qmm", "off"]
+            ):
+                backend = build_backend(
+                    "bonsai2", self._bonsai_args(prepared_qmm="off"), prefs
+                )
+                self.assertEqual(backend._setting_sources.get("prepared-qmm"), "CLI")
+
+    def test_write_refusal_surfaces_restart_through_model_settings(self):
+        class RefusingBackend(FakeBackend):
+            def configure(self, argument):
+                if argument == "prepared-qmm":
+                    return "prepared-qmm        on"
+                if argument.startswith("prepared-qmm "):
+                    raise ValueError(
+                        "prepared-qmm applies at startup; restart the model"
+                    )
+                return "Bonsai-2 settings"
+
+        with tempfile.TemporaryDirectory() as root:
+            session = Session(
+                RefusingBackend(),
+                "plain",
+                dict(preferences.DEFAULTS),
+                "unused.json",
+                Path(root) / "keys.json",
+            )
+            self.assertIn("prepared-qmm", session.model_settings("prepared-qmm"))
+            refused = session.model_settings("prepared-qmm off")
+            self.assertIn("could not change settings", refused)
+            self.assertIn("restart", refused.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

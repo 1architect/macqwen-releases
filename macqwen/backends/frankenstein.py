@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -22,11 +23,267 @@ from macqwen.backends.base import (
 
 _SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _SESSION_FORMAT = 2
+_FINGERPRINT_VERSION = 1
+
+# Files that define the checkpoint and the tokenizer. Sessions store token
+# IDs, so a changed config, tokenizer, or chat template silently redefines
+# old tapes. The fingerprint covers content hashes, never the directory
+# path alone, mirroring models/flashnext/sessions.py and
+# models/bonsai2/backend.py.
+_MODEL_FILES = (
+    "config.json",
+    "model.safetensors.index.json",
+    "generation_config.json",
+)
+_TOKENIZER_FILES = (
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "chat_template.jinja",
+    "vocab.json",
+    "merges.txt",
+    "tokenizer.model",
+    "spiece.model",
+)
+_IDENTITY_FILES = (
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "chat_template.jinja",
+)
+_ENGINE_FILES = (
+    "frankenstein_engine.py",
+    "paged_kv.py",
+)
 
 
 def _is_mlx_array(value):
     return (hasattr(value, "shape") and hasattr(value, "dtype")
             and hasattr(value, "nbytes"))
+
+
+def _hash_file(digest, path: Path, label: str, full: bool = True) -> None:
+    stat = path.stat()
+    digest.update(label.encode())
+    digest.update(str(stat.st_size).encode())
+    with path.open("rb") as handle:
+        if full or stat.st_size <= 131072:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+            return
+        digest.update(handle.read(65536))
+        handle.seek(max(0, stat.st_size - 65536))
+        digest.update(handle.read(65536))
+
+
+def _model_fingerprint(model_dir: Path | None) -> str | None:
+    if model_dir is None:
+        return None
+    try:
+        digest = hashlib.sha256(b"frankenstein-model-v1")
+        found = False
+        for name in _MODEL_FILES:
+            path = model_dir / name
+            if path.is_file():
+                _hash_file(digest, path, name)
+                found = True
+        for path in sorted(model_dir.glob("*.safetensors")):
+            _hash_file(digest, path, path.name, full=False)
+            found = True
+        if not found:
+            return None
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _tokenizer_fingerprint(model_dir: Path | None) -> str | None:
+    if model_dir is None:
+        return None
+    try:
+        digest = hashlib.sha256(b"frankenstein-tokenizer-v1")
+        found = False
+        for name in _TOKENIZER_FILES:
+            path = model_dir / name
+            if path.is_file():
+                _hash_file(digest, path, name)
+                found = True
+        if not found:
+            return None
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _engine_fingerprint() -> str:
+    import importlib.metadata
+
+    digest = hashlib.sha256(b"frankenstein-engine-v1")
+    for package in ("mlx", "mlx-lm", "transformers"):
+        try:
+            version = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            version = "missing"
+        except Exception:
+            version = "unknown"
+        digest.update(f"{package}={version}".encode())
+    here = Path(__file__).resolve()
+    candidates = [here]
+    try:
+        repo_models = here.parents[2] / "models" / "qwen27b"
+        for name in _ENGINE_FILES:
+            candidates.append(repo_models / name)
+    except IndexError:
+        pass
+    for path in candidates:
+        try:
+            if path.is_file():
+                _hash_file(digest, path, path.name)
+        except OSError:
+            continue
+    return digest.hexdigest()
+
+
+def _model_dir_for(backend) -> Path | None:
+    for candidate in (
+        getattr(backend, "_model_path", None),
+        getattr(getattr(backend, "engine", None), "path", None),
+    ):
+        if candidate is None:
+            continue
+        try:
+            return Path(candidate).expanduser()
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _session_profile(backend) -> dict:
+    options = getattr(backend, "_cache_options", None) or {}
+    startup = getattr(backend, "_startup_settings", None) or {}
+    engine = getattr(backend, "engine", None)
+
+    def pick(key, default=None):
+        if isinstance(options, dict) and key in options:
+            return options[key]
+        if isinstance(startup, dict) and key in startup:
+            value = startup[key]
+            if key == "kv-bits" and value == "off":
+                return None
+            return value
+        if engine is not None and hasattr(engine, key):
+            return getattr(engine, key)
+        dash = key.replace("_", "-")
+        if isinstance(startup, dict) and dash in startup:
+            value = startup[dash]
+            if dash == "kv-bits" and value == "off":
+                return None
+            return value
+        return default
+
+    kv_bits = pick("kv_bits", None)
+    layer_indices = pick("layer_indices", None)
+    return {
+        "paged": bool(pick("paged", False)),
+        "page_size": int(pick("page_size", 0) or 0),
+        "top_k_pages": int(pick("top_k_pages", 0) or 0),
+        "resident_pages": int(pick("resident_pages", 0) or 0),
+        "min_context": int(pick("min_context", 0) or 0),
+        "kv_bits": None if kv_bits is None else int(kv_bits),
+        "kv_group_size": int(pick("kv_group_size", 0) or 0),
+        "quantized_kv_start": int(pick("quantized_kv_start", 0) or 0),
+        "layer_indices": None if layer_indices is None else str(layer_indices),
+    }
+
+
+def _session_fingerprint(backend) -> dict:
+    model_dir = _model_dir_for(backend)
+    return {
+        "version": _FINGERPRINT_VERSION,
+        "model": _model_fingerprint(model_dir),
+        "tokenizer": _tokenizer_fingerprint(model_dir),
+        "engine": _engine_fingerprint(),
+        "profile": _session_profile(backend),
+    }
+
+
+def _check_fingerprint(saved, expected) -> None:
+    if saved is None:
+        return
+    if not isinstance(saved, dict):
+        raise ValueError("session fingerprint is invalid")
+    if saved.get("version") != _FINGERPRINT_VERSION:
+        raise ValueError(
+            f"unsupported session fingerprint {saved.get('version')!r}"
+        )
+    if not isinstance(expected, dict):
+        raise ValueError("session fingerprint is unavailable")
+    if saved.get("model") != expected.get("model"):
+        raise ValueError("incompatible session: different checkpoint")
+    if saved.get("tokenizer") != expected.get("tokenizer"):
+        raise ValueError("incompatible session: different tokenizer")
+    if saved.get("engine") != expected.get("engine"):
+        raise ValueError("incompatible session: different engine code")
+    if saved.get("profile") != expected.get("profile"):
+        raise ValueError("incompatible session: different generation profile")
+
+
+def _tensor_description(value) -> dict:
+    return {
+        "shape": [int(part) for part in value.shape],
+        "dtype": str(value.dtype),
+        "nbytes": int(value.nbytes),
+    }
+
+
+def _validate_tensors(tensors, descriptions) -> None:
+    if descriptions is None:
+        return
+    if not isinstance(descriptions, dict):
+        raise ValueError("session tensor table is invalid")
+    for key, expected in descriptions.items():
+        if not isinstance(expected, dict):
+            raise ValueError(f"session tensor {key!r} is invalid")
+        value = tensors.get(key)
+        if value is None:
+            raise ValueError(f"cache tensor {key!r} is missing")
+        if not _is_mlx_array(value):
+            raise ValueError(f"cache tensor {key!r} is not an array")
+        try:
+            shape = [int(part) for part in value.shape]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"cache tensor {key!r} has no shape") from exc
+        if shape != list(expected.get("shape", None) or []):
+            raise ValueError(f"cache tensor {key!r} has an invalid shape")
+        if str(value.dtype) != expected.get("dtype"):
+            raise ValueError(f"cache tensor {key!r} has an invalid dtype")
+        try:
+            nbytes = int(value.nbytes)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"cache tensor {key!r} has no size") from exc
+        if nbytes != int(expected.get("nbytes", -1)):
+            raise ValueError(f"cache tensor {key!r} has an invalid size")
+
+
+def _check_decoded_tree(value) -> None:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        if isinstance(value, bool):
+            return
+        return
+    if _is_mlx_array(value):
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _check_decoded_tree(item)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError("invalid cache mapping key")
+            _check_decoded_tree(item)
+        return
+    raise ValueError(f"unsupported cache state value {type(value).__name__}")
 
 
 def _encode_tree(value, tensors, path=()):
@@ -59,7 +316,7 @@ def _encode_tree(value, tensors, path=()):
     raise TypeError(f"unsupported cache state value {type(value).__name__}")
 
 
-def _decode_tree(node, tensors):
+def _decode_tree(node, tensors, expected=None):
     if not isinstance(node, dict) or not isinstance(node.get("type"), str):
         raise ValueError("invalid cache tree node")
     kind = node["type"]
@@ -69,12 +326,36 @@ def _decode_tree(node, tensors):
         key = node.get("key")
         if not isinstance(key, str) or key not in tensors:
             raise ValueError(f"cache tensor {key!r} is missing")
-        return tensors[key]
+        value = tensors[key]
+        if not _is_mlx_array(value):
+            raise ValueError(f"cache tensor {key!r} is not an array")
+        if expected is not None and key in expected:
+            described = expected[key]
+            if isinstance(described, dict):
+                try:
+                    shape = [int(part) for part in value.shape]
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"cache tensor {key!r} has no shape"
+                    ) from exc
+                if shape != list(described.get("shape", None) or []):
+                    raise ValueError(f"cache tensor {key!r} has an invalid shape")
+                if str(value.dtype) != described.get("dtype"):
+                    raise ValueError(f"cache tensor {key!r} has an invalid dtype")
+                try:
+                    nbytes = int(value.nbytes)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"cache tensor {key!r} has no size"
+                    ) from exc
+                if nbytes != int(described.get("nbytes", -1)):
+                    raise ValueError(f"cache tensor {key!r} has an invalid size")
+        return value
     if kind in ("tuple", "list"):
         items = node.get("items")
         if not isinstance(items, list):
             raise ValueError("invalid cache sequence")
-        values = [_decode_tree(item, tensors) for item in items]
+        values = [_decode_tree(item, tensors, expected) for item in items]
         return tuple(values) if kind == "tuple" else values
     if kind == "dict":
         items = node.get("items")
@@ -84,7 +365,7 @@ def _decode_tree(node, tensors):
         for item in items:
             if not isinstance(item, list) or len(item) != 2 or not isinstance(item[0], str):
                 raise ValueError("invalid cache mapping item")
-            result[item[0]] = _decode_tree(item[1], tensors)
+            result[item[0]] = _decode_tree(item[1], tensors, expected)
         return result
     if kind == "value" and isinstance(node.get("value"), (str, int, float, bool)):
         return node["value"]
@@ -175,6 +456,7 @@ class FrankensteinBackend:
             "min_context": min_context,
         }
         self._session_dir = Path(session_dir).expanduser()
+        self._model_path = os.path.expanduser(model_path)
         self.thinking_enabled = False
         self._interactive_budgets = None
         self._startup_settings = {
@@ -390,7 +672,7 @@ class FrankensteinBackend:
     @staticmethod
     def _atomic_safetensors(path, tensors, metadata):
         descriptor, temporary_name = tempfile.mkstemp(
-            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp.safetensors"
         )
         os.close(descriptor)
         temporary = Path(temporary_name)
@@ -401,7 +683,7 @@ class FrankensteinBackend:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _new_cache(self, record, live_cache, tensors):
+    def _new_cache(self, record, live_cache, tensors, expected=None):
         """Construct one supported cache and restore its complete tree."""
         name = record.get("class")
         live_name = type(live_cache).__name__
@@ -410,8 +692,10 @@ class FrankensteinBackend:
             raise ValueError(
                 f"saved cache type {name!r} does not match {live_name!r}"
             )
-        state = _decode_tree(record.get("state"), tensors)
-        meta_state = _decode_tree(record.get("meta_state"), tensors)
+        state = _decode_tree(record.get("state"), tensors, expected)
+        meta_state = _decode_tree(record.get("meta_state"), tensors, expected)
+        _check_decoded_tree(state)
+        _check_decoded_tree(meta_state)
         config = record.get("config", {})
         if not isinstance(config, dict):
             raise ValueError(f"invalid configuration for {name}")
@@ -421,8 +705,21 @@ class FrankensteinBackend:
         if name == "ArraysCache":
             if not isinstance(state, list):
                 raise ValueError("ArraysCache state must be a list")
+            if not isinstance(getattr(live_cache, "state", None), list) or len(
+                state
+            ) != len(live_cache.state):
+                raise ValueError("ArraysCache layout does not match this model")
+            for slot in state:
+                if slot is not None and not _is_mlx_array(slot):
+                    raise ValueError("ArraysCache slot is not an array")
             cache = ArraysCache(size=len(state))
         elif name == "KVCache":
+            if state is not None:
+                if not isinstance(state, (list, tuple)) or len(state) != 2:
+                    raise ValueError("KVCache state must hold keys and values")
+                for part in state:
+                    if part is not None and not _is_mlx_array(part):
+                        raise ValueError("KVCache state is not an array")
             cache = KVCache()
         elif name == "QuantizedKVCache":
             if not isinstance(meta_state, (list, tuple)) or len(meta_state) != 3:
@@ -431,6 +728,12 @@ class FrankensteinBackend:
                 group_size, bits = int(meta_state[1]), int(meta_state[2])
             except (TypeError, ValueError) as exc:
                 raise ValueError("QuantizedKVCache metadata is invalid") from exc
+            if state is not None:
+                if not isinstance(state, (list, tuple)) or len(state) != 2:
+                    raise ValueError("QuantizedKVCache state must hold keys and values")
+                for part in state:
+                    if part is not None and not _is_mlx_array(part):
+                        raise ValueError("QuantizedKVCache state is not an array")
             cache = QuantizedKVCache(group_size=group_size, bits=bits)
         elif name == "PagedKVCache":
             from models.qwen27b.paged_kv import PagedKVCache
@@ -441,7 +744,13 @@ class FrankensteinBackend:
             )
             if any(key not in config for key in allowed):
                 raise ValueError("PagedKVCache configuration is incomplete")
-            parent = self._cache_options.get("spill_dir")
+            if state is not None:
+                if not isinstance(state, list):
+                    raise ValueError("PagedKVCache state must be a list")
+                for slot in state:
+                    if slot is not None and not _is_mlx_array(slot):
+                        raise ValueError("PagedKVCache slot is not an array")
+            parent = (getattr(self, "_cache_options", None) or {}).get("spill_dir")
             if parent is None:
                 parent = getattr(live_cache, "_spill_parent", None)
             cache = PagedKVCache(
@@ -531,8 +840,12 @@ class FrankensteinBackend:
                 "started": bool(self.tape),
                 "turn_closed": self.engine.turn_closed,
                 "thinking": self.thinking_enabled,
+                "fingerprint": _session_fingerprint(self),
             }
             metadata["caches"] = self._cache_records(tensors)
+            metadata["tensors"] = {
+                key: _tensor_description(value) for key, value in tensors.items()
+            }
             encoded = json.dumps(metadata, separators=(",", ":"))
             self._atomic_safetensors(
                 directory / "cache.safetensors", tensors,
@@ -579,6 +892,19 @@ class FrankensteinBackend:
             if not isinstance(tape_data, list):
                 raise ValueError("session metadata has no token tape")
             tape = [int(token) for token in tape_data]
+            expected_tensors = metadata.get("tensors")
+            if expected_tensors is not None:
+                _validate_tensors(tensors, expected_tensors)
+            else:
+                expected_tensors = None
+            # The fingerprint pins the checkpoint, tokenizer, engine code,
+            # and cache profile by content hash. The directory path and the
+            # cache class names alone cannot prove a snapshot still means
+            # the same tokens, so a mismatch fails here, before the live
+            # cache is replaced.
+            _check_fingerprint(
+                metadata.get("fingerprint"), _session_fingerprint(self)
+            )
             if metadata.get("format") == _SESSION_FORMAT:
                 records = metadata.get("caches")
                 if not isinstance(records, list) or len(records) != len(self.cache):
@@ -589,7 +915,9 @@ class FrankensteinBackend:
                 raise ValueError(f"unsupported session format {metadata.get('format')!r}")
 
             for record, live_cache in zip(records, self.cache):
-                temporary.append(self._new_cache(record, live_cache, tensors))
+                temporary.append(
+                    self._new_cache(record, live_cache, tensors, expected_tensors)
+                )
             self._validate_cache(temporary, tape)
 
             old_cache = self.engine.cache

@@ -15,7 +15,7 @@ from macqwen.text import (
     ThinkingStreamFilter,
     build_user_encoder,
 )
-from macqwen.tools import _unescape_argument
+from macqwen.tools import ToolCallValidationError, coerce_scalar
 from macqwen.conversation import (
     content_sentinel,
     reasoning_system_text,
@@ -182,23 +182,13 @@ def _responses_messages(payload: dict) -> list[dict]:
     return _normalize_messages(messages)
 
 
-def _coerce_argument(value: str, kind: str | None):
-    # Transport escaping is reversed exactly once here; the shared parser
-    # does the same on its own path. String payloads keep their bytes;
-    # only typed scalar conversion normalizes whitespace.
-    text = _unescape_argument(value)
-    try:
-        if kind == "integer":
-            return int(text)
-        if kind == "number":
-            return float(text)
-        if kind == "boolean":
-            return text.strip().lower() in ("true", "1", "yes")
-        if kind in ("object", "array"):
-            return json.loads(text)
-    except (TypeError, ValueError):
-        pass
-    return text
+def _coerce_argument(value: str, kind: str | None, *, tool="", key="parameter"):
+    # One shared rule: the XML parser here and parse_tool_calls in
+    # macqwen.tools both run coerce_scalar, which reverses transport
+    # escaping exactly once. String payloads keep their bytes; only
+    # typed scalar conversion normalizes whitespace. Bad typed values
+    # raise ToolCallValidationError for the caller to report.
+    return coerce_scalar(value, kind, tool=tool, key=key)
 
 
 def _parse_tool_calls(text: str, tools=None) -> tuple[str, list[dict]]:
@@ -226,10 +216,17 @@ def _parse_tool_calls(text: str, tools=None) -> tuple[str, list[dict]]:
                 continue
             name, body = function.groups()
             schema = schemas.get(name, {})
-            arguments = {
-                key: _coerce_argument(raw, schema.get(key))
-                for key, raw in XML_PARAMETER.findall(body)
-            }
+            try:
+                arguments = {
+                    key: _coerce_argument(raw, schema.get(key),
+                                         tool=name, key=key)
+                    for key, raw in XML_PARAMETER.findall(body)
+                }
+            except ToolCallValidationError as exc:
+                # The model sent a typed value its schema rejects. Fail
+                # the request with the parameter named so the client
+                # harness can feed the message back and the model retries.
+                raise RequestError(str(exc)) from None
             calls.append({"id": f"call_{uuid.uuid4().hex}", "name": name,
                           "arguments": json.dumps(arguments)})
         else:
@@ -251,6 +248,216 @@ def _model_tokenizer(backend):
     if tokenizer is None:
         tokenizer = backend.engine.tokenizer
     return tokenizer
+
+
+DEFAULT_CONTEXT_WINDOW = 32768
+
+_MODEL_DISPLAY_NAMES = {
+    "flashnext": "MACQWEN Flash-Next",
+    "bonsai2": "MACQWEN Bonsai-2",
+    "k2-horizon": "MACQWEN K2-Horizon",
+    "k2_horizon": "MACQWEN K2-Horizon",
+    "qwen27b": "MACQWEN Qwen3.8-27B",
+}
+
+_BACKEND_DISPLAY_NAMES = {
+    "FlashNextBackend": "MACQWEN Flash-Next",
+    "BonsaiBackend": "MACQWEN Bonsai-2",
+    "K2HorizonBackend": "MACQWEN K2-Horizon",
+    "FrankensteinBackend": "MACQWEN Qwen3.8-27B",
+}
+
+_WINDOW_ATTRS = (
+    "context_window",
+    "max_context",
+    "n_ctx",
+    "max_position_embeddings",
+    "max_sequence_length",
+    "max_seq_len",
+    "n_positions",
+)
+
+_WINDOW_HOLDERS = ("language", "model", "engine", "language_model", "_text_model")
+
+_TOKENIZER_ATTRS = (
+    "model_max_length",
+    "model_max_len",
+    "max_position_embeddings",
+    "n_positions",
+    "context_window",
+)
+
+
+def _service_backend(service):
+    session = getattr(service, "session", None)
+    if session is not None:
+        backend = getattr(session, "backend", None)
+        if backend is not None:
+            return backend
+    return getattr(service, "backend", None)
+
+
+def _valid_window(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        value = int(value)
+    if not isinstance(value, int) or value < 1:
+        return None
+    # HF tokenizers use int(1e30) when the checkpoint sets no limit.
+    if value >= 10_000_000:
+        return None
+    return value
+
+
+def _window_from_object(candidate) -> int | None:
+    if candidate is None:
+        return None
+    for name in _WINDOW_ATTRS:
+        try:
+            found = _valid_window(getattr(candidate, name, None))
+        except Exception:
+            continue
+        if found is not None:
+            return found
+    config = getattr(candidate, "config", None)
+    if isinstance(config, dict):
+        for name in _WINDOW_ATTRS:
+            found = _valid_window(config.get(name))
+            if found is not None:
+                return found
+    elif config is not None:
+        for name in _WINDOW_ATTRS:
+            try:
+                found = _valid_window(getattr(config, name, None))
+            except Exception:
+                continue
+            if found is not None:
+                return found
+    return None
+
+
+def _tokenizer_windows(tokenizer):
+    seen = set()
+    current = tokenizer
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        init_kwargs = getattr(current, "init_kwargs", None)
+        if isinstance(init_kwargs, dict):
+            yield init_kwargs
+        current = getattr(current, "_tokenizer", None)
+
+
+def _context_window_for(service) -> int:
+    backend = _service_backend(service)
+    if backend is not None:
+        found = _window_from_object(backend)
+        if found is not None:
+            return found
+        for name in _WINDOW_HOLDERS:
+            try:
+                found = _window_from_object(getattr(backend, name, None))
+            except Exception:
+                continue
+            if found is not None:
+                return found
+        try:
+            tokenizer = _model_tokenizer(backend)
+        except Exception:
+            tokenizer = getattr(backend, "tokenizer", None)
+        if tokenizer is not None:
+            for candidate in _tokenizer_windows(tokenizer):
+                if isinstance(candidate, dict):
+                    for name in _TOKENIZER_ATTRS:
+                        found = _valid_window(candidate.get(name))
+                        if found is not None:
+                            return found
+                    continue
+                found = _window_from_object(candidate)
+                if found is not None:
+                    return found
+                for name in _TOKENIZER_ATTRS:
+                    try:
+                        found = _valid_window(getattr(candidate, name, None))
+                    except Exception:
+                        continue
+                    if found is not None:
+                        return found
+    return DEFAULT_CONTEXT_WINDOW
+
+
+def _display_name_for(service) -> str:
+    slug = str(getattr(service, "model", "") or "")
+    backend = _service_backend(service)
+    if backend is not None:
+        named = _BACKEND_DISPLAY_NAMES.get(type(backend).__name__)
+        if named is not None:
+            return named
+    key = slug[len("macqwen-"):] if slug.startswith("macqwen-") else slug
+    named = _MODEL_DISPLAY_NAMES.get(key.lower().replace("_", "-"))
+    if named is not None:
+        return named
+    return slug or "MACQWEN Flash-Next"
+
+
+def capabilities(service) -> dict:
+    """Display name and context window read from backend/tokenizer config.
+
+    Only values the backend or its tokenizer expose are returned;
+    otherwise the display falls back to the model slug and the window to
+    32768.
+    """
+    return {
+        "display_name": _display_name_for(service),
+        "context_window": _context_window_for(service),
+    }
+
+
+def model_card(service) -> dict:
+    """Full /v1/models card for the active backend.
+
+    Only display_name and context_window vary by backend; every other
+    field keeps the established card shape.
+    """
+    slug = str(getattr(service, "model", "") or "")
+    caps = capabilities(service)
+    return {
+        "slug": slug,
+        "display_name": caps["display_name"],
+        "description": "Local low-memory Qwen runtime",
+        "default_reasoning_level": "medium",
+        "supported_reasoning_levels": [
+            {"effort": "low", "description": "Low reasoning effort"},
+            {"effort": "medium", "description": "Medium reasoning effort"},
+            {"effort": "high", "description": "High reasoning effort"},
+        ],
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "minimal_client_version": [0, 0, 0],
+        "supported_in_api": True,
+        "priority": 1,
+        "upgrade": None,
+        "base_instructions": "",
+        "support_verbosity": False,
+        "default_verbosity": None,
+        "apply_patch_tool_type": None,
+        "truncation_policy": {"mode": "bytes", "limit": 100000},
+        "supports_parallel_tool_calls": False,
+        "supports_image_detail_original": False,
+        "context_window": caps["context_window"],
+        "experimental_supported_tools": [],
+    }
+
+
+def _anthropic_stop(result) -> str:
+    if getattr(getattr(result, "stats", None), "finish", None) == "length":
+        return "max_tokens"
+    if getattr(result, "tool_calls", None):
+        return "tool_use"
+    return "end_turn"
 
 
 class ModelService:
@@ -447,6 +654,7 @@ class MacqwenHTTPServer(HTTPServer):
 class MacqwenHandler(BaseHTTPRequestHandler):
     server: MacqwenHTTPServer
     protocol_version = "HTTP/1.1"
+    _sse_open = False
 
     def log_message(self, _format, *_args):
         return
@@ -531,6 +739,7 @@ class MacqwenHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
+        self._sse_open = True
 
     def _sse(self, value, event=None):
         prefix = f"event: {event}\n" if event else ""
@@ -540,6 +749,34 @@ class MacqwenHandler(BaseHTTPRequestHandler):
     def _heartbeat(self):
         self.wfile.write(b": generating\n\n")
         self.wfile.flush()
+
+    def _sse_chat_error(self, message):
+        try:
+            self._sse({"error": {"message": str(message),
+                                 "type": "server_error"}})
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _sse_anthropic_error(self, message):
+        try:
+            self._sse({"type": "error", "error": {
+                "type": "api_error", "message": str(message)}}, "error")
+            self._sse({"type": "message_stop"}, "message_stop")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _sse_responses_error(self, message, ident=None):
+        try:
+            response = {"id": ident or "resp_unknown", "object": "response",
+                        "status": "failed",
+                        "error": {"message": str(message),
+                                  "type": "server_error"}}
+            self._sse({"type": "response.failed", "response": response},
+                       "response.failed")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_OPTIONS(self):
         self._headers(204)
@@ -556,37 +793,12 @@ class MacqwenHandler(BaseHTTPRequestHandler):
         if path == "/health":
             self._json({"status": "ok", "model": self.server.service.model})
         elif path == "/v1/models":
-            model = self.server.service.model
+            card = model_card(self.server.service)
             self._json({"object": "list", "data": [{
-                "id": model,
+                "id": card["slug"],
                 "object": "model",
                 "owned_by": "macqwen",
-            }], "models": [{
-                "slug": model,
-                "display_name": "MACQWEN Flash-Next",
-                "description": "Local low-memory Qwen runtime",
-                "default_reasoning_level": "medium",
-                "supported_reasoning_levels": [
-                    {"effort": "low", "description": "Low reasoning effort"},
-                    {"effort": "medium", "description": "Medium reasoning effort"},
-                    {"effort": "high", "description": "High reasoning effort"},
-                ],
-                "shell_type": "shell_command",
-                "visibility": "list",
-                "minimal_client_version": [0, 0, 0],
-                "supported_in_api": True,
-                "priority": 1,
-                "upgrade": None,
-                "base_instructions": "",
-                "support_verbosity": False,
-                "default_verbosity": None,
-                "apply_patch_tool_type": None,
-                "truncation_policy": {"mode": "bytes", "limit": 100000},
-                "supports_parallel_tool_calls": False,
-                "supports_image_detail_original": False,
-                "context_window": 32768,
-                "experimental_supported_tools": [],
-            }]})
+            }], "models": [card]})
         else:
             self._error("route not found", 404)
 
@@ -596,6 +808,7 @@ class MacqwenHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._error("invalid API key", 401)
             return
+        self._sse_open = False
         try:
             payload = self._payload()
             path = urlsplit(self.path).path
@@ -608,21 +821,28 @@ class MacqwenHandler(BaseHTTPRequestHandler):
             else:
                 self._error("route not found", 404)
         except RequestError as exc:
-            self._error(exc, exc.status)
+            if not getattr(self, "_sse_open", False):
+                try:
+                    self._error(exc, exc.status)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as exc:
-            self._error(str(exc), 500)
+            if not getattr(self, "_sse_open", False):
+                try:
+                    self._error(str(exc), 500)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
 
-    @staticmethod
-    def _limit(payload, default=4096):
+    def _limit(self, payload, default=4096):
         value = payload.get(
             "max_output_tokens",
             payload.get("max_completion_tokens", payload.get("max_tokens", default)),
         )
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise RequestError("max_tokens must be a positive integer")
-        return min(value, 32768)
+        return min(value, capabilities(self.server.service)["context_window"])
 
     def _chat(self, payload):
         service = self.server.service
@@ -631,29 +851,35 @@ class MacqwenHandler(BaseHTTPRequestHandler):
         ident = f"chatcmpl-{uuid.uuid4().hex}"
         created = int(time.time())
         if payload.get("stream"):
+            max_tokens = self._limit(payload)
             self._sse_start()
+            try:
 
-            def chunk(delta, finish=None):
-                self._sse({
-                    "id": ident, "object": "chat.completion.chunk", "created": created,
-                    "model": service.model,
-                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
-                })
+                def chunk(delta, finish=None):
+                    self._sse({
+                        "id": ident, "object": "chat.completion.chunk", "created": created,
+                        "model": service.model,
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                    })
 
-            chunk({"role": "assistant", "content": ""})
+                chunk({"role": "assistant", "content": ""})
 
-            def on_text(text):
-                self._heartbeat() if text is None else chunk({"content": text})
+                def on_text(text):
+                    self._heartbeat() if text is None else chunk({"content": text})
 
-            result = service.complete(messages, tools, self._limit(payload), on_text)
-            for index, call in enumerate(result.tool_calls):
-                chunk({"tool_calls": [{
-                    "index": index, "id": call["id"], "type": "function",
-                    "function": {"name": call["name"], "arguments": call["arguments"]},
-                }]})
-            chunk({}, "tool_calls" if result.tool_calls else result.stats.finish)
-            self.wfile.write(b"data: [DONE]\n\n")
-            self.wfile.flush()
+                result = service.complete(messages, tools, max_tokens, on_text)
+                for index, call in enumerate(result.tool_calls):
+                    chunk({"tool_calls": [{
+                        "index": index, "id": call["id"], "type": "function",
+                        "function": {"name": call["name"], "arguments": call["arguments"]},
+                    }]})
+                chunk({}, "tool_calls" if result.tool_calls else result.stats.finish)
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as exc:
+                self._sse_chat_error(exc)
             return
         result = service.complete(messages, tools, self._limit(payload))
         message = {"role": "assistant", "content": result.text or None}
@@ -678,49 +904,55 @@ class MacqwenHandler(BaseHTTPRequestHandler):
         tools = payload.get("tools") or []
         ident = f"msg_{uuid.uuid4().hex}"
         if payload.get("stream"):
+            max_tokens = self._limit(payload)
             self._sse_start()
-            self._sse({"type": "message_start", "message": {
-                "id": ident, "type": "message", "role": "assistant",
-                "model": service.model, "content": [], "stop_reason": None,
-                "stop_sequence": None, "usage": {"input_tokens": 0, "output_tokens": 0},
-            }}, "message_start")
-            text_open = [False]
+            try:
+                self._sse({"type": "message_start", "message": {
+                    "id": ident, "type": "message", "role": "assistant",
+                    "model": service.model, "content": [], "stop_reason": None,
+                    "stop_sequence": None, "usage": {"input_tokens": 0, "output_tokens": 0},
+                }}, "message_start")
+                text_open = [False]
 
-            def on_text(text):
-                if text is None:
-                    self._heartbeat()
-                    return
-                if not text_open[0]:
-                    self._sse({"type": "content_block_start", "index": 0,
-                               "content_block": {"type": "text", "text": ""}},
+                def on_text(text):
+                    if text is None:
+                        self._heartbeat()
+                        return
+                    if not text_open[0]:
+                        self._sse({"type": "content_block_start", "index": 0,
+                                   "content_block": {"type": "text", "text": ""}},
+                                  "content_block_start")
+                        text_open[0] = True
+                    self._sse({"type": "content_block_delta", "index": 0,
+                               "delta": {"type": "text_delta", "text": text}},
+                              "content_block_delta")
+
+                result = service.complete(messages, tools, max_tokens, on_text)
+                index = 0
+                if text_open[0]:
+                    self._sse({"type": "content_block_stop", "index": 0}, "content_block_stop")
+                    index = 1
+                for call in result.tool_calls:
+                    self._sse({"type": "content_block_start", "index": index,
+                               "content_block": {"type": "tool_use", "id": call["id"],
+                                                 "name": call["name"], "input": {}}},
                               "content_block_start")
-                    text_open[0] = True
-                self._sse({"type": "content_block_delta", "index": 0,
-                           "delta": {"type": "text_delta", "text": text}},
-                          "content_block_delta")
-
-            result = service.complete(messages, tools, self._limit(payload), on_text)
-            index = 0
-            if text_open[0]:
-                self._sse({"type": "content_block_stop", "index": 0}, "content_block_stop")
-                index = 1
-            for call in result.tool_calls:
-                self._sse({"type": "content_block_start", "index": index,
-                           "content_block": {"type": "tool_use", "id": call["id"],
-                                             "name": call["name"], "input": {}}},
-                          "content_block_start")
-                self._sse({"type": "content_block_delta", "index": index,
-                           "delta": {"type": "input_json_delta",
-                                     "partial_json": call["arguments"]}},
-                          "content_block_delta")
-                self._sse({"type": "content_block_stop", "index": index},
-                          "content_block_stop")
-                index += 1
-            stop = "tool_use" if result.tool_calls else "end_turn"
-            self._sse({"type": "message_delta", "delta": {"stop_reason": stop,
-                       "stop_sequence": None}, "usage": {"output_tokens": result.stats.tokens}},
-                      "message_delta")
-            self._sse({"type": "message_stop"}, "message_stop")
+                    self._sse({"type": "content_block_delta", "index": index,
+                               "delta": {"type": "input_json_delta",
+                                         "partial_json": call["arguments"]}},
+                              "content_block_delta")
+                    self._sse({"type": "content_block_stop", "index": index},
+                              "content_block_stop")
+                    index += 1
+                stop = _anthropic_stop(result)
+                self._sse({"type": "message_delta", "delta": {"stop_reason": stop,
+                           "stop_sequence": None}, "usage": {"output_tokens": result.stats.tokens}},
+                          "message_delta")
+                self._sse({"type": "message_stop"}, "message_stop")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as exc:
+                self._sse_anthropic_error(exc)
             return
         result = service.complete(messages, tools, self._limit(payload))
         content = []
@@ -736,7 +968,7 @@ class MacqwenHandler(BaseHTTPRequestHandler):
         self._json({
             "id": ident, "type": "message", "role": "assistant",
             "model": service.model, "content": content,
-            "stop_reason": "tool_use" if result.tool_calls else "end_turn",
+            "stop_reason": _anthropic_stop(result),
             "stop_sequence": None,
             "usage": {"input_tokens": result.stats.prompt_tokens,
                       "output_tokens": result.stats.tokens},
@@ -748,65 +980,71 @@ class MacqwenHandler(BaseHTTPRequestHandler):
         tools = payload.get("tools") or []
         ident = f"resp_{uuid.uuid4().hex}"
         if payload.get("stream"):
+            max_tokens = self._limit(payload)
             self._sse_start()
-            base = {"id": ident, "object": "response", "created_at": int(time.time()),
-                    "status": "in_progress", "error": None,
-                    "incomplete_details": None, "model": service.model, "output": []}
-            sequence = [0]
+            try:
+                base = {"id": ident, "object": "response", "created_at": int(time.time()),
+                        "status": "in_progress", "error": None,
+                        "incomplete_details": None, "model": service.model, "output": []}
+                sequence = [0]
 
-            def event(kind, **values):
-                sequence[0] += 1
-                self._sse({"type": kind, "sequence_number": sequence[0], **values}, kind)
+                def event(kind, **values):
+                    sequence[0] += 1
+                    self._sse({"type": kind, "sequence_number": sequence[0], **values}, kind)
 
-            event("response.created", response=base)
-            event("response.in_progress", response=base)
-            item_id = f"msg_{uuid.uuid4().hex}"
-            opened = [False]
+                event("response.created", response=base)
+                event("response.in_progress", response=base)
+                item_id = f"msg_{uuid.uuid4().hex}"
+                opened = [False]
 
-            def on_text(text):
-                if text is None:
-                    self._heartbeat()
-                    return
-                if not opened[0]:
-                    item = {"id": item_id, "type": "message", "status": "in_progress",
-                            "role": "assistant", "content": []}
-                    event("response.output_item.added", output_index=0, item=item)
-                    event("response.content_part.added", item_id=item_id,
-                          output_index=0, content_index=0,
-                          part={"type": "output_text", "text": "", "annotations": []})
-                    opened[0] = True
-                event("response.output_text.delta", item_id=item_id,
-                      output_index=0, content_index=0, delta=text)
+                def on_text(text):
+                    if text is None:
+                        self._heartbeat()
+                        return
+                    if not opened[0]:
+                        item = {"id": item_id, "type": "message", "status": "in_progress",
+                                "role": "assistant", "content": []}
+                        event("response.output_item.added", output_index=0, item=item)
+                        event("response.content_part.added", item_id=item_id,
+                              output_index=0, content_index=0,
+                              part={"type": "output_text", "text": "", "annotations": []})
+                        opened[0] = True
+                    event("response.output_text.delta", item_id=item_id,
+                          output_index=0, content_index=0, delta=text)
 
-            result = service.complete(messages, tools, self._limit(payload), on_text)
-            output = []
-            if result.text:
-                message = {"id": item_id, "type": "message", "status": "completed",
-                           "role": "assistant", "content": [{"type": "output_text",
-                           "text": result.text, "annotations": []}]}
-                output.append(message)
-                event("response.output_text.done", item_id=item_id, output_index=0,
-                      content_index=0, text=result.text)
-                event("response.content_part.done", item_id=item_id, output_index=0,
-                      content_index=0, part=message["content"][0])
-                event("response.output_item.done", output_index=0, item=message)
-            for index, call in enumerate(result.tool_calls, start=len(output)):
-                item = {"type": "function_call", "id": f"fc_{uuid.uuid4().hex}",
-                        "call_id": call["id"], "name": call["name"],
-                        "arguments": call["arguments"], "status": "completed"}
-                output.append(item)
-                pending = dict(item, arguments="", status="in_progress")
-                event("response.output_item.added", output_index=index, item=pending)
-                event("response.function_call_arguments.delta", item_id=item["id"],
-                      output_index=index, delta=call["arguments"])
-                event("response.function_call_arguments.done", item_id=item["id"],
-                      output_index=index, arguments=call["arguments"])
-                event("response.output_item.done", output_index=index, item=item)
-            completed = dict(base, status="completed", output=output,
-                             usage={"input_tokens": result.stats.prompt_tokens,
-                                    "output_tokens": result.stats.tokens,
-                                    "total_tokens": result.stats.prompt_tokens + result.stats.tokens})
-            event("response.completed", response=completed)
+                result = service.complete(messages, tools, max_tokens, on_text)
+                output = []
+                if result.text:
+                    message = {"id": item_id, "type": "message", "status": "completed",
+                               "role": "assistant", "content": [{"type": "output_text",
+                               "text": result.text, "annotations": []}]}
+                    output.append(message)
+                    event("response.output_text.done", item_id=item_id, output_index=0,
+                          content_index=0, text=result.text)
+                    event("response.content_part.done", item_id=item_id, output_index=0,
+                          content_index=0, part=message["content"][0])
+                    event("response.output_item.done", output_index=0, item=message)
+                for index, call in enumerate(result.tool_calls, start=len(output)):
+                    item = {"type": "function_call", "id": f"fc_{uuid.uuid4().hex}",
+                            "call_id": call["id"], "name": call["name"],
+                            "arguments": call["arguments"], "status": "completed"}
+                    output.append(item)
+                    pending = dict(item, arguments="", status="in_progress")
+                    event("response.output_item.added", output_index=index, item=pending)
+                    event("response.function_call_arguments.delta", item_id=item["id"],
+                          output_index=index, delta=call["arguments"])
+                    event("response.function_call_arguments.done", item_id=item["id"],
+                          output_index=index, arguments=call["arguments"])
+                    event("response.output_item.done", output_index=index, item=item)
+                completed = dict(base, status="completed", output=output,
+                                 usage={"input_tokens": result.stats.prompt_tokens,
+                                        "output_tokens": result.stats.tokens,
+                                        "total_tokens": result.stats.prompt_tokens + result.stats.tokens})
+                event("response.completed", response=completed)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as exc:
+                self._sse_responses_error(exc, ident)
             return
         result = service.complete(messages, tools, self._limit(payload))
         output = []

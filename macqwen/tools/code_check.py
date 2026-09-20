@@ -36,6 +36,10 @@ def _run(cmd, path):
     # Strip the malloc debug variables. The parent process inherits them from
     # the launching terminal and every spawned checker prints a warning about
     # them, which buries the actual result in noise.
+    #
+    # Tri-state contract: (returncode, output) on a real verdict, or
+    # (None, reason) when verification could not run (missing executable or
+    # timeout). Callers must map None to a warning, never to a clean pass.
     env = {
         name: value
         for name, value in sanitized_environment().items()
@@ -46,9 +50,11 @@ def _run(cmd, path):
                            timeout=TIMEOUT, env=env)
         return r.returncode, (r.stderr or r.stdout).strip()
     except FileNotFoundError:
-        return 0, ""                       # checker absent: no opinion
+        return None, (f"checker {cmd[0]} not found; "
+                      "verification unavailable")
     except subprocess.TimeoutExpired:
-        return 0, ""
+        return None, (f"checker {cmd[0]} timed out after {TIMEOUT}s; "
+                      "verification unavailable")
 
 
 def _tmp(content, suffix):
@@ -63,6 +69,8 @@ def _swift(content):
     p = _tmp(content, ".swift")
     try:
         code, out = _run(["swiftc", "-typecheck"], p)
+        if code is None:
+            return [], [out]
         if code == 0:
             return []
         # keep real errors, drop notes and the source echo
@@ -76,8 +84,12 @@ def _ruby(content, project_root=None):
     p = _tmp(content, ".rb")
     try:
         code, out = _run(["ruby", "-c"], p)
-        if code != 0:
+        if code is None:
+            unavailable = [out]
+        elif code != 0:
             return [l for l in out.splitlines() if l.strip()][:6], []
+        else:
+            unavailable = []
     finally:
         p.unlink(missing_ok=True)
     # The index caught start_transaction and commit_transaction, which do not
@@ -108,7 +120,7 @@ def _ruby(content, project_root=None):
                           f"documented signature has {expected}")
     except ImportError:
         pass
-    return errors, warnings
+    return errors, warnings + unavailable
 
 
 def _stdlib_attrs(content):
@@ -172,13 +184,16 @@ def _python(content):
         return [l for l in out.getvalue().splitlines()
                 if "undefined name" in l or "imported but unused" not in l][:8]
     except ImportError:
-        return []
+        return [], ["pyflakes not installed; "
+                    "Python verification unavailable (syntax only)"]
 
 
 def _node(content):
     p = _tmp(content, ".js")
     try:
         code, out = _run(["node", "--check"], p)
+        if code is None:
+            return [], [out]
         return [l for l in out.splitlines() if l.strip()][:6] if code else []
     finally:
         p.unlink(missing_ok=True)
@@ -188,6 +203,8 @@ def _shell(content):
     p = _tmp(content, ".sh")
     try:
         code, out = _run(["bash", "-n"], p)
+        if code is None:
+            return [], [out]
         return [l for l in out.splitlines() if l.strip()][:6] if code else []
     finally:
         p.unlink(missing_ok=True)
@@ -207,7 +224,7 @@ def _yaml(content):
         yaml.safe_load(content)
         return []
     except ImportError:
-        return []
+        return [], ["PyYAML not installed; YAML verification unavailable"]
     except Exception as e:
         return [str(e).splitlines()[0]]
 
@@ -223,9 +240,13 @@ CHECKERS = {
 def check(path, content, project_root=None):
     """Return (errors, warnings).
 
-    Errors are definitive: a parser or a type checker said no. They block the
-    write. Warnings come from indexes that cannot see everything, so they ride
-    along with a successful write instead of stopping it.
+    Tri-state contract:
+    - passed: ([], []) — a real checker ran and approved.
+    - failed: (errors, warnings) with errors non-empty — a real checker ran
+      and refused. The caller blocks the write.
+    - unavailable: ([], [warning, ...]) — no checker could run (missing
+      executable, timeout, missing linter library). The caller must not
+      report a clean pass; it warns and lets the write proceed.
     """
     fn = CHECKERS.get(Path(str(path)).suffix.lower())
     if not fn:

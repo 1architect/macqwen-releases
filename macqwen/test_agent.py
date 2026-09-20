@@ -183,6 +183,32 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("missing required parameters", engine.tool_results[0][0])
         self.assertIn("path", engine.tool_results[0][0])
 
+    def test_call_with_invalid_typed_param_reports_error_before_dispatch(self):
+        bad_int = CALL.replace(
+            "<parameter=path>\nnotes.txt\n</parameter>",
+            "<parameter=path>\nnotes.txt\n</parameter>\n"
+            "<parameter=start_line>\n3.7\n</parameter>",
+        )
+        seen = []
+        original_call = self.repo.call
+
+        def spy(name, args):
+            seen.append((name, args))
+            return original_call(name, args)
+
+        self.repo.call = spy
+        try:
+            engine = ScriptedEngine([
+                (bad_int, Stats(finish="stop")),
+                ("recovered", Stats(finish="stop")),
+            ])
+            self.assertEqual(run_agent(engine, self.repo, self.out), "answer")
+        finally:
+            self.repo.call = original_call
+        self.assertEqual(seen, [])
+        self.assertIn("expects integer", engine.tool_results[0][0])
+        self.assertIn("start_line", engine.tool_results[0][0])
+
     def test_denied_mutating_tool_does_not_run(self):
         engine = ScriptedEngine([
             (WRITE, Stats(finish="stop")),

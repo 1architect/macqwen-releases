@@ -26,6 +26,7 @@ from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.utils import load_tokenizer
 
 from macqwen.backends.base import GenerationCancelled
+from macqwen.conversation import Conversation
 
 def patch_lm_head_last_token():
     """Apply lm_head only to the final position.
@@ -603,7 +604,12 @@ class TurnStats:
     finish: str
 
 
-class FrankensteinEngine:
+class FrankensteinEngine(Conversation):
+    # Conversation owns the tape framing: sentinel render, split_content_slots,
+    # safe content encoder, fail-closed joint fallback. This engine keeps only
+    # cache-backed overrides (cache_tokens, check_invariant) below.
+    _user_codec = None
+
     def __init__(self, model_path=E2, prefill_step_size=512, kv_bits=None,
                  kv_group_size=64, quantized_kv_start=1024, temperature=0.0,
                  repetition_penalty=None, repetition_context_size=64,
@@ -713,6 +719,7 @@ class FrankensteinEngine:
         self.tape = []       # token ids already inside the cache
         self.pending = []    # token ids appended but not processed yet
         self.turn_closed = True   # last assistant turn ended with <|im_end|>
+        self._user_codec = None
         self.turn = 0
         self.stats = []
 
@@ -740,51 +747,11 @@ class FrankensteinEngine:
             raise SystemExit("model has no chat template")
 
     # -- append-only segment builders --------------------------------------
-
-    def encode(self, text):
-        return self.tokenizer.encode(text, add_special_tokens=False)
-
-    def append_text(self, text):
-        ids = self.encode(text)
-        self.pending.extend(ids)
-        return len(ids)
-
-    def append_tokens(self, ids):
-        """Append token IDs produced by this exact tokenizer."""
-        self.pending.extend(int(token) for token in ids)
-        return len(ids)
-
-    def open_conversation(self, system, user, tools=None, enable_thinking=True,
-                          reasoning_effort="xhigh"):
-        """First segment: system (+ tool contract), first user turn, generation prompt."""
-        if self.tape or self.pending:
-            raise RuntimeError("conversation already open")
-        msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-        text = self.tokenizer.apply_chat_template(
-            msgs, tools=tools, add_generation_prompt=True, tokenize=False,
-            enable_thinking=enable_thinking, reasoning_effort=reasoning_effort)
-        return self.append_text(text)
-
-    def _close(self):
-        """Close a truncated assistant turn. Generation stopped before <|im_end|>."""
-        return "" if self.turn_closed else IM_END
-
-    @staticmethod
-    def _assistant_prefix(enable_thinking=True):
-        if enable_thinking:
-            return f"{IM_START}assistant\n<think>\n"
-        return f"{IM_START}assistant\n<think>\n\n</think>\n\n"
-
-    def append_user(self, text, enable_thinking=True):
-        return self.append_text(
-            f"{self._close()}\n{IM_START}user\n{text}{IM_END}\n"
-            f"{self._assistant_prefix(enable_thinking)}")
-
-    def append_tool_results(self, results, enable_thinking=True):
-        body = "".join(f"\n<tool_response>\n{r}\n</tool_response>" for r in results)
-        return self.append_text(
-            f"{self._close()}\n{IM_START}user{body}{IM_END}\n"
-            f"{self._assistant_prefix(enable_thinking)}")
+    # Inherited from Conversation: encode, append_text, append_tokens,
+    # open_conversation, append_user, append_tool_results, _close,
+    # _separator, _assistant_prefix, common_prefix, _codec, _content_ids.
+    # That shared path handles sentinel render, split_content_slots, the safe
+    # encoder from macqwen.text, and fail-closed joint fallback.
 
     # -- telemetry ----------------------------------------------------------
 

@@ -21,6 +21,7 @@ before </tool_call> often enough that strict parsing loses real calls.
 from __future__ import annotations
 
 import json
+import math
 import re
 
 TOOLS = [
@@ -76,6 +77,84 @@ def _unescape_argument(value: str) -> str:
         value.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
     )
 
+
+class ToolCallValidationError(ValueError):
+    """A typed tool parameter held a value its schema type rejects.
+
+    A ValueError so generic handlers still catch it; a distinct type so
+    the agent loop and the server turn it into a message the model can
+    correct instead of a crash.
+    """
+
+
+_BOOL_TRUE = frozenset({"true", "1", "yes", "on"})
+_BOOL_FALSE = frozenset({"false", "0", "no", "off"})
+_INT_RE = re.compile(r"[+-]?\d+")
+
+
+def coerce_scalar(raw: str, kind: str | None, *, tool="", key="parameter"):
+    """Coerce one raw XML tool parameter to its schema type.
+
+    Both XML parsers (here and in macqwen.server) share this, so the
+    model meets one rule everywhere. String payloads pass through
+    byte-identical; only typed scalar conversion strips surrounding
+    whitespace. Integer is strict: float strings like "3.7" fail
+    instead of truncating. Boolean accepts only an explicit set.
+    Raises ToolCallValidationError naming tool, parameter, expected
+    type, and received value.
+    """
+    text = _unescape_argument(raw)
+    label = f"tool {tool!r} parameter {key!r}" if tool else f"parameter {key!r}"
+    if kind == "integer":
+        stripped = text.strip()
+        if _INT_RE.fullmatch(stripped):
+            return int(stripped, 10)
+        raise ToolCallValidationError(
+            f"{label} expects integer, got {text!r};"
+            " send digits only, e.g. 3 not 3.7"
+        )
+    if kind == "number":
+        try:
+            value = float(text.strip())
+        except (TypeError, ValueError):
+            raise ToolCallValidationError(
+                f"{label} expects number, got {text!r};"
+                " send a number like 3.5"
+            ) from None
+        if not math.isfinite(value):
+            raise ToolCallValidationError(
+                f"{label} expects a finite number, got {text!r}"
+            )
+        return value
+    if kind == "boolean":
+        lowered = text.strip().lower()
+        if lowered in _BOOL_TRUE:
+            return True
+        if lowered in _BOOL_FALSE:
+            return False
+        raise ToolCallValidationError(
+            f"{label} expects boolean"
+            " (true/false/1/0/yes/no/on/off), got"
+            f" {text!r}"
+        )
+    if kind in ("object", "array"):
+        try:
+            value = json.loads(text)
+        except (TypeError, ValueError):
+            raise ToolCallValidationError(
+                f"{label} expects {kind} as JSON, got {text!r}"
+            ) from None
+        if kind == "object" and not isinstance(value, dict):
+            raise ToolCallValidationError(
+                f"{label} expects object as JSON, got {text!r}"
+            )
+        if kind == "array" and not isinstance(value, list):
+            raise ToolCallValidationError(
+                f"{label} expects array as JSON, got {text!r}"
+            )
+        return value
+    return text
+
 def parse_tool_calls(text):
     """Accept both Qwen XML tool formats and return [(name, args)]."""
     calls = []
@@ -94,49 +173,19 @@ def parse_tool_calls(text):
         args = {}
         for key, _, raw in PARAM_VALUE_RE.findall(body):
             if key in allowed:
-                args[key] = _unescape_argument(raw)
+                # Quoted params coerce exactly like plain ones; string
+                # payloads still keep their exact bytes.
+                args[key] = coerce_scalar(raw, allowed[key], tool=name, key=key)
         for key, raw in PARAM_RE.findall(body):
             if key not in allowed:
                 continue
-            t = allowed[key]
-            # String payloads keep their exact bytes: file contents,
-            # indentation, and trailing newlines survive. Only typed
-            # scalar conversion normalizes whitespace, and int()/float()
-            # already tolerate it.
-            v = _unescape_argument(raw)
-            if t == "integer":
-                try:
-                    v = int(float(v))
-                except ValueError:
-                    pass
-            elif t == "number":
-                try:
-                    v = float(v)
-                except ValueError:
-                    pass
-            elif t == "boolean":
-                v = v.strip().lower() in ("true", "1", "yes")
-            args[key] = v
+            args[key] = coerce_scalar(raw, allowed[key], tool=name, key=key)
         # Qwen sometimes writes <path>value</parameter> instead of
         # <parameter=path>value</parameter>. Keep the standard form first.
         for key, raw in SHORT_PARAM_RE.findall(body):
             if key in args or key not in allowed:
                 continue
-            t = allowed[key]
-            v = _unescape_argument(raw)
-            if t == "integer":
-                try:
-                    v = int(float(v))
-                except ValueError:
-                    pass
-            elif t == "number":
-                try:
-                    v = float(v)
-                except ValueError:
-                    pass
-            elif t == "boolean":
-                v = v.strip().lower() in ("true", "1", "yes")
-            args[key] = v
+            args[key] = coerce_scalar(raw, allowed[key], tool=name, key=key)
         calls.append((name, args))
     return calls
 

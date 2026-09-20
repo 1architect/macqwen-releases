@@ -17,6 +17,7 @@ from macqwen.backends.base import Backend
 from macqwen.tools import (
     MUTATING_TOOLS,
     REQUIRED_PARAMS,
+    ToolCallValidationError,
     parse_tool_calls,
     render_tool_result,
     split_think,
@@ -119,7 +120,22 @@ def run_agent(engine: Backend, repo, out, limits: Limits = Limits(),
             return stop("swap")
 
         _, content = split_think(text)
-        calls = parse_tool_calls(content) or parse_tool_calls(text)
+        try:
+            calls = parse_tool_calls(content) or parse_tool_calls(text)
+        except ToolCallValidationError as exc:
+            # A typed value missed its schema (e.g. start_line "3.7").
+            # The message names the parameter, so the model can retry.
+            # Required-parameter checks stay at dispatch below.
+            message = str(exc)
+            if ui is not None:
+                ui.tool_finished(error=True)
+            else:
+                out(f"[tool error] {message}")
+            engine.append_tool_results(
+                [json.dumps({"error": message})],
+                enable_thinking=getattr(engine, "thinking_enabled", True),
+            )
+            continue
         if not calls:
             if not engine.check_invariant():
                 out("!! INVARIANT BROKEN: cache and transcript disagree")

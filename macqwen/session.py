@@ -492,12 +492,30 @@ def build_backend(name: str, args, prefs: dict):
         )
         from models.bonsai2.settings import SESSION_DIR
 
+        prepared_raw = getattr(args, "prepared_qmm", "on")
+        if isinstance(prepared_raw, bool):
+            prepared_qmm = prepared_raw
+        else:
+            prepared_qmm = str(prepared_raw).lower() == "on"
         backend = BonsaiBackend(
             model_path=args.model_path,
             prefill_step_size=args.prefill_step_size,
             allocator_cache_mb=PRODUCTION_ALLOCATOR_CACHE_MB,
+            prepared_qmm_metadata=prepared_qmm,
             session_dir=(args.session_dir or SESSION_DIR),
         )
+        cli_args = set(sys.argv[1:])
+        backend._setting_sources = {
+            "prepared-qmm": (
+                "CLI"
+                if any(
+                    item == "--prepared-qmm"
+                    or item.startswith("--prepared-qmm=")
+                    for item in cli_args
+                )
+                else "default"
+            )
+        }
         mirror_preferences(backend, prefs, prefs["profile"])
         return backend
     if name == "k2-horizon":
@@ -591,6 +609,7 @@ def main() -> int:
         "--fusion-model", default=FLASHNEXT_DEFAULTS["fusion_model"]
     )
     parser.add_argument("--prefill-step-size", type=int, default=512)
+    parser.add_argument("--prepared-qmm", choices=("on", "off"), default="on")
     parser.add_argument("--kv-bits", type=int, default=None)
     parser.add_argument("--kv-group-size", type=int, default=64)
     parser.add_argument("--quantized-kv-start", type=int, default=8192)

@@ -1412,6 +1412,44 @@ class BackendTests(unittest.TestCase):
         self.assertFalse(backend.turn_closed)
         self.assertTrue(backend._replay_needed)
 
+    def test_prepared_qmm_default_is_on_and_off_differs(self):
+        import inspect
+
+        from models.bonsai2.backend import BonsaiBackend
+
+        self.assertTrue(
+            inspect.signature(BonsaiBackend.__init__).parameters[
+                "prepared_qmm_metadata"
+            ].default
+        )
+        with patch("models.bonsai2.qmm_metadata.install", return_value={}):
+            on_backend, _tokenizer = self.backend(prepared_qmm_metadata=True)
+        off_backend, _tokenizer = self.backend(prepared_qmm_metadata=False)
+        self.assertTrue(on_backend.prepared_qmm_metadata)
+        self.assertFalse(off_backend.prepared_qmm_metadata)
+        self.assertNotEqual(
+            on_backend.prepared_qmm_metadata, off_backend.prepared_qmm_metadata
+        )
+
+    def test_configure_reports_prepared_qmm_value(self):
+        with patch("models.bonsai2.qmm_metadata.install", return_value={}):
+            on_backend, _tokenizer = self.backend(prepared_qmm_metadata=True)
+        off_backend, _tokenizer = self.backend(prepared_qmm_metadata=False)
+        self.assertIn("prepared-qmm        on", on_backend.configure("all"))
+        self.assertIn("prepared-qmm        off", off_backend.configure("all"))
+        self.assertEqual(on_backend.configure("prepared-qmm"), "prepared-qmm        on")
+        self.assertEqual(off_backend.configure("prepared-qmm"), "prepared-qmm        off")
+
+    def test_prepared_qmm_live_write_fails_closed_with_restart(self):
+        backend, _tokenizer = self.backend(prepared_qmm_metadata=False)
+        for text in ("prepared-qmm on", "prepared-qmm off"):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, "(?i)restart"):
+                    backend.configure(text)
+                with self.assertRaisesRegex(ValueError, "(?i)startup"):
+                    backend.configure(text)
+        self.assertFalse(backend.prepared_qmm_metadata)
+
 
 CHECKPOINT = Path(os.environ.get(
     "MACQWEN_MODEL_ROOT", "~/models")).expanduser() / "Ternary-Bonsai-2-27B-mlx-2bit"

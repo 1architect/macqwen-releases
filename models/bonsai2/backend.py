@@ -1012,6 +1012,7 @@ class BonsaiBackend(Conversation):
         self.q4_attention_tiling = bool(q4_attention_tiling)
         self.fused_q4_attention = bool(fused_q4_attention)
         self.prepared_qmm_metadata = bool(prepared_qmm_metadata)
+        self._setting_sources = {}
         self.q2_prefill_mpp = bool(q2_prefill_mpp)
         self.exact_speculative_decode = bool(exact_speculative_decode)
         self.speculative_block_size = speculative_block_size
@@ -1061,6 +1062,7 @@ class BonsaiBackend(Conversation):
         # longer a separate mode.
         self.retain_stop = bool(retain_stop)
         self.session_dir = Path(session_dir).expanduser()
+        self.decode_trace = []
         self.thinking_enabled = False
         self.reasoning_effort = "medium"
         self.think_budget = 0
@@ -1628,6 +1630,7 @@ class BonsaiBackend(Conversation):
         self._reset_q2_counters()
         self._reset_speculative_stats()
         self.stop_token_sync_stats = {"calls": 0, "seconds": 0.0}
+        self.decode_trace = []
         if not self.pending:
             return "", Stats()
 
@@ -1801,11 +1804,13 @@ class BonsaiBackend(Conversation):
                                 # manual stop cannot leave an un-taped
                                 # lookahead in that cache.
                                 check_cancel()
+                                loop_top = time.perf_counter()
                                 try:
                                     token, _logprobs = next(steps_iter)
                                 except StopIteration:
                                     self.turn_closed = False
                                     break
+                                next_done = time.perf_counter()
                                 value = int(token)
                                 if value in self.stops:
                                     stop_seen = True
@@ -1866,6 +1871,14 @@ class BonsaiBackend(Conversation):
                                     if out is not None:
                                         with timer.emitting():
                                             out(piece)
+                                host_done = time.perf_counter()
+                                self.decode_trace.append(
+                                    {
+                                        "next_s": next_done - loop_top,
+                                        "host_s": host_done - next_done,
+                                        "total_s": host_done - loop_top,
+                                    }
+                                )
                                 if answer_limited:
                                     break
                         except BaseException:
@@ -2114,6 +2127,13 @@ class BonsaiBackend(Conversation):
                 self._mark_replay_needed()
                 self.turn_closed = turn_closed
             return f"kv-cache            {kv_description()}"
+        if text == "prepared-qmm":
+            return f"prepared-qmm        {'on' if self.prepared_qmm_metadata else 'off'}"
+        if text.startswith("prepared-qmm "):
+            raise ValueError(
+                "prepared-qmm applies at startup; restart the model to change it "
+                "(QMM mutates resident metadata at startup)"
+            )
         if text in ("", "all"):
             return (
                 "Bonsai-2 settings\n"

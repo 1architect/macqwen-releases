@@ -16,7 +16,12 @@ from macqwen.backends.base import (
     DecodeTimer,
     GenerationCancelled,
 )
-from macqwen.conversation import Conversation, EXTRA_REASONING
+from macqwen.conversation import (
+    Conversation,
+    EXTRA_REASONING,
+    content_sentinel,
+    split_content_slots,
+)
 from macqwen.sampling import Sampler, Sampling
 from macqwen.text import stream_decode
 
@@ -37,7 +42,69 @@ THINK_FIELDS = {
     "medium": "think_fast",
     "low": "think_faster",
 }
+# Control markers that must stay literal text when pasted as content.
+# The safe encoder splits on added_tokens_decoder entries, but a
+# checkpoint may omit K2 or Qwen markers there. Union these fallbacks
+# so pasted structure never becomes chat structure.
+_K2_SAFE_MARKERS = (
+    "<|ifm|im_start|>",
+    "<|ifm|im_end|>",
+    "<ifm|think>",
+    "<ifm|think_fast>",
+    "<ifm|think_faster>",
+    "</ifm|think>",
+    "</ifm|think_fast>",
+    "</ifm|think_faster>",
+    "<ifm|tool_calls>",
+    "</ifm|tool_calls>",
+    "<ifm|tool_call>",
+    "</ifm|tool_call>",
+    "<think>",
+    "</think>",
+    "<|im_start|>",
+    "<|im_end|>",
+)
 _SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+SESSION_SCHEMA = 1
+
+_IDENTITY_FILES = (
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "chat_template.jinja",
+)
+
+
+def _config_identity(model_path: str) -> str | None:
+    """Identify the checkpoint without loading weights.
+
+    Sessions store token IDs, not text, so the fingerprint must cover
+    everything that maps between them: model config, tokenizer data and
+    options, the chat template, and the bundled runtime loader. A changed
+    tokenizer or template silently redefines old tapes, so sessions
+    failing this check are rejected instead of replayed.
+    """
+    import hashlib
+
+    def feed(handle) -> None:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+
+    try:
+        digest = hashlib.sha256()
+        root = Path(model_path).expanduser()
+        for name in _IDENTITY_FILES:
+            with open(root / name, "rb") as handle:
+                feed(handle)
+        runtime = root / "runtime"
+        if runtime.is_dir():
+            for path in sorted(runtime.rglob("*.py")):
+                digest.update(path.name.encode("utf-8"))
+                with open(path, "rb") as handle:
+                    feed(handle)
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 @contextmanager
@@ -80,6 +147,15 @@ class K2Tokenizer:
 
     def __getattr__(self, name):
         return getattr(self._tokenizer, name)
+
+    def __call__(self, text, **options):
+        # Explicit: implicit dunder lookup bypasses __getattr__, so the
+        # safe content encoder's tokenizer(chunk) call needs this forwarder.
+        return self._tokenizer(text, **options)
+
+    def __len__(self):
+        # Same dunder limitation for session token-bound validation.
+        return len(self._tokenizer)
 
     def _normalize_effort(self, messages, effort: str):
         messages = [dict(message) for message in messages]
@@ -202,6 +278,53 @@ class K2HorizonBackend(Conversation):
     def _select_thinking_tag(self, effort: str) -> None:
         self._thinking_tag = THINK_TAGS[self._effort(effort)]
 
+    def _close(self) -> str:
+        return "" if self.turn_closed else IM_END
+
+    def _codec(self):
+        if self._user_codec is None:
+            try:
+                base = {
+                    token.content
+                    for token in self.tokenizer.added_tokens_decoder.values()
+                }
+            except (AttributeError, TypeError):
+                base = set()
+            markers = set(base) | set(_K2_SAFE_MARKERS)
+            if not markers:
+                self._user_codec = False
+                return self._user_codec
+            pattern = re.compile(
+                "|".join(
+                    re.escape(marker)
+                    for marker in sorted(markers, key=len, reverse=True)
+                )
+            )
+            inner = getattr(self.tokenizer, "_tokenizer", self.tokenizer)
+            if not callable(inner):
+                self._user_codec = False
+                return self._user_codec
+
+            def plain(chunk: str) -> list[int]:
+                if not chunk:
+                    return []
+                return self.tokenizer(chunk, add_special_tokens=False)["input_ids"]
+
+            def encode(text: str) -> list[int]:
+                ids: list[int] = []
+                position = 0
+                for match in pattern.finditer(text):
+                    marker = match.group(0)
+                    ids.extend(plain(text[position:match.start()]))
+                    ids.extend(plain(marker[:1]))
+                    ids.extend(plain(marker[1:]))
+                    position = match.end()
+                ids.extend(plain(text[position:]))
+                return ids
+
+            self._user_codec = (pattern, encode)
+        return self._user_codec
+
     def open_conversation(
         self,
         system,
@@ -212,38 +335,108 @@ class K2HorizonBackend(Conversation):
     ) -> int:
         if self.tape or self.pending:
             raise RuntimeError("conversation already open")
-        text = self.tokenizer.apply_chat_template(
+        codec = self._codec()
+        hostile = (
+            codec is not False
+            and isinstance(system, str)
+            and isinstance(user, str)
+            and (
+                codec[0].search(system) is not None
+                or codec[0].search(user) is not None
+            )
+        )
+
+        def render(messages, effort):
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tools=tools,
+                add_generation_prompt=True,
+                tokenize=False,
+                enable_thinking=enable_thinking,
+                reasoning_effort=effort,
+            )
+
+        if not hostile:
+            text = render(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                reasoning_effort,
+            )
+            self._thinking_tag = self.tokenizer.thinking_tag
+            return self.append_text(text)
+        # Resolve effort from real content before the sentinel render:
+        # medium + high instruction becomes high, xhigh becomes high.
+        _, resolved = self.tokenizer._normalize_effort(
             [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            tools=tools,
-            add_generation_prompt=True,
-            tokenize=False,
-            enable_thinking=enable_thinking,
-            reasoning_effort=reasoning_effort,
+            reasoning_effort,
         )
+        parts = split_content_slots(
+            render(
+                [
+                    {"role": "system", "content": content_sentinel(0)},
+                    {"role": "user", "content": content_sentinel(1)},
+                ],
+                resolved,
+            ),
+            2,
+        )
+        if parts is None:
+            text = render(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                reasoning_effort,
+            )
+            self._thinking_tag = self.tokenizer.thinking_tag
+            return self.append_text(text)
         self._thinking_tag = self.tokenizer.thinking_tag
-        return self.append_text(text)
+        safe = codec[1]
+        ids = (
+            self.encode(parts[0])
+            + safe(system)
+            + self.encode(parts[1])
+            + safe(user)
+            + self.encode(parts[2])
+        )
+        self.pending.extend(ids)
+        return len(ids)
 
     def append_user(self, text: str, enable_thinking: bool = True) -> int:
         self._select_thinking_tag(self.reasoning_effort)
-        close = "" if self.turn_closed else IM_END
-        return self.append_text(
-            f"{close}{IM_START}user\n{text}{IM_END}"
-            f"{self._assistant_prefix(enable_thinking)}"
-        )
+        before = f"{self._close()}{self._separator()}{IM_START}user\n"
+        after = f"{IM_END}\n{self._assistant_prefix(enable_thinking)}"
+        content = self._content_ids(text)
+        if content is None:
+            return self.append_text(before + text + after)
+        ids = self.encode(before) + content + self.encode(after)
+        self.pending.extend(ids)
+        return len(ids)
 
     def append_tool_results(self, results, enable_thinking: bool | None = None) -> int:
         if enable_thinking is None:
             enable_thinking = self.thinking_enabled
-        close = "" if self.turn_closed else IM_END
-        body = "".join(f"{IM_START}tool\n{result}{IM_END}" for result in results)
-        return self.append_text(close + body + self._assistant_prefix(enable_thinking))
-
-    def append_text(self, text: str) -> int:
-        text = text.replace("</think>", f"</{self._thinking_tag}>")
-        return super().append_text(text)
+        head = f"{self._close()}{self._separator()}"
+        tail_prefix = self._assistant_prefix(enable_thinking)
+        coded = [self._content_ids(result) for result in results]
+        if all(part is None for part in coded):
+            body = "".join(
+                f"{IM_START}tool\n{result}{IM_END}\n" for result in results
+            )
+            return self.append_text(f"{head}{body}{tail_prefix}")
+        ids = self.encode(head)
+        for result, content in zip(results, coded):
+            ids.extend(self.encode(f"{IM_START}tool\n"))
+            ids.extend(content if content is not None else self.encode(result))
+            ids.extend(self.encode(f"{IM_END}\n"))
+        ids.extend(self.encode(tail_prefix))
+        self.pending.extend(ids)
+        return len(ids)
 
     @property
     def cache_tokens(self) -> int:
@@ -478,11 +671,18 @@ class K2HorizonBackend(Conversation):
             path = self._session_path(name)
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             payload = json.dumps({
+                "schema": SESSION_SCHEMA,
                 "model_path": self.model_path,
+                "config_sha256": _config_identity(self.model_path),
                 "tape": self.tape,
+                "pending": self.pending,
                 "turn_closed": self.turn_closed,
                 "thinking": self.thinking_enabled,
                 "thinking_tag": self._thinking_tag,
+                # Budgets excluded: think_budget/answer_budget/reasoning_effort
+                # are derived per turn from session prefs via
+                # mirror_preferences, so restoring stale values would
+                # override current prefs. Sessions keep tape/pending/flags.
             }, separators=(",", ":"))
             with tempfile.NamedTemporaryFile(
                 mode="w", encoding="utf-8", dir=path.parent, delete=False,
@@ -500,22 +700,60 @@ class K2HorizonBackend(Conversation):
         return f"saved {name}  {len(self.tape)} tokens"
 
     def load_session(self, name: str) -> str:
+        def valid_tokens(values) -> list[int] | None:
+            if not isinstance(values, list):
+                return None
+            try:
+                vocab_size = len(self.tokenizer)
+            except TypeError:
+                vocab_size = None
+            clean = []
+            for value in values:
+                if not isinstance(value, int) or isinstance(value, bool):
+                    return None
+                if vocab_size is not None and not 0 <= value < vocab_size:
+                    return None
+                clean.append(value)
+            return clean
+
+        def valid_flag(value) -> bool | None:
+            return value if isinstance(value, bool) else None
+
         try:
             payload = json.loads(self._session_path(name).read_text())
+            if not isinstance(payload, dict):
+                raise ValueError("session payload must be an object")
+            if payload.get("schema") != SESSION_SCHEMA:
+                raise ValueError("session schema is not supported here")
             if payload.get("model_path") != self.model_path:
                 raise ValueError("session belongs to another checkpoint")
-            tape = payload.get("tape")
-            if not isinstance(tape, list):
+            expected_config = _config_identity(self.model_path)
+            if expected_config is None:
+                raise ValueError(
+                    "session checkpoint identity is unavailable"
+                )
+            if payload.get("config_sha256") != expected_config:
+                raise ValueError("session checkpoint config changed")
+            tape = valid_tokens(payload.get("tape"))
+            if tape is None:
                 raise ValueError("session token tape is invalid")
+            pending = valid_tokens(payload.get("pending", []))
+            if pending is None:
+                raise ValueError("session pending tokens are invalid")
             tag = payload.get("thinking_tag", THINK_TAGS["medium"])
-            if tag not in THINK_TAGS.values():
+            if not isinstance(tag, str) or tag not in THINK_TAGS.values():
                 raise ValueError("session thinking tag is invalid")
+            turn_closed = valid_flag(payload.get("turn_closed", True))
+            thinking = valid_flag(payload.get("thinking", False))
+            if turn_closed is None or thinking is None:
+                raise ValueError("session flags are invalid")
             self.reset()
-            self.tape = [int(value) for value in tape]
-            self.turn_closed = bool(payload.get("turn_closed", True))
-            self.thinking_enabled = bool(payload.get("thinking", False))
+            self.tape = tape
+            self.pending = pending
+            self.turn_closed = turn_closed
+            self.thinking_enabled = thinking
             self._thinking_tag = tag
-            self._replay_needed = bool(self.tape)
+            self._replay_needed = bool(self.tape or self.pending)
         except (OSError, TypeError, ValueError) as exc:
             return f"could not load session: {exc}"
         return f"loaded {name}  {len(self.tape)} tokens; cache will replay once"
