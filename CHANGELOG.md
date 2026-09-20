@@ -1,5 +1,45 @@
 # Changelog
 
+## MACQWEN 0.4.6 - 2026-09-20
+
+### Added
+
+- Add `--prepared-qmm on|off` startup control for the Bonsai-2 default,
+  with source reporting in `/config model` and fail-closed live writes.
+- Add K2-Horizon and Qwen27B hostile-marker regression coverage, Qwen27B
+  snapshot fingerprint tests, and 31 synthetic Qwen27B unit tests.
+- Add server tests for SSE failure events, Anthropic stop mapping, model
+  cards, and scalar coercion tables.
+
+### Changed
+
+- Route every chat turn through one persistent worker thread, so the
+  live cache stays valid across turns with incremental prefill only.
+- Return backend-derived display names and context windows from
+  `/v1/models`, with 32768 as fallback.
+- Centralize scalar coercion: strict integers, explicit boolean set,
+  no silent truncation or false coercion.
+- Run timed-out commands in their own process group and kill the whole
+  group; report code-check gaps as unavailable instead of passing.
+
+### Fixed
+
+- Fix K2-Horizon and Qwen27B user/tool content handling so pasted
+  control markers stay literal text and never become structural tokens.
+- Fix SSE streaming to emit in-stream error events instead of a second
+  HTTP response after headers are sent.
+- Map Anthropic stop reasons correctly: tool calls give `tool_use`,
+  budget exhaustion gives `max_tokens`, natural stops give `end_turn`.
+- Bind K2 saved sessions and Qwen27B cache snapshots to
+  checkpoint/tokenizer/runtime fingerprints and validate before
+  touching live state.
+
+### Tests
+
+- Pass 374 checkpoint-free shared tests, 172 Bonsai-2 tests, 58
+  K2-Horizon tests, 352 Flash-Next tests (2 skipped), and 60 Qwen27B
+  tests, plus Python bytecode compilation.
+
 ## MACQWEN 0.4.5 - 2026-09-20
 
 ### Added
