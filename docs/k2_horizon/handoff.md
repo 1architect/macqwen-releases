@@ -71,8 +71,9 @@ fanless reference Mac.
 ## Correctness invariants
 
 - Every completed cache layer offset must match the conversation token tape.
-- Stop-token rewind, EOS, token-limit completion, cancellation, callback
-  failure, reset, and replay must leave explicit recoverable state.
+- Stop-token rewind, EOS, token-limit completion, and valid manual
+  cancellation must leave the cache aligned with the tape; partial prefill,
+  callback failure, reset, and replay must leave explicit recoverable state.
 - Cached user turns, JSON tool results, session restore, and prefix divergence
   must preserve the shared chat contract.
 - Exact candidates must retain intermediate values and complete greedy token

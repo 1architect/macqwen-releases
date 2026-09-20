@@ -14,7 +14,10 @@ import re
 import tempfile
 
 from models.qwen27b.settings import get_registry
-from macqwen.backends.base import GenerationCancelled
+from macqwen.backends.base import (
+    CANCELLABLE_PREFILL_STEP_SIZE,
+    GenerationCancelled,
+)
 
 
 _SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -311,12 +314,18 @@ class FrankensteinBackend:
         old_thinking = getattr(self.engine, "_thinking_enabled", None)
         self.engine._interactive_budgets = getattr(self, "_interactive_budgets", None)
         self.engine._thinking_enabled = getattr(self, "thinking_enabled", False)
+        prefill_step_size = getattr(self.engine, "prefill_step_size", None)
+        if should_cancel is not None and prefill_step_size is not None:
+            prefill_step_size = min(
+                prefill_step_size, CANCELLABLE_PREFILL_STEP_SIZE
+            )
         try:
             text, old = self.engine.generate(
                 max_tokens=max_tokens,
                 echo=False,
                 progress=progress,
                 on_token=on_token,
+                prefill_step_size=prefill_step_size,
             )
         finally:
             self.engine._interactive_budgets = old_budgets

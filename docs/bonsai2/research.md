@@ -241,8 +241,9 @@ token-for-token: the first generated token flips between the two turn
 boundary markers while the following prose is identical, deterministically
 on both sides. Prefill-path and decode-path batching round differently at
 the boundary race. The prose equality is verified by inspection; the
-trajectory gate stays manual. Other stops and interruptions keep the replay
-recovery path.
+trajectory gate stays manual. We keep replay recovery whenever cancellation
+leaves the cache invariant broken; a manual stop with a valid live cache
+continues into the next user turn without replaying the tape.
 
 ## 2026-09-19 — Steps 1-2: sampler-forced closure and answer replay
 
@@ -437,7 +438,8 @@ boundary markers while the following prose is identical, deterministically
 on both sides. Identical prose in one probe does not clear the no-loss
 requirement for boundary control tokens, so retention ships behind
 `retain_stop=False` until user-turn and tool-turn continuation checks pass.
-Other stops and interruptions keep the replay recovery path regardless.
+We keep replay recovery whenever cancellation leaves the cache invariant
+broken; a valid live cache can continue after a manual stop.
 
 ### Shared transforms (per-backend enablement)
 

@@ -119,7 +119,8 @@ runtime lifecycle checks explicit without changing defaults:
 - all cache-layer offsets are checked against the token tape;
 - generator cleanup covers normal completion, stop, cancellation, and callback
   failure;
-- interrupted or failed turns require reset/replay before reuse;
+- manual cancellation can continue when the cache/tape invariant is valid;
+  partial prefill and failed turns require reset/replay before reuse;
 - tiny real-MLX tests cover native cache boundaries without loading weights.
 
 ## Promotion rules

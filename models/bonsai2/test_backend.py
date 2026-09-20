@@ -7,6 +7,10 @@ import tempfile
 import unittest
 from unittest.mock import call, patch
 
+from macqwen.backends.base import (
+    CANCELLABLE_PREFILL_STEP_SIZE,
+    GenerationCancelled,
+)
 from macqwen.conversation import EXTRA_REASONING
 from mlx_lm.models.cache import KVCache, RotatingKVCache
 
@@ -1123,6 +1127,49 @@ class BackendTests(unittest.TestCase):
         self.assertTrue("<|im_end|>" in "".join(
             chr(value) for value in backend.pending
         ))
+
+    def test_manual_cancellation_keeps_cache_and_prefills_only_new_turn(self):
+        backend, _tokenizer = self.backend()
+        backend.pending = [10]
+        backend.cache = [KVCache()]
+        backend.cache[0].offset = 0
+        prompts = []
+        prefill_steps = []
+        checks = [0]
+
+        def generate_step(prompt, _model, **options):
+            prompts.append(len(prompt))
+            prefill_steps.append(options["prefill_step_size"])
+            backend.cache[0].offset += len(prompt)
+            options["prompt_progress_callback"](len(prompt), len(prompt))
+            # Mirror generate_step's one-ahead cache update for the yielded
+            # token. The next loop check must stop before another update.
+            backend.cache[0].offset += 1
+            yield 65, None
+
+        def should_cancel():
+            checks[0] += 1
+            return checks[0] > 3
+
+        with patch("mlx_lm.generate.generate_step", generate_step):
+            with self.assertRaises(GenerationCancelled):
+                backend.generate(2, should_cancel=should_cancel)
+
+        self.assertEqual(backend.tape, [10, 65])
+        self.assertFalse(backend._replay_needed)
+        self.assertFalse(backend.turn_closed)
+        self.assertTrue(backend.check_invariant())
+
+        backend.append_user("next")
+        added = len(backend.pending)
+        with patch("mlx_lm.generate.generate_step", generate_step):
+            backend.generate(1)
+
+        self.assertEqual(prompts, [1, added])
+        self.assertEqual(
+            prefill_steps,
+            [CANCELLABLE_PREFILL_STEP_SIZE, backend.prefill_step_size],
+        )
 
     def test_session_replays_the_saved_tape(self):
         backend, _tokenizer = self.backend()

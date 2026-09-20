@@ -3,16 +3,22 @@ from __future__ import annotations
 from types import SimpleNamespace
 import unittest
 
+from macqwen.backends.base import CANCELLABLE_PREFILL_STEP_SIZE
 from macqwen.backends.frankenstein import FrankensteinBackend
 
 
 class FakeEngine:
+    prefill_step_size = 512
     tape = [1, 2]
     pending = [3]
     cache = []
     cache_tokens = 2
 
+    def __init__(self):
+        self.prefill_step_sizes = []
+
     def generate(self, **kwargs):
+        self.prefill_step_sizes.append(kwargs["prefill_step_size"])
         kwargs["progress"](1, 1)
         kwargs["on_token"](1, SimpleNamespace(text="answer"))
         stats = SimpleNamespace(
@@ -60,6 +66,14 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(stats.rate, 4.0)
         self.assertEqual(stats.prompt_tokens, 3)
         self.assertEqual(stats.prompt_rate, 6.0)
+        self.assertEqual(self.backend.engine.prefill_step_sizes, [512])
+
+    def test_cancellable_generation_uses_short_prefill_steps(self):
+        self.backend.generate(20, should_cancel=lambda: False)
+        self.assertEqual(
+            self.backend.engine.prefill_step_sizes,
+            [CANCELLABLE_PREFILL_STEP_SIZE],
+        )
 
     def test_session_names_cannot_escape_the_session_directory(self):
         from pathlib import Path

@@ -12,7 +12,11 @@ import sys
 import tempfile
 import time
 
-from macqwen.backends.base import DecodeTimer, GenerationCancelled
+from macqwen.backends.base import (
+    CANCELLABLE_PREFILL_STEP_SIZE,
+    DecodeTimer,
+    GenerationCancelled,
+)
 from macqwen.conversation import Conversation, EXTRA_REASONING
 from macqwen.sampling import Sampler, Sampling
 from macqwen.text import stream_decode
@@ -983,9 +987,12 @@ class BonsaiBackend(Conversation):
         prefill_seconds = 0.0
         timer = None
         prefilled = False
+        cancelled = False
 
         def check_cancel():
+            nonlocal cancelled
             if should_cancel is not None and should_cancel():
+                cancelled = True
                 raise GenerationCancelled
 
         def progress(done, total):
@@ -1000,9 +1007,14 @@ class BonsaiBackend(Conversation):
                 if on_prefilled is not None:
                     on_prefilled()
 
+        prefill_step_size = (
+            min(self.prefill_step_size, CANCELLABLE_PREFILL_STEP_SIZE)
+            if should_cancel is not None
+            else self.prefill_step_size
+        )
         steps = None
         text_model = _NonConsumingStopModel(
-            self._text_model, prompt_tokens, self.prefill_step_size, self.stops
+            self._text_model, prompt_tokens, prefill_step_size, self.stops
         )
         try:
             check_cancel()
@@ -1012,14 +1024,17 @@ class BonsaiBackend(Conversation):
                 max_tokens=max_tokens,
                 sampler=decoding_sampler,
                 prompt_cache=self.cache,
-                prefill_step_size=self.prefill_step_size,
+                prefill_step_size=prefill_step_size,
                 prompt_progress_callback=progress,
             )
         except BaseException:
             try:
                 mx.synchronize(generation_stream)
             finally:
-                self._mark_replay_needed()
+                if cancelled and self.check_invariant():
+                    self.turn_closed = False
+                else:
+                    self._mark_replay_needed()
             raise
         produced: list[int] = []
         pieces: list[str] = []
@@ -1066,8 +1081,19 @@ class BonsaiBackend(Conversation):
                             # yielding the next. The stop-aware wrapper keeps
                             # protocol stops out of that call, so every token
                             # taped here is present in every cache layer.
-                            for token, _logprobs in steps:
+                            steps_iter = iter(steps)
+                            while True:
+                                # generate_step() has already consumed the
+                                # yielded token into the recurrent cache. Check
+                                # before asking it for another token so a
+                                # manual stop cannot leave an un-taped
+                                # lookahead in that cache.
                                 check_cancel()
+                                try:
+                                    token, _logprobs = next(steps_iter)
+                                except StopIteration:
+                                    self.turn_closed = False
+                                    break
                                 value = int(token)
                                 if value in self.stops:
                                     stop_seen = True
@@ -1130,8 +1156,6 @@ class BonsaiBackend(Conversation):
                                             out(piece)
                                 if answer_limited:
                                     break
-                            else:
-                                self.turn_closed = False
                         except BaseException:
                             interrupted = True
                             raise
@@ -1159,7 +1183,10 @@ class BonsaiBackend(Conversation):
                     self._mark_replay_needed()
             finally:
                 if interrupted:
-                    self._mark_replay_needed()
+                    if cancelled and self.check_invariant():
+                        self.turn_closed = False
+                    else:
+                        self._mark_replay_needed()
 
         raw_tail = self.tokenizer.decode(partial) if partial else ""
         tail = protocol.feed(raw_tail) + protocol.finish()

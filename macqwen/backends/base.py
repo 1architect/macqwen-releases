@@ -10,6 +10,11 @@ class GenerationCancelled(Exception):
     """The user stopped one in-flight answer."""
 
 
+# MLX checks cancellation only between native prefill calls. Keep the
+# cancellable interactive calls short without changing benchmark defaults.
+CANCELLABLE_PREFILL_STEP_SIZE = 64
+
+
 class DecodeTimer:
     """Measure model time, not terminal time.
 

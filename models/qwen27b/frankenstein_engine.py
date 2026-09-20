@@ -696,20 +696,37 @@ class FrankensteinEngine:
         if wired_limit_gb:
             patch_wired_limit(wired_limit_gb)
         self.paged = paged and PagedKVCache is not None and self.model is not None
+        self._paged_cache_options = {
+            "page_size": page_size,
+            "top_k_pages": top_k_pages,
+            "pinned_pages": 1,
+            "recent_pages": 2,
+            "refresh_every": 16,
+            "min_context": min_context,
+            "spill_dir": spill_dir,
+            "resident_pages": resident_pages,
+        }
         if self.paged:
             install_paged()
-            self.cache = make_paged_cache(
-                self.model, page_size, top_k_pages=top_k_pages,
-                pinned_pages=1, recent_pages=2, refresh_every=16,
-                min_context=min_context, spill_dir=spill_dir,
-                resident_pages=resident_pages)
-        else:
-            self.cache = make_prompt_cache(self.model) if self.model is not None else []
+        self.cache = self._make_cache()
+        self._replay_needed = False
         self.tape = []       # token ids already inside the cache
         self.pending = []    # token ids appended but not processed yet
         self.turn_closed = True   # last assistant turn ended with <|im_end|>
         self.turn = 0
         self.stats = []
+
+    def _make_cache(self):
+        if self.paged:
+            return make_paged_cache(self.model, **self._paged_cache_options)
+        return make_prompt_cache(self.model) if self.model is not None else []
+
+    def _replace_cache(self):
+        old_cache = self.cache
+        self.cache = self._make_cache()
+        close = getattr(old_cache, "close", None)
+        if close is not None:
+            close()
 
     # -- chat template ------------------------------------------------------
 
@@ -790,12 +807,24 @@ class FrankensteinEngine:
     # -- generation ---------------------------------------------------------
 
     def generate(self, max_tokens=1600, echo=True, out=print, progress=None,
-                 on_token=None):
+                 on_token=None, prefill_step_size=None):
         """Process the pending tokens only, then stream one assistant turn."""
         if not self.pending:
             raise RuntimeError("nothing to process")
         n_new = len(self.pending)
-        prompt = mx.array(self.pending)
+        if getattr(self, "_replay_needed", False):
+            self._replace_cache()
+            prompt_tokens = list(self.tape) + self.pending
+            self._replay_needed = False
+        else:
+            prompt_tokens = list(self.pending)
+        if prefill_step_size is None:
+            prefill_step_size = self.prefill_step_size
+        else:
+            prefill_step_size = int(prefill_step_size)
+            if prefill_step_size <= 0:
+                raise ValueError("prefill_step_size must be greater than zero")
+        prompt = mx.array(prompt_tokens)
         t0 = time.perf_counter()
         parts, tokens = [], []
         stats = {"prompt_tps": 0.0, "gen_tps": 0.0, "finish": "?", "peak": 0.0}
@@ -870,6 +899,7 @@ class FrankensteinEngine:
 
             budget_processor = _budget_processor
         interrupted = False
+        prefill_interrupted = False
         # `stream_generate` is lazy, so whatever this loop body does happens
         # before the next token is asked for, and mlx_lm counts it as model
         # time. The terminal fade lives in `on_token` and its cost varies per
@@ -888,7 +918,7 @@ class FrankensteinEngine:
                 if budget_processor is not None else self.logits_processors
             ),
             prompt_cache=self.cache,
-            prefill_step_size=self.prefill_step_size,
+            prefill_step_size=prefill_step_size,
             kv_bits=self.kv_bits,
             kv_group_size=self.kv_group_size,
             quantized_kv_start=self.quantized_kv_start,
@@ -937,10 +967,11 @@ class FrankensteinEngine:
             finally:
                 body_seconds += time.perf_counter() - body_began
         except (KeyboardInterrupt, GenerationCancelled):
-            # Every token yielded is already in the cache, so stopping here
-            # leaves tape and cache consistent. The turn stays open and the
-            # next segment closes it with <|im_end|>.
+            # A cancellation before the first yielded token can interrupt a
+            # partial prefill. The tape remains authoritative, so rebuild the
+            # cache on the next segment instead of decoding from a partial KV.
             interrupted = True
+            prefill_interrupted = gen_began is None
             stats["finish"] = "interrupted"
         wall = time.perf_counter() - t0
         if gen_began is not None and len(tokens) > 1:
@@ -948,13 +979,20 @@ class FrankensteinEngine:
             if span > 0:
                 stats["gen_tps"] = (len(tokens) - 1) / span
 
-        # every token yielded by the generator is already inside the cache
+        # Every token yielded by the generator is already inside the cache.
         self.tape.extend(self.pending)
         self.pending = []
         self.tape.extend(tokens)
+        if prefill_interrupted and self.cache_tokens != len(self.tape):
+            self._replace_cache()
+            self._replay_needed = bool(self.tape)
+            self.turn_closed = False
         self.turn_closed = (
-            stats["finish"] == "stop"
-            or (processor_quota_stop and stats["finish"] == "length")
+            getattr(self, "turn_closed", True)
+            and (
+                stats["finish"] == "stop"
+                or (processor_quota_stop and stats["finish"] == "length")
+            )
         )
         self.turn += 1
 
@@ -973,7 +1011,7 @@ class FrankensteinEngine:
 
     def check_invariant(self):
         """Cache length must equal the logical tape length."""
-        return self.cache_tokens == len(self.tape)
+        return getattr(self, "_replay_needed", False) or self.cache_tokens == len(self.tape)
 
 
 def split_think(text):

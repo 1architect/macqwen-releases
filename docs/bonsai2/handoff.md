@@ -105,7 +105,7 @@ fixtures and digest references are filtered by clean-arm state; and the Bonsai
 and K2 protocol doubles accept `enable_thinking`.
 
 The checkpoint and budget fixes are covered by the current tests. The shared
-suite passes 298 tests, the Bonsai suite passes 113 tests, and compile checks
+suite passes 300 tests, the Bonsai suite passes 114 tests, and compile checks
 pass in the managed Python 3.12 MLX runtime with the declared
 `mlx-vlm==0.6.17` and Pillow dependencies.
 

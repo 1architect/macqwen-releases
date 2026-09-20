@@ -11,7 +11,11 @@ import re
 import tempfile
 import time
 
-from macqwen.backends.base import DecodeTimer, GenerationCancelled
+from macqwen.backends.base import (
+    CANCELLABLE_PREFILL_STEP_SIZE,
+    DecodeTimer,
+    GenerationCancelled,
+)
 from macqwen.conversation import Conversation, EXTRA_REASONING
 from macqwen.sampling import Sampler, Sampling
 from macqwen.text import stream_decode
@@ -304,9 +308,12 @@ class K2HorizonBackend(Conversation):
         prefill_seconds = 0.0
         timer = None
         prefilled = False
+        cancelled = False
 
         def check_cancel():
+            nonlocal cancelled
             if should_cancel is not None and should_cancel():
+                cancelled = True
                 raise GenerationCancelled
 
         def progress(done, total):
@@ -321,6 +328,11 @@ class K2HorizonBackend(Conversation):
                 if on_prefilled is not None:
                     on_prefilled()
 
+        prefill_step_size = (
+            min(self.prefill_step_size, CANCELLABLE_PREFILL_STEP_SIZE)
+            if should_cancel is not None
+            else self.prefill_step_size
+        )
         steps = None
         try:
             check_cancel()
@@ -330,14 +342,17 @@ class K2HorizonBackend(Conversation):
                 max_tokens=max_tokens,
                 sampler=sampler,
                 prompt_cache=self.cache,
-                prefill_step_size=self.prefill_step_size,
+                prefill_step_size=prefill_step_size,
                 prompt_progress_callback=progress,
             )
         except BaseException:
             try:
                 mx.synchronize(generation_stream)
             finally:
-                self._mark_replay_needed()
+                if cancelled and self.check_invariant():
+                    self.turn_closed = False
+                else:
+                    self._mark_replay_needed()
             raise
         produced: list[int] = []
         pieces: list[str] = []
@@ -375,8 +390,19 @@ class K2HorizonBackend(Conversation):
                     )
                     with residency:
                         try:
-                            for token, _logprobs in steps:
+                            steps_iter = iter(steps)
+                            while True:
+                                # generate_step() has already consumed the
+                                # yielded token into the recurrent cache. Check
+                                # before asking it for another token so a
+                                # manual stop cannot leave an un-taped
+                                # lookahead in that cache.
                                 check_cancel()
+                                try:
+                                    token, _logprobs = next(steps_iter)
+                                except StopIteration:
+                                    self.turn_closed = False
+                                    break
                                 value = int(token)
                                 if value in self.stops:
                                     stop_seen = True
@@ -395,8 +421,6 @@ class K2HorizonBackend(Conversation):
                                     if out is not None:
                                         with timer.emitting():
                                             out(piece)
-                            else:
-                                self.turn_closed = False
                         except BaseException:
                             interrupted = True
                             raise
@@ -421,7 +445,10 @@ class K2HorizonBackend(Conversation):
                     self._rewind_stop_token()
             finally:
                 if interrupted:
-                    self._mark_replay_needed()
+                    if cancelled and self.check_invariant():
+                        self.turn_closed = False
+                    else:
+                        self._mark_replay_needed()
 
         raw_tail = self.tokenizer.decode(partial) if partial else ""
         tail = protocol.feed(raw_tail) + protocol.finish()

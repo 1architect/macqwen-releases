@@ -455,10 +455,19 @@ class FlashNextBackend(Conversation):
         self.tape.extend(self.pending)
         self.pending = []
         self._replay_needed = False
+        cancelled = False
 
         def check_cancel():
+            nonlocal cancelled
             if should_cancel is not None and should_cancel():
+                cancelled = True
                 raise GenerationCancelled
+
+        def preserve_or_replay():
+            if cancelled and self.check_invariant():
+                self.turn_closed = False
+            else:
+                self._mark_replay_needed()
 
         prefill_began = time.perf_counter()
         self.routing.reset()
@@ -492,7 +501,7 @@ class FlashNextBackend(Conversation):
                 decoder.append(ids)
                 self.cache = decoder.target_cache
         except GenerationCancelled:
-            self._mark_replay_needed()
+            preserve_or_replay()
             raise
         finally:
             set_prefill_progress(None)
@@ -559,6 +568,7 @@ class FlashNextBackend(Conversation):
             if decoder is None
             else decoder.generate(max_tokens, self.stops)
         )
+        decode_interrupted = False
         try:
             for index, value in enumerate(tokens):
                 check_cancel()
@@ -604,13 +614,15 @@ class FlashNextBackend(Conversation):
             else:
                 self.turn_closed = False
         except GenerationCancelled:
-            self._mark_replay_needed()
+            decode_interrupted = True
             raise
         finally:
             if decoder is not None:
                 decoder.set_route_observer(None)
                 self.cache = decoder.target_cache
             self.routing.finish_decode()
+            if decode_interrupted:
+                preserve_or_replay()
 
         tail_tokens = len(produced) - tail_index if tail_began is not None else 0
         tail_seconds = timer.since(tail_began) if tail_began is not None else 0.0
