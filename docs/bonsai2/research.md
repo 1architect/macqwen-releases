@@ -881,6 +881,94 @@ disk. Our derived record is
 with the same 6 greedy tokens, token walls, counters, and size note.
 Token 5 carries the capture stop cost and stays diagnostic only.
 
+## 2026-09-20 — One-token GPU census and simplification ranking
+
+We build our one-token GPU census from the MLX side because our 8.3 GB
+`.gputrace` bundle has no Xcode-free decoder. Its `capture` stream
+holds 3,784 opaque ID runs across 135 IDs, but no kernel names, so we
+do not quote dispatch counts from it. Our MLX-side census is exact at
+the lazy-graph level. Our defaults are prepared QMM plus fused FWHT.
+
+Our per-token census counts 401 `quantized_matmul` calls, about 401
+fused FWHT launches, 16 single-row stock attention calls, and about
+900 elementwise launches (norms, adds, SiLU, multiplies, splits,
+reshapes, RoPE, softmax). Total dispatches run about 1,700 per token.
+Encoders run about 40 to 45 per token under the 40-ops buffer cap,
+consistent with our trace screenshot. Unique kernel types run 15 to
+20. Weight traffic runs about 8.2 GB per token against our 90.7 GB/s
+roofline probe, needing about 91 ms of our 106.9 ms wall. Barriers
+separate most dependent dispatches by construction and stay required
+for correctness.
+
+Our top repeated chains are FWHT plus QMM times 401, GDN
+5-projection plus conv plus norm times 48, MLP gate plus up plus
+swiglu plus down times 64, residual plus norm plus projection, and
+attention QKV plus norm plus RoPE plus SDPA plus out times 16.
+
+We rank five simplification candidates. Shared FWHT memo removes up
+to 144 launches with zero math change. GDN conv specialization caps
+at 8.1 ms or 4% with custom-kernel cost. QMM metadata slimming has
+negative expected value because it reverses our +21% prepared win.
+Swiglu, norm, and residual micro-fusion caps near 0.2 ms of traffic.
+Attention-prep fusion caps near 0.5 ms at short context where KV is
+7.2 MB.
+
+We test shared FWHT first at question-only with two reversed rounds.
+Control rates are 9.440 and 8.957 tok/s against shared 9.448 and
+9.479 tok/s. All digests match `cdb7ac707f12`. Paired effect is
++2.96% with a ±5.75 band, so our result is unresolved and we do not
+promote it. Our record is
+[`20260920-share-fwht-question.jsonl`](measurements/20260920-share-fwht-question.jsonl).
+
+We implement nothing further. No candidate shows a resolved positive
+result, and every remaining ceiling sits at or below 4% against
+custom-kernel cost. Our runtime code is unchanged.
+
+## 2026-09-20 — FWHT contradiction, GDN finding, chain split
+
+We resolve our FWHT contradiction from recorded counters. Shared arms
+show 8,738 FWHT attempts against 13,634 on control arms. The
+difference is 4,896 over 34 forwards, or exactly 144 per forward, so
+the memo removes 144 launches per token as designed. QMM stays at
+13,634 on both sides and attention stays at 544 calls. All digests
+match `cdb7ac707f12`. Speed stays flat at +2.96% inside our ±5.75
+band. Launch count is therefore not our bottleneck: 144 launches
+carry about 2.6 ms of kernel work, matching our point estimate but
+sitting below resolution.
+
+We correct our GDN ceiling. The 4% label was stale against a 190 ms
+token. General-path conv costs 0.17 ms per layer, so 48 layers cost
+8.16 ms against our 106.9 ms token, or 7.6%. We find the cause in
+source: decode takes the compiled `_causal_conv1d_decode` branch only
+when conv weights are fp16 or bf16, but our checkpoint stores all 48
+`conv1d.weight` tensors as F32 with shape 10240 by 4 by 1. Every
+decode token therefore runs the general `nn.Conv1d` path. The
+recurrence itself already runs a fused metal kernel, so conv plus its
+silu and state bookkeeping is our largest single fusion target.
+
+We split our 401 chain with batched in-graph probes, 64 calls per
+graph with one eval. FWHT costs 18 us per call in-graph, or 7.2 ms
+per token. Gate-size QMM is memory-bound near 0.21 ms per call in
+production weights, totaling about 88 ms. Elementwise rms plus add
+costs 8.9 us per pair, or about 4 ms across our ~900 launches. Glue
+between FWHT and QMM is zero launches on our prepared FP32 path.
+
+We attribute our ~19 ms gap to FlashNext as Hadamard tax plus
+linear-attention tax: FWHT 7.2 ms, GDN general conv 8.2 ms, and extra
+norm and bookkeeping across 64 layers. FlashNext pays about 16 ms of
+sparse MoE against our dense 401 plus GDN extras. We drop QMM
+metadata slimming per instruction and keep our +21% prepared win.
+
+| Class | Launches/token | GPU ms/token | Share | Bytes/token | Removable ms |
+|---|---|---:|---:|---|---:|
+| QMM | 401 | ~88 | ~79% | ~7.7 GB | 0 without fewer bytes |
+| FWHT fused | ~401 | ~7.2 | ~6% | small | ~2.6 via share memo, n.s. |
+| GDN conv general | 48 | ~8.2 | ~7% | state traffic | up to ~6 with fast path or kernel |
+| Elementwise | ~900 | ~4 | ~4% | ~15 MB | ~1-2 max |
+| Attention | 16 | ~2 | ~2% | 7.2 MB KV | ~0.5 max |
+| Sampler | 1 | ~1 | ~1% | vocab row | 0 |
+| Total | ~1,767 | ~110 | ~100% | ~8.2 GB | GDN only material target |
+
 You read 135.286 ms of GPU span in Xcode for our token 4 to 5
 window. That window holds about 1.2 to 1.3 steady tokens of GPU work
 plus one-ahead lookahead, so it correctly exceeds our 106.9 ms
@@ -889,3 +977,19 @@ steady wall. Your counters confirm our bound: active cores near
 and ALU utilization 46.53% at the cursor. That is a memory-bound
 signature. Necessary traffic near 8.2 GB per token explains the wall,
 and MLX bubbles stay capped at about 15 to 20%.
+
+## 2026-09-20 — GDN conv probe stops the hook
+
+We probe our GDN decode conv with synthetic shapes and no checkpoint
+load. Isolated per-call timing is sync-floor dominated: general
+0.359 ms against fused fp16 0.4 ms and fused F32 0.567 ms per call.
+Those numbers cannot attribute production cost, so we probe 48 calls
+in one graph with one eval. General wins at 1.11 ms per 48 against
+1.46 ms fused F32 and 1.4 ms fused fp16, or 23.0 us against 30.4 and
+29.3 us per call. Our 2 ms gate fails in the wrong direction, so we
+build no hook and run no full-token arms. Numeric distance is
+maxabs 0.0096 for fused F32 and 0.0054 for fp16 cast, so the digest
+gate would likely reject as well. Our 8.16 ms figure measured
+surrounding GDN bookkeeping or sync floors, not the conv kernel,
+which costs about 1.1 ms in-graph. Our record is
+[`20260920-gdn-conv-probe.jsonl`](measurements/20260920-gdn-conv-probe.jsonl).

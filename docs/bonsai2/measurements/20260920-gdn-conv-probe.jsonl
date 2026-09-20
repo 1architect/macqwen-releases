@@ -1,0 +1,5 @@
+{"purpose": "GDN decode-conv ceiling probes, synthetic shapes, no checkpoint load, not production timing", "schema": 1, "status": "started", "type": "run"}
+{"fused_f32_silu_ms": 0.567, "fused_fp16_silu_ms": 0.4, "general_f32_silu_ms": 0.359, "name": "isolated-per-call-sync", "type": "probe", "verdict": "sync-floor-dominated, invalid for attribution"}
+{"fusedF32_ms48": 1.46, "fusedFP16_ms48": 1.4, "general_ms48": 1.11, "name": "ingraph-48-one-eval", "type": "probe", "us_per_call": {"fusedF32": 30.4, "fusedFP16": 29.3, "general": 23.0}, "verdict": "general wins; 2ms gate fails"}
+{"maxabs_general_vs_fp16cast": 0.005354881286621094, "maxabs_general_vs_fusedF32": 0.009581565856933594, "name": "numeric-distance", "type": "probe", "verdict": "digest gate would likely reject; moot after timing gate fails"}
+{"decision": "stop: no hook, no full-token runs, no FP16 promotion", "status": "completed", "type": "summary"}
