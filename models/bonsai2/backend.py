@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import threading
 import time
 
 from macqwen.backends.base import (
@@ -41,6 +42,113 @@ THINK_FIELDS = {
 _SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 SESSION_SCHEMA = 1
 _Q4_ATTENTION_DEFAULT_TEMP_MB = 256.0
+PRODUCTION_ALLOCATOR_CACHE_MB = 256.0
+PRODUCTION_CANCELLABLE_PREFILL_STEP_SIZE = CANCELLABLE_PREFILL_STEP_SIZE
+_QMM_PRESSURE_HEADROOM_BYTES = 512 * 1024 * 1024
+_FUSED_Q4_VALIDATED = set()
+
+
+def _physical_memory_bytes() -> int | None:
+    try:
+        pages = int(os.sysconf("SC_PHYS_PAGES"))
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    total = pages * page_size
+    return total if total > 0 else None
+
+
+def _qmm_metadata_pressure_check(stats: dict) -> bool:
+    """Reject QMM preparation when its measured peak would exhaust RAM headroom."""
+    try:
+        import mlx.core as mx
+
+        active = int(mx.get_active_memory())
+        cached = int(mx.get_cache_memory())
+    except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
+        active = cached = None
+
+    current = (
+        active + cached
+        if active is not None and cached is not None
+        else active if active is not None else cached
+    )
+    source = int(stats.get("current_group_source_bytes", 0) or 0)
+    coexistence = int(
+        stats.get("current_group_temporary_coexistence_bytes", 0) or 0
+    )
+    replacement = int(
+        stats.get("current_group_temporary_allocation_bytes", 0) or 0
+    )
+    temporary_extra = max(replacement, coexistence - source, 0)
+    persistent_growth = int(
+        stats.get("projected_persistent_growth_bytes", 0) or 0
+    )
+    projected_peak = (
+        None
+        if current is None
+        else current + max(temporary_extra, persistent_growth)
+    )
+    limit = _physical_memory_bytes()
+    admission_limit = (
+        None if limit is None else max(0, limit - _QMM_PRESSURE_HEADROOM_BYTES)
+    )
+    stats["pressure"] = {
+        "active_bytes": active,
+        "cache_bytes": cached,
+        "current_bytes": current,
+        "temporary_extra_bytes": temporary_extra,
+        "projected_peak_bytes": projected_peak,
+        "physical_memory_bytes": limit,
+        "admission_limit_bytes": admission_limit,
+    }
+    rejected = (
+        projected_peak is not None
+        and admission_limit is not None
+        and projected_peak > admission_limit
+    )
+    if rejected:
+        stats["pressure_rejection_reason"] = "physical_memory_headroom"
+    return rejected
+
+
+def _new_attention_counters() -> dict[str, object]:
+    counts = {
+        name: {"total": 0, "multi_row": 0, "single_row": 0}
+        for name in (
+            "attention_calls",
+            "fused_attempts",
+            "fused_selected",
+            "fused_fallbacks",
+            "stock_selected",
+            "tiled_selected",
+        )
+    }
+    counts["fallback_reasons"] = {}
+    return counts
+
+
+def _attention_row_bucket(queries) -> str:
+    try:
+        return "multi_row" if int(queries.shape[-2]) > 1 else "single_row"
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return "single_row"
+
+
+def _attention_count(counters, name: str, queries) -> None:
+    if counters is None:
+        return
+    values = counters[name]
+    values["total"] += 1
+    values[_attention_row_bucket(queries)] += 1
+
+
+def _attention_fallback(counters, queries, reason: str) -> None:
+    if counters is None:
+        return
+    _attention_count(counters, "fused_fallbacks", queries)
+    reasons = counters["fallback_reasons"]
+    reasons[reason] = reasons.get(reason, 0) + 1
 
 
 _IDENTITY_FILES = (
@@ -229,46 +337,42 @@ def _bonsai_quantized_attention(
     scale,
     mask,
     budget_bytes: int,
+    counters=None,
 ):
     import mlx.core as mx
 
-    if not hasattr(cache, "bits") or queries.shape[-2] <= 1:
-        return stock_attention(
-            queries, keys, values, cache=cache, scale=scale, mask=mask
-        )
-    if isinstance(mask, str) and mask != "causal":
+    def stock_fallback():
+        _attention_count(counters, "stock_selected", queries)
         return stock_attention(
             queries, keys, values, cache=cache, scale=scale, mask=mask
         )
 
+    if not hasattr(cache, "bits") or queries.shape[-2] <= 1:
+        return stock_fallback()
+    if isinstance(mask, str) and mask != "causal":
+        return stock_fallback()
+
     offset = getattr(cache, "offset", None)
     if hasattr(offset, "ndim") and int(offset.ndim) != 0:
-        return stock_attention(
-            queries, keys, values, cache=cache, scale=scale, mask=mask
-        )
+        return stock_fallback()
     try:
         offset = int(offset.item()) if hasattr(offset, "item") else int(offset)
         key_rows = int(keys[0].shape[-2])
     except (AttributeError, IndexError, TypeError, ValueError):
-        return stock_attention(
-            queries, keys, values, cache=cache, scale=scale, mask=mask
-        )
+        return stock_fallback()
     query_offset = offset - int(queries.shape[-2])
     if query_offset < 0 or key_rows != offset:
-        return stock_attention(
-            queries, keys, values, cache=cache, scale=scale, mask=mask
-        )
+        return stock_fallback()
 
     tile_rows, plan = _q4_attention_tile_plan(
         queries, keys, mask, budget_bytes
     )
     if tile_rows >= queries.shape[-2]:
-        return stock_attention(
-            queries, keys, values, cache=cache, scale=scale, mask=mask
-        )
+        return stock_fallback()
 
     trace = getattr(cache, "_bonsai_attention_trace", None)
     layer = getattr(cache, "_bonsai_attention_layer", None)
+    _attention_count(counters, "tiled_selected", queries)
     outputs = []
     for start in range(0, int(queries.shape[-2]), tile_rows):
         end = min(start + tile_rows, int(queries.shape[-2]))
@@ -303,7 +407,74 @@ def _bonsai_quantized_attention(
     return mx.concatenate(outputs, axis=-2)
 
 
-def _install_q4_attention_tiling(enabled: bool, budget_bytes: int) -> None:
+def _bonsai_fused_q4_attention(
+    queries, keys, values, cache, scale, mask, counters=None
+):
+    """Try fused Q4, eagerly validate once, and fail closed on any exception."""
+    from .q4_attention_kernel import fused_q4_attention, page_ranges
+
+    validation_key = None
+    diagnostics = {}
+    try:
+        output = fused_q4_attention(
+            queries, keys, values, cache, scale, mask, diagnostics=diagnostics
+        )
+        if output is None:
+            _attention_fallback(
+                counters, queries,
+                diagnostics.get("reason", "candidate returned no output"),
+            )
+            return None
+
+        # metal_kernel compilation is deferred until evaluation. Validate one
+        # signature before selecting the lazy candidate so compiler failures
+        # stay inside the fallback policy without synchronizing every call.
+        import mlx.core as mx
+
+        validation_key = (
+            str(queries.dtype), int(queries.shape[-1]),
+            int(keys[0].shape[-1]),
+        )
+        if validation_key not in _FUSED_Q4_VALIDATED:
+            mx.eval(output)
+            _FUSED_Q4_VALIDATED.add(validation_key)
+    except Exception:
+        if validation_key is not None:
+            _FUSED_Q4_VALIDATED.discard(validation_key)
+        # A compiler/device rejection is diagnostic for this opt-in probe;
+        # stock attention remains the safe route in a long-lived chat.
+        _attention_fallback(counters, queries, "compiler_rejection")
+        return None
+
+    _attention_count(counters, "fused_selected", queries)
+
+    trace = getattr(cache, "_bonsai_attention_trace", None)
+    if trace is not None:
+        import mlx.core as mx
+
+        started = time.perf_counter()
+        mx.eval(output)
+        key_rows = int(keys[0].shape[-2])
+        trace.append({
+            "layer": getattr(cache, "_bonsai_attention_layer", None),
+            "bits": int(cache.bits),
+            "group_size": int(cache.group_size),
+            "mode": "fused-q4",
+            "query_rows": int(queries.shape[-2]),
+            "key_rows": key_rows,
+            "page_tokens": 32,
+            "pages": len(page_ranges(key_rows)),
+            "duration_s": time.perf_counter() - started,
+            "memory_before": None,
+            "memory_after": _attention_memory_snapshot(),
+        })
+    return output
+
+
+def _install_q4_attention_tiling(
+    enabled: bool, budget_bytes: int, fused_q4_attention: bool = False,
+    attention_counters=None,
+) -> None:
     """Patch only Bonsai's imported Qwen3.5 attention symbol."""
     import mlx_vlm.models.qwen3_5.language as language
 
@@ -313,13 +484,39 @@ def _install_q4_attention_tiling(enabled: bool, budget_bytes: int) -> None:
         language._bonsai_stock_attention = stock
 
     def dispatch(queries, keys, values, cache, scale, mask, sinks=None):
-        if not enabled or sinks is not None:
+        _attention_count(attention_counters, "attention_calls", queries)
+        if fused_q4_attention:
+            _attention_count(attention_counters, "fused_attempts", queries)
+            if sinks is not None:
+                _attention_fallback(
+                    attention_counters, queries, "attention sinks are unsupported"
+                )
+            else:
+                output = _bonsai_fused_q4_attention(
+                    queries, keys, values, cache, scale, mask,
+                    counters=attention_counters,
+                )
+                if output is not None:
+                    return output
+        if sinks is not None:
+            _attention_count(attention_counters, "stock_selected", queries)
             return stock(
                 queries, keys, values, cache=cache, scale=scale,
                 mask=mask, sinks=sinks
             )
+        if not enabled:
+            _attention_count(attention_counters, "stock_selected", queries)
+            return stock(
+                queries, keys, values, cache=cache, scale=scale,
+                mask=mask, sinks=sinks
+            )
+        if attention_counters is None:
+            return _bonsai_quantized_attention(
+                stock, queries, keys, values, cache, scale, mask, budget_bytes
+            )
         return _bonsai_quantized_attention(
-            stock, queries, keys, values, cache, scale, mask, budget_bytes
+            stock, queries, keys, values, cache, scale, mask, budget_bytes,
+            counters=attention_counters,
         )
 
     language.scaled_dot_product_attention = dispatch
@@ -583,7 +780,10 @@ class _NonConsumingStopModel:
     and structural stop IDs in the prefill path untouched.
     """
 
-    def __init__(self, model, prompt_length: int, prefill_step_size: int, stops):
+    def __init__(
+        self, model, prompt_length: int, prefill_step_size: int, stops,
+        sync_stats: dict | None = None,
+    ):
         self._model = model
         prefill_tokens = max(0, int(prompt_length) - 1)
         self._initial_calls = (
@@ -593,13 +793,22 @@ class _NonConsumingStopModel:
         self._stops = {int(value) for value in stops}
         self._last_logits_shape = None
         self._last_logits_dtype = None
+        self._sync_stats = sync_stats
 
     def __call__(self, inputs, cache=None, **options):
         import mlx.core as mx
 
         self._calls += 1
         if self._calls > self._initial_calls and inputs.shape[-1] == 1:
+            started = time.perf_counter()
             value = int(inputs.reshape(-1)[0].item())
+            if isinstance(self._sync_stats, dict):
+                self._sync_stats["calls"] = int(
+                    self._sync_stats.get("calls", 0)
+                ) + 1
+                self._sync_stats["seconds"] = float(
+                    self._sync_stats.get("seconds", 0.0)
+                ) + time.perf_counter() - started
             if value in self._stops:
                 if self._last_logits_shape is None:
                     raise RuntimeError("stop-aware generation has no logits shape")
@@ -738,6 +947,11 @@ class BonsaiBackend(Conversation):
         retain_stop: bool = False,
         quantized_kv: tuple | list | None = None,
         q4_attention_tiling: bool = True,
+        fused_q4_attention: bool = False,
+        prepared_qmm_metadata: bool = True,
+        q2_prefill_mpp: bool = False,
+        exact_speculative_decode: bool = False,
+        speculative_block_size: int = 4,
         q4_attention_temp_mb: float = _Q4_ATTENTION_DEFAULT_TEMP_MB,
         trace_memory: bool = False,
         session_dir: str = SESSION_DIR,
@@ -752,6 +966,9 @@ class BonsaiBackend(Conversation):
         q4_attention_temp_mb = float(q4_attention_temp_mb)
         if not math.isfinite(q4_attention_temp_mb) or q4_attention_temp_mb <= 0:
             raise ValueError("q4_attention_temp_mb must be a finite positive number")
+        speculative_block_size = int(speculative_block_size)
+        if speculative_block_size not in (2, 4, 8):
+            raise ValueError("speculative_block_size must be 2, 4, or 8")
 
         import mlx_lm
         from mlx_lm.models.cache import make_prompt_cache
@@ -768,7 +985,7 @@ class BonsaiBackend(Conversation):
                 sys.path.insert(0, str(candidate))
         import vision_artifact  # noqa: F401 (proves the bundled runtime loads)
 
-        from .ternary_kernel import apply_runtime_hooks
+        from .ternary_kernel import apply_runtime_hooks, new_fwht_counters
 
         vl_model, _pack_config = _load_text_model(path)
         model = vl_model.language_model
@@ -789,14 +1006,36 @@ class BonsaiBackend(Conversation):
         self._text_model = _TextModelWrapper(model, share=share_fwht)
         self.model_path = str(path)
         self.fused_fwht = bool(fused_fwht)
+        self.fused_fwht_counters = new_fwht_counters()
+        self.fused_fwht_counters["requested"] = self.fused_fwht
         self.share_fwht = bool(share_fwht)
         self.q4_attention_tiling = bool(q4_attention_tiling)
+        self.fused_q4_attention = bool(fused_q4_attention)
+        self.prepared_qmm_metadata = bool(prepared_qmm_metadata)
+        self.q2_prefill_mpp = bool(q2_prefill_mpp)
+        self.exact_speculative_decode = bool(exact_speculative_decode)
+        self.speculative_block_size = speculative_block_size
         self.q4_attention_temp_mb = q4_attention_temp_mb
         self.trace_memory = bool(trace_memory)
         self.attention_events = []
+        self.attention_counters = _new_attention_counters()
+        from .qmm_metadata import install as install_qmm_metadata, new_counters
+        from .q2_kernel import install_q2_prefill_hook, new_q2_counters
+
+        self.qmm_metadata_counters = new_counters()
+        self.qmm_metadata_stats = install_qmm_metadata(
+            model,
+            self.prepared_qmm_metadata,
+            self.qmm_metadata_counters,
+            pressure_check=_qmm_metadata_pressure_check,
+        )
+        self.q2_counters = new_q2_counters()
+        install_q2_prefill_hook(self.q2_prefill_mpp, self.q2_counters)
         _install_q4_attention_tiling(
             self.q4_attention_tiling,
             int(self.q4_attention_temp_mb * 1024 * 1024),
+            self.fused_q4_attention,
+            self.attention_counters,
         )
         self.cache = make_prompt_cache(model)
         if quantized_kv is None:
@@ -830,6 +1069,27 @@ class BonsaiBackend(Conversation):
         self.sampling = Sampling.greedy_settings()
         self._thinking_tag = THINK_TAGS["medium"]
         self._replay_needed = False
+        self._generation_affinity = threading.local()
+        self._generation_affinity.materialized = True
+        self.speculative_stats = {
+            "enabled": self.exact_speculative_decode,
+            "selected": 0,
+            "fallbacks": 0,
+            "fallback_reasons": {},
+            "verification_blocks": 0,
+            "draft_tokens": 0,
+            "accepted_tokens": 0,
+            "target_tokens": 0,
+            "committed_tokens": 0,
+            "accepted_per_block": [],
+            "draft_seconds": 0.0,
+            "verification_seconds": 0.0,
+            "rollback_seconds": 0.0,
+            "commit_seconds": 0.0,
+            "block_size": self.speculative_block_size,
+            "oracle": False,
+            "capability": {"status": "unknown", "reason": "not_attempted"},
+        }
         eos = getattr(tokenizer, "eos_token_ids", None)
         if eos is None:
             eos = getattr(tokenizer, "eos_token_id", ())
@@ -858,16 +1118,69 @@ class BonsaiBackend(Conversation):
                     if hasattr(item, name):
                         delattr(item, name)
 
+    def _reset_attention_counters(self) -> None:
+        self.attention_counters.clear()
+        self.attention_counters.update(_new_attention_counters())
+
+    def _reset_q2_counters(self) -> None:
+        from .q2_kernel import new_q2_counters
+
+        self.q2_counters.clear()
+        self.q2_counters.update(new_q2_counters())
+
+    def _reset_qmm_metadata_counters(self) -> None:
+        from .qmm_metadata import new_counters
+
+        self.qmm_metadata_counters.clear()
+        self.qmm_metadata_counters.update(new_counters())
+
+    def _set_qmm_phase(self, phase: str) -> None:
+        from .qmm_metadata import set_phase
+
+        set_phase(self.qmm_metadata_counters, phase)
+        if isinstance(self.q2_counters, dict):
+            self.q2_counters["q2_current_phase"] = (
+                phase if phase in ("prefill", "decode") else "unknown"
+            )
+
+    def _reset_speculative_stats(self) -> None:
+        self.speculative_stats = {
+            "enabled": self.exact_speculative_decode,
+            "selected": 0,
+            "fallbacks": 0,
+            "fallback_reasons": {},
+            "verification_blocks": 0,
+            "draft_tokens": 0,
+            "accepted_tokens": 0,
+            "target_tokens": 0,
+            "committed_tokens": 0,
+            "accepted_per_block": [],
+            "draft_seconds": 0.0,
+            "verification_seconds": 0.0,
+            "rollback_seconds": 0.0,
+            "commit_seconds": 0.0,
+            "block_size": self.speculative_block_size,
+            "oracle": False,
+            "capability": {"status": "unknown", "reason": "not_attempted"},
+        }
+
     def runtime_settings(self) -> dict[str, object]:
         return {
             "prefill_step_size": self.prefill_step_size,
             "allocator_cache_mb": self.allocator_cache_mb,
             "fused_fwht": self.fused_fwht,
+            "fused_fwht_execution": dict(self.fused_fwht_counters),
             "share_fwht": self.share_fwht,
             "quantized_kv": (
                 list(self.quantized_kv) if self.quantized_kv is not None else None
             ),
             "q4_attention_tiling": self.q4_attention_tiling,
+            "fused_q4_attention": self.fused_q4_attention,
+            "prepared_qmm_metadata": self.prepared_qmm_metadata,
+            "qmm_metadata": dict(self.qmm_metadata_stats),
+            "q2_prefill_mpp": self.q2_prefill_mpp,
+            "exact_speculative_decode": self.exact_speculative_decode,
+            "speculative_block_size": self.speculative_block_size,
             "q4_attention_temp_mb": self.q4_attention_temp_mb,
             "trace_memory": self.trace_memory,
         }
@@ -927,6 +1240,372 @@ class BonsaiBackend(Conversation):
         self._replay_needed = bool(self.tape)
         self.turn_closed = False
 
+    def _ensure_generation_thread(self) -> None:
+        """Rebuild the cache when generation moves to a new thread.
+
+        MLX binds materialized cache state to the generating thread's
+        stream. The chat loop runs each turn on a fresh worker thread,
+        so a live cache from a previous turn cannot be evaluated here.
+        Replay the tape instead, which rebuilds the cache in this
+        thread. Same-thread generation keeps reusing the live cache.
+
+        Affinity uses thread-local storage, not thread idents: the OS
+        can recycle an ident for a new thread, but a new thread never
+        inherits another thread's local storage.
+        """
+        if getattr(self._generation_affinity, "materialized", False):
+            return
+        self._generation_affinity.materialized = True
+        if self.tape and not self._replay_needed:
+            self._mark_replay_needed()
+
+    def _speculative_fallback(self, reason: str) -> None:
+        stats = self.speculative_stats
+        stats["fallbacks"] += 1
+        reasons = stats["fallback_reasons"]
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    def _speculative_capability(self) -> dict[str, str]:
+        """Read an explicit verifier declaration; callable names are not proof."""
+        declarations = getattr(self._text_model, "speculative_capabilities", None)
+        if not isinstance(declarations, dict):
+            return {
+                "status": "unknown",
+                "reason": "verifier_capability_not_declared",
+            }
+        value = declarations.get("bonsai_packed_projections")
+        if value in (True, "exact", "supported"):
+            return {"status": "supported", "reason": "explicit_exact_capability"}
+        if value in (False, "unsupported", "ordinary-only"):
+            return {"status": "unsupported", "reason": "packed_projections_not_supported"}
+        return {"status": "unknown", "reason": "packed_projection_capability_unknown"}
+
+    def _generate_exact_speculative(
+        self,
+        max_tokens: int,
+        oracle_tokens,
+        *,
+        out=None,
+        on_prefilled=None,
+        on_prefill_progress=None,
+        on_decode_token=None,
+        should_cancel=None,
+        resource_check=None,
+    ):
+        """Run the greedy perfect-draft ceiling, or return ``None``.
+
+        This is an intentionally narrow verifier: the caller supplies a
+        previously recorded target transcript, so it measures target
+        verification, recurrent/KV rollback, synchronization, and commit
+        costs without pretending that an oracle is an achieved draft model.
+        Unsupported chat modes remain on the ordinary generation path.
+        """
+        if not isinstance(max_tokens, int) or max_tokens <= 0:
+            self._speculative_fallback("unsupported_horizon")
+            return None
+        import mlx.core as mx
+        from mlx_lm.generate import generation_stream, wired_limit
+
+        if not isinstance(oracle_tokens, (list, tuple)):
+            self._speculative_fallback("missing_oracle")
+            return None
+        try:
+            oracle = [int(value) for value in oracle_tokens]
+        except (TypeError, ValueError):
+            self._speculative_fallback("invalid_oracle")
+            return None
+        if len(oracle) < max_tokens:
+            self._speculative_fallback("short_oracle")
+            return None
+        if not self.sampling.greedy:
+            self._speculative_fallback("non_greedy_sampling")
+            return None
+        if self.thinking_enabled or self._interactive_budgets is not None:
+            self._speculative_fallback("reasoning_or_budget_mode")
+            return None
+        capability = self._speculative_capability()
+        self.speculative_stats["capability"] = capability
+        if capability["status"] != "supported":
+            self._speculative_fallback(
+                "verifier_packed_projection_" + capability["status"]
+            )
+            return None
+        if any(
+            not callable(getattr(self._text_model, name, None))
+            for name in (
+                "speculative_verify_hidden",
+                "speculative_argmax_from_hidden",
+                "rollback_speculative_cache",
+            )
+        ):
+            self._speculative_fallback("verifier_api_unavailable")
+            return None
+        if not self.cache:
+            self._speculative_fallback("empty_target_cache")
+            return None
+
+        # Do not mutate the tape or cache until every selection check above
+        # has passed. A failed candidate can then enter the stock path with
+        # the original conversation state intact.
+        prompt = (
+            list(self.tape) + self.pending
+            if self._replay_needed
+            else list(self.pending)
+        )
+        if not prompt:
+            self._speculative_fallback("empty_prompt")
+            return None
+
+        stats = self.speculative_stats
+        stats["oracle"] = True
+        prompt_tokens = len(prompt)
+        self.tape.extend(self.pending)
+        self.pending = []
+        self._replay_needed = False
+        sampler = Sampler(self.sampling)
+        prefill_started = time.perf_counter()
+        prefill_seconds = 0.0
+        timer = None
+        prefilled = False
+        cancelled = False
+        produced: list[int] = []
+        pieces: list[str] = []
+        partial: list[int] = []
+        protocol = ProtocolTranslator()
+        finish = "length"
+        stop_seen = False
+        last_token_cached = False
+
+        def check_cancel():
+            nonlocal cancelled
+            if resource_check is not None:
+                resource_check()
+            if should_cancel is not None and should_cancel():
+                cancelled = True
+                raise GenerationCancelled
+
+        def progress(done, total):
+            nonlocal prefill_seconds, timer, prefilled
+            check_cancel()
+            self._set_qmm_phase("prefill")
+            if on_prefill_progress is not None:
+                on_prefill_progress(done, total)
+            if done >= total and not prefilled:
+                prefilled = True
+                prefill_seconds = time.perf_counter() - prefill_started
+                timer = DecodeTimer()
+                self._set_qmm_phase("decode")
+                if on_prefilled is not None:
+                    on_prefilled()
+
+        def emit(value: int, cached: bool) -> bool:
+            nonlocal finish, stop_seen, last_token_cached
+            check_cancel()
+            value = int(value)
+            if value in self.stops:
+                stop_seen = True
+                finish = "stop"
+                self.turn_closed = False
+                return False
+            self.tape.append(value)
+            produced.append(value)
+            sampler.observe(value)
+            raw = stream_decode(self.tokenizer, partial, value)
+            piece = protocol.feed(raw) if raw else ""
+            last_token_cached = bool(cached)
+            if on_decode_token is not None:
+                on_decode_token(value, piece)
+            if piece:
+                pieces.append(piece)
+                if out is not None:
+                    with timer.emitting():
+                        out(piece)
+            return True
+
+        cache_limit = _cache_limit(mx, self.allocator_cache_mb)
+        try:
+            with cache_limit:
+                residency = (
+                    wired_limit(self.model, [generation_stream])
+                    if self.wired_limit_enabled
+                    else nullcontext()
+                )
+                with residency:
+                    check_cancel()
+                    progress(0, prompt_tokens)
+                    offset = 0
+                    while prompt_tokens - offset > 1:
+                        count = min(
+                            min(
+                                self.prefill_step_size,
+                                CANCELLABLE_PREFILL_STEP_SIZE,
+                            ) if should_cancel is not None else self.prefill_step_size,
+                            prompt_tokens - offset - 1,
+                        )
+                        self._text_model(
+                            mx.array(prompt[offset : offset + count])[None],
+                            cache=self.cache,
+                        )
+                        mx.eval([item.state for item in self.cache])
+                        offset += count
+                        progress(offset, prompt_tokens)
+                        mx.clear_cache()
+
+                    logits = self._text_model(
+                        mx.array(prompt[offset:])[None], cache=self.cache
+                    )
+                    first = sampler(logits[:, -1, :])
+                    mx.eval(first)
+                    progress(prompt_tokens, prompt_tokens)
+
+                    if max_tokens > 0 and not emit(int(first.item()), False):
+                        produced.clear()
+                    while (
+                        not stop_seen
+                        and len(produced) < max_tokens
+                    ):
+                        check_cancel()
+                        remaining = max_tokens - len(produced)
+                        start = len(produced)
+                        draft_count = min(
+                            self.speculative_block_size,
+                            remaining,
+                            len(oracle) - start,
+                        )
+                        if draft_count <= 0:
+                            raise RuntimeError("oracle transcript ended before the horizon")
+                        draft_row = oracle[start : start + draft_count]
+                        draft_tokens = mx.array(
+                            [draft_row], dtype=mx.uint32
+                        )
+                        anchor = produced[-1]
+                        verify_input = mx.concatenate(
+                            [mx.array([[anchor]], dtype=mx.uint32), draft_tokens],
+                            axis=1,
+                        )
+                        verify_started = time.perf_counter()
+                        with mx.stream(generation_stream):
+                            from mlx_vlm.speculative.mtp import _mtp_verify_target
+
+                            verify = _mtp_verify_target(
+                                self._text_model,
+                                verify_input,
+                                self.cache,
+                                sampler,
+                                sample_target_tokens=True,
+                            )
+                        if verify.target_tokens is None:
+                            raise RuntimeError("target verifier returned no greedy tokens")
+                        # Verification is a deliberate block boundary. It is
+                        # part of the measured candidate cost, not tracing.
+                        mx.eval(verify.target_tokens, verify.hidden)
+                        verify_elapsed = time.perf_counter() - verify_started
+                        stats["verification_seconds"] += verify_elapsed
+                        stats["verification_blocks"] += 1
+                        stats["draft_tokens"] += draft_count
+                        stats["target_tokens"] += draft_count + 1
+                        stats["selected"] += 1
+
+                        target_row = [
+                            int(value)
+                            for value in verify.target_tokens.reshape(-1).tolist()
+                        ]
+                        accepted = draft_count
+                        for index, (draft, target) in enumerate(
+                            zip(draft_row, target_row)
+                        ):
+                            if draft != target:
+                                accepted = index
+                                break
+
+                        output_row = (
+                            draft_row[:accepted]
+                            + target_row[accepted : accepted + 1]
+                        )[:remaining]
+                        cache_accepted = accepted
+                        emitted = 0
+                        for index, token in enumerate(output_row):
+                            if token in self.stops:
+                                cache_accepted = (
+                                    index if index < accepted else accepted
+                                )
+                                stop_seen = True
+                                finish = "stop"
+                                self.turn_closed = False
+                                break
+                            emit(token, index < accepted)
+                            emitted += 1
+                            if len(produced) >= max_tokens:
+                                break
+
+                        stats["accepted_tokens"] += cache_accepted
+                        stats["accepted_per_block"].append(cache_accepted)
+                        if cache_accepted < draft_count:
+                            rollback_started = time.perf_counter()
+                            with mx.stream(generation_stream):
+                                self._text_model.rollback_speculative_cache(
+                                    self.cache,
+                                    verify.gdn_states,
+                                    cache_accepted,
+                                    draft_count + 1,
+                                )
+                            mx.eval([item.state for item in self.cache])
+                            stats["rollback_seconds"] += (
+                                time.perf_counter() - rollback_started
+                            )
+
+                        if stop_seen or len(produced) >= max_tokens:
+                            break
+                        # A non-terminal block always ends with the bonus or
+                        # correction, which is not present in the rolled-back
+                        # target cache. It is the next round's anchor.
+                        if not produced:
+                            raise RuntimeError("speculative verifier emitted no token")
+                        last_token_cached = len(output_row) - 1 < accepted
+                        if len(produced) % 256 == 0:
+                            mx.clear_cache()
+
+                    if not stop_seen and produced and not last_token_cached:
+                        commit_started = time.perf_counter()
+                        self._text_model(
+                            mx.array([[produced[-1]]], dtype=mx.uint32),
+                            cache=self.cache,
+                        )
+                        mx.eval([item.state for item in self.cache])
+                        stats["commit_seconds"] += time.perf_counter() - commit_started
+                        stats["committed_tokens"] += 1
+                        last_token_cached = True
+                    self.turn_closed = False
+        except BaseException:
+            try:
+                mx.synchronize(generation_stream)
+            finally:
+                if cancelled and self.check_invariant():
+                    self.turn_closed = False
+                else:
+                    self._mark_replay_needed()
+            raise
+        finally:
+            if self.clear_cache_after_generate:
+                mx.clear_cache()
+
+        raw_tail = self.tokenizer.decode(partial) if partial else ""
+        tail = protocol.feed(raw_tail) + protocol.finish()
+        if tail:
+            pieces.append(tail)
+            if out is not None:
+                with timer.emitting():
+                    out(tail)
+        if not prefilled:
+            progress(prompt_tokens, prompt_tokens)
+        return "".join(pieces), Stats(
+            finish=finish,
+            tokens=len(produced),
+            seconds=timer.elapsed(),
+            prompt_tokens=prompt_tokens,
+            prefill_seconds=prefill_seconds,
+        )
+
     def generate(
         self,
         max_tokens: int,
@@ -935,9 +1614,36 @@ class BonsaiBackend(Conversation):
         on_prefill_progress=None,
         on_decode_token=None,
         should_cancel=None,
+        resource_check=None,
+        speculative_draft=None,
     ) -> tuple[str, Stats]:
+        self._ensure_generation_thread()
+        self._reset_attention_counters()
+        from .ternary_kernel import new_fwht_counters, set_fwht_counters
+
+        self.fused_fwht_counters = new_fwht_counters()
+        self.fused_fwht_counters["requested"] = self.fused_fwht
+        set_fwht_counters(self.fused_fwht_counters)
+        self._reset_qmm_metadata_counters()
+        self._reset_q2_counters()
+        self._reset_speculative_stats()
+        self.stop_token_sync_stats = {"calls": 0, "seconds": 0.0}
         if not self.pending:
             return "", Stats()
+
+        if self.exact_speculative_decode and speculative_draft is not None:
+            speculative_result = self._generate_exact_speculative(
+                max_tokens,
+                speculative_draft,
+                out=out,
+                on_prefilled=on_prefilled,
+                on_prefill_progress=on_prefill_progress,
+                on_decode_token=on_decode_token,
+                should_cancel=should_cancel,
+                resource_check=resource_check,
+            )
+            if speculative_result is not None:
+                return speculative_result
 
         import mlx.core as mx
         from mlx_lm.generate import generate_step, generation_stream, wired_limit
@@ -991,6 +1697,8 @@ class BonsaiBackend(Conversation):
 
         def check_cancel():
             nonlocal cancelled
+            if resource_check is not None:
+                resource_check()
             if should_cancel is not None and should_cancel():
                 cancelled = True
                 raise GenerationCancelled
@@ -998,12 +1706,14 @@ class BonsaiBackend(Conversation):
         def progress(done, total):
             nonlocal prefill_seconds, timer, prefilled
             check_cancel()
+            self._set_qmm_phase("prefill")
             if on_prefill_progress is not None:
                 on_prefill_progress(done, total)
             if done >= total and not prefilled:
                 prefilled = True
                 prefill_seconds = time.perf_counter() - prefill_began
                 timer = DecodeTimer()
+                self._set_qmm_phase("decode")
                 if on_prefilled is not None:
                     on_prefilled()
 
@@ -1013,8 +1723,10 @@ class BonsaiBackend(Conversation):
             else self.prefill_step_size
         )
         steps = None
+        self._set_qmm_phase("prefill")
         text_model = _NonConsumingStopModel(
-            self._text_model, prompt_tokens, prefill_step_size, self.stops
+            self._text_model, prompt_tokens, prefill_step_size, self.stops,
+            sync_stats=self.stop_token_sync_stats,
         )
         try:
             check_cancel()
@@ -1411,6 +2123,11 @@ class BonsaiBackend(Conversation):
                 f"  fused-fwht          {'on' if self.fused_fwht else 'off'}\n"
                 f"  kv-cache            {kv_description()}\n"
                 f"  q4-attention       {'tiled' if self.q4_attention_tiling else 'stock'}\n"
+                f"  fused-q4-attention {'on' if self.fused_q4_attention else 'off'}\n"
+                f"  prepared-qmm        {'on' if self.prepared_qmm_metadata else 'off'}\n"
+                f"  q2-prefill-mpp     {'on' if self.q2_prefill_mpp else 'off'}\n"
+                f"  exact-speculative  {'on' if self.exact_speculative_decode else 'off'}\n"
+                f"  speculative-block  {self.speculative_block_size}\n"
                 f"  q4-attention-mb    {self.q4_attention_temp_mb:g}\n"
                 f"  clear-cache-after   {'on' if self.clear_cache_after_generate else 'off'}\n"
                 f"  wired-limit         {'on' if self.wired_limit_enabled else 'off'}"

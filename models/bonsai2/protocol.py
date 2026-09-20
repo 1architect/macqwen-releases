@@ -84,6 +84,12 @@ def _find_block_end(buffered: str) -> int:
     while position >= 0:
         if _candidate_closes(buffered[:position]):
             return position
+        # A block with no function syntax is malformed.  Its first outer
+        # delimiter is still a boundary; discard only that block and let the
+        # caller resume ordinary text after it.
+        prefix = buffered[:position]
+        if "<function=" not in prefix and SHORT_FUNCTION_OPEN.match(prefix) is None:
+            return position
         position = buffered.find(TOOL_END, position + len(TOOL_END))
     return -1
 
@@ -119,7 +125,7 @@ def _render_calls(block: str) -> str:
     """
     if not _has_function(block):
         return ""
-    return _escape_embedded(block) + TOOL_END
+    return TOOL_START + _escape_embedded(block) + TOOL_END
 
 
 class ProtocolTranslator:
@@ -153,7 +159,6 @@ class ProtocolTranslator:
                 self.pending = self.pending[index + len(marker):]
                 replacement = MARKERS[marker]
                 if replacement is None:
-                    output.append("<tool_call>")
                     self.in_tool = True
                 else:
                     output.append(replacement)
@@ -167,8 +172,8 @@ class ProtocolTranslator:
 
     @staticmethod
     def _close_tool(inner: str) -> str:
-        # The opening tag was already emitted; append the validated inner
-        # markup plus the close, or nothing when the block holds no call.
+        # Hold the complete block until validation so malformed syntax cannot
+        # leave an orphan opening tag in the visible transcript.
         return _render_calls(inner)
 
     def finish(self) -> str:

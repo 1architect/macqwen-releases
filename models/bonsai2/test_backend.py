@@ -90,6 +90,7 @@ class BackendTests(unittest.TestCase):
         for item in patches:
             item.start()
             self.addCleanup(item.stop)
+        options.setdefault("prepared_qmm_metadata", False)
         return BonsaiBackend("b2", **options), tokenizer
 
     def test_template_keeps_xhigh_native_for_bonsai(self):
@@ -265,6 +266,156 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(calls[-1]["mask"].tolist()[0], [True] * 10)
         self.assertEqual(Cache.offset, 10)
 
+    def test_fused_rejection_preserves_enabled_memory_tiling(self):
+        import mlx_vlm.models.qwen3_5.language as language
+
+        from models.bonsai2 import backend as backend_module
+
+        marker = object()
+        old_stock_marker = getattr(language, "_bonsai_stock_attention", marker)
+        old_dispatch = language.scaled_dot_product_attention
+
+        def stock(*args, **kwargs):
+            return "stock"
+
+        try:
+            language._bonsai_stock_attention = stock
+            language.scaled_dot_product_attention = stock
+            with patch.object(
+                backend_module, "_bonsai_fused_q4_attention", return_value=None
+            ), patch.object(
+                backend_module, "_bonsai_quantized_attention", return_value="tiled"
+            ) as tiled:
+                backend_module._install_q4_attention_tiling(
+                    True, 123, fused_q4_attention=True
+                )
+                result = language.scaled_dot_product_attention(
+                    "queries", "keys", "values", "cache", 1.0, "causal"
+                )
+            self.assertEqual(result, "tiled")
+            tiled.assert_called_once_with(
+                stock, "queries", "keys", "values", "cache", 1.0,
+                "causal", 123,
+            )
+        finally:
+            language.scaled_dot_product_attention = old_dispatch
+            if old_stock_marker is marker:
+                delattr(language, "_bonsai_stock_attention")
+            else:
+                language._bonsai_stock_attention = old_stock_marker
+
+    def test_deferred_fused_compiler_failure_falls_back(self):
+        from types import SimpleNamespace
+
+        import mlx.core as mx
+
+        from models.bonsai2 import backend as backend_module
+
+        queries = mx.zeros((1, 24, 1, 256), dtype=mx.float32)
+        packed = mx.zeros((1, 4, 1, 32), dtype=mx.uint32)
+        metadata = mx.zeros((1, 4, 1, 4), dtype=mx.float16)
+        cache = SimpleNamespace(bits=4, group_size=64, offset=1)
+        counters = backend_module._new_attention_counters()
+        backend_module._FUSED_Q4_VALIDATED.clear()
+        self.addCleanup(backend_module._FUSED_Q4_VALIDATED.clear)
+        with patch(
+            "models.bonsai2.q4_attention_kernel.fused_q4_attention",
+            return_value=mx.zeros(queries.shape, dtype=queries.dtype),
+        ), patch("mlx.core.eval", side_effect=Exception("deferred compile")):
+            result = backend_module._bonsai_fused_q4_attention(
+                queries, (packed, metadata, metadata),
+                (packed, metadata, metadata), cache, 1.0, "causal",
+                counters=counters,
+            )
+        self.assertIsNone(result)
+        self.assertEqual(counters["fallback_reasons"], {"compiler_rejection": 1})
+
+    def test_fused_attention_counters_record_selection_and_isolate_runs(self):
+        from types import SimpleNamespace
+
+        import mlx.core as mx
+
+        from models.bonsai2 import backend as backend_module
+
+        queries = mx.zeros((1, 24, 1, 256), dtype=mx.float32)
+        packed = mx.zeros((1, 4, 1, 32), dtype=mx.uint32)
+        metadata = mx.zeros((1, 4, 1, 4), dtype=mx.float16)
+        cache = SimpleNamespace(bits=4, group_size=64, offset=1)
+        first = backend_module._new_attention_counters()
+        second = backend_module._new_attention_counters()
+        backend_module._FUSED_Q4_VALIDATED.clear()
+        self.addCleanup(backend_module._FUSED_Q4_VALIDATED.clear)
+        with patch(
+            "models.bonsai2.q4_attention_kernel.fused_q4_attention",
+            return_value=mx.zeros(queries.shape, dtype=queries.dtype),
+        ), patch("mlx.core.eval"):
+            result = backend_module._bonsai_fused_q4_attention(
+                queries, (packed, metadata, metadata),
+                (packed, metadata, metadata), cache, 1.0, "causal",
+                counters=first,
+            )
+        self.assertEqual(result.dtype, mx.float32)
+        self.assertEqual(first["fused_selected"]["total"], 1)
+        self.assertEqual(first["fused_fallbacks"]["total"], 0)
+        self.assertEqual(second["fused_selected"]["total"], 0)
+
+    def test_fused_attention_counters_record_unsupported_fallback_reason(self):
+        from types import SimpleNamespace
+
+        import mlx.core as mx
+
+        from models.bonsai2 import backend as backend_module
+
+        queries = mx.zeros((1, 24, 1, 256), dtype=mx.float32)
+        packed = mx.zeros((1, 4, 1, 32), dtype=mx.uint32)
+        metadata = mx.zeros((1, 4, 1, 4), dtype=mx.float16)
+        cache = SimpleNamespace(bits=8, group_size=64, offset=1)
+        counters = backend_module._new_attention_counters()
+        result = backend_module._bonsai_fused_q4_attention(
+            queries, (packed, metadata, metadata),
+            (packed, metadata, metadata), cache, 1.0, "causal",
+            counters=counters,
+        )
+        self.assertIsNone(result)
+        self.assertEqual(counters["fused_fallbacks"]["total"], 1)
+        self.assertEqual(
+            counters["fallback_reasons"], {"cache is not affine Q4": 1}
+        )
+
+    def test_fused_attention_counters_record_compiler_rejection(self):
+        from types import SimpleNamespace
+
+        import mlx.core as mx
+
+        from models.bonsai2 import backend as backend_module
+
+        queries = mx.zeros((1, 24, 1, 256), dtype=mx.float32)
+        packed = mx.zeros((1, 4, 1, 32), dtype=mx.uint32)
+        metadata = mx.zeros((1, 4, 1, 4), dtype=mx.float16)
+        cache = SimpleNamespace(bits=4, group_size=64, offset=1)
+        counters = backend_module._new_attention_counters()
+        with patch(
+            "models.bonsai2.q4_attention_kernel.fused_q4_attention",
+            side_effect=RuntimeError("invalid metal compiler input"),
+        ):
+            result = backend_module._bonsai_fused_q4_attention(
+                queries, (packed, metadata, metadata),
+                (packed, metadata, metadata), cache, 1.0, "causal",
+                counters=counters,
+            )
+        self.assertIsNone(result)
+        self.assertEqual(
+            counters["fallback_reasons"], {"compiler_rejection": 1}
+        )
+
+    def test_attention_counters_reset_per_generation(self):
+        first, _tokenizer = self.backend()
+        second, _tokenizer = self.backend()
+        first.attention_counters["fused_selected"]["total"] = 7
+        first._reset_attention_counters()
+        self.assertEqual(first.attention_counters["fused_selected"]["total"], 0)
+        self.assertEqual(second.attention_counters["fused_selected"]["total"], 0)
+
     def test_eos_stop_reuses_the_live_cache(self):
         backend, _tokenizer = self.backend()
         backend.pending = [10, 11]
@@ -356,6 +507,71 @@ class BackendTests(unittest.TestCase):
         self.assertFalse(backend._replay_needed)
         self.assertTrue(backend.check_invariant())
 
+    def test_generation_on_a_new_thread_replays_instead_of_reusing_cache(self):
+        # MLX binds materialized cache state to the generating thread's
+        # stream. The chat loop runs each turn on a fresh worker thread,
+        # so a live cache from a previous turn is rebuilt here instead
+        # of evaluated on the wrong thread. Same-thread generation keeps
+        # reusing the live cache.
+        import threading
+
+        backend, _tokenizer = self.backend()
+        backend.cache = [KVCache()]
+        backend.cache[0].offset = 0
+
+        def generate_step(prompt, _model, **options):
+            backend.cache[0].offset += len(prompt)
+            options["prompt_progress_callback"](len(prompt), len(prompt))
+            backend.cache[0].offset += 1
+            yield 65, None
+
+        def on_fresh_thread(function):
+            result, error = [], []
+
+            def worker():
+                try:
+                    result.append(function())
+                except BaseException as exc:
+                    error.append(exc)
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join()
+            if error:
+                raise error[0]
+            return result[0]
+
+        with patch(
+            "mlx_lm.models.cache.make_prompt_cache",
+            side_effect=lambda *args: [KVCache()],
+        ) as make_cache:
+            with patch("mlx_lm.generate.generate_step", generate_step):
+                backend.pending = [10]
+                _text, stats = on_fresh_thread(lambda: backend.generate(2))
+                self.assertEqual(stats.tokens, 1)
+                self.assertEqual(make_cache.call_count, 0)
+                cache_a = backend.cache
+
+                def turns_b_and_c():
+                    backend.pending = [12]
+                    first = backend.generate(2)
+                    rebuilt = backend.cache
+                    backend.pending = [13]
+                    second = backend.generate(2)
+                    return first, second, rebuilt
+
+                (text_b, stats_b), (text_c, stats_c), cache_b = on_fresh_thread(
+                    turns_b_and_c
+                )
+
+        self.assertEqual(stats_b.tokens, 1)
+        self.assertEqual(stats_c.tokens, 1)
+        self.assertEqual(make_cache.call_count, 1)
+        self.assertIsNot(cache_b, cache_a)
+        self.assertIs(backend.cache, cache_b)
+        self.assertEqual(backend.tape, [10, 65, 12, 65, 13, 65])
+        self.assertTrue(backend.check_invariant())
+
     def test_synchronous_generation_setup_failure_replays_tape(self):
         backend, _tokenizer = self.backend()
         backend.pending = [10]
@@ -428,13 +644,17 @@ class BackendTests(unittest.TestCase):
         for item in patches:
             item.start()
             self.addCleanup(item.stop)
-        backend = BonsaiBackend("b2", quantized_kv=(8, 64))
+        backend = BonsaiBackend(
+            "b2", quantized_kv=(8, 64), prepared_qmm_metadata=False
+        )
         self.assertEqual(
             [type(item).__name__ for item in backend.cache],
             ["QuantizedKVCache"],
         )
         with self.assertRaisesRegex(ValueError, "quantized_kv"):
-            BonsaiBackend("b2", quantized_kv=(2, 64))
+            BonsaiBackend(
+                "b2", quantized_kv=(2, 64), prepared_qmm_metadata=False
+            )
 
     def test_text_loader_rejects_foreign_schema(self):
         import json
@@ -1012,6 +1232,14 @@ class BackendTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "expects 4, 8"):
             backend.configure("kv-cache nonsense")
+
+    def test_fused_q4_attention_is_opt_in_and_recorded(self):
+        stock, _tokenizer = self.backend()
+        self.assertFalse(stock.fused_q4_attention)
+        backend, _tokenizer = self.backend(fused_q4_attention=True)
+        self.assertTrue(backend.fused_q4_attention)
+        self.assertTrue(backend.runtime_settings()["fused_q4_attention"])
+        self.assertIn("fused-q4-attention on", backend.configure("all"))
 
     def test_rotating_cache_is_rejected_on_reset(self):
         backend, _tokenizer = self.backend()

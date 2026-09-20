@@ -44,11 +44,14 @@ class FusedFwhtTests(unittest.TestCase):
                 width = shape[-1]
                 with self.subTest(shape=shape):
                     generator = np.random.default_rng(int(np.prod(shape)))
-                    row = generator.normal(size=shape).astype(np.float32)
+                    # Both arms must consume the same fp16-rounded input
+                    # bytes; the production packed path does not receive the
+                    # original unrounded fp32 sample.
+                    row = generator.normal(size=shape).astype(np.float16)
                     signs = np.where(
                         generator.integers(0, 2, size=width), 1.0, -1.0
                     ).astype(np.float32)
-                    flat = (row.reshape(-1, width) * signs).reshape(-1)
+                    flat = (row.astype(np.float32).reshape(-1, width) * signs).reshape(-1)
                     expected = np.stack([
                         natural_fwht_blocked(block_row)
                         for block_row in flat.reshape(-1, width)
@@ -61,13 +64,8 @@ class FusedFwhtTests(unittest.TestCase):
                     )
                     mx.eval(got)
                     actual = np.asarray(got).astype(np.float32)
-                    # Bit-exactness against the stock path was verified live;
-                    # this checkpoint-free gate allows two fp16 ulps of
-                    # boundary rounding. The model-level greedy digest is the
-                    # real bar.
-                    self.assertTrue(
-                        bool((actual == expected.astype(np.float32)).all())
-                        or float(np.abs(actual - expected.astype(np.float32)).max()) <= 0.125
+                    np.testing.assert_array_max_ulp(
+                        actual, expected.astype(np.float32), maxulp=2
                     )
 
     def test_oversized_block_and_foreign_dtype_fall_back_to_stock(self):
@@ -85,12 +83,40 @@ class FusedFwhtTests(unittest.TestCase):
                 wide = mx.zeros((1, 4096), dtype=mx.float16)
                 signs = mx.zeros((1, 4096), dtype=mx.float32)
                 fused_fwht(wide, signs, 2048)
-                fp32 = mx.zeros((1, 2048), dtype=mx.float32)
-                fused_fwht(fp32, signs, 1024)
+                bfloat16 = mx.zeros((1, 2048), dtype=mx.bfloat16)
+                fused_fwht(bfloat16, signs, 1024)
         finally:
             module._STOCK_FWHT = None
-        # Both fell back instead of compiling an impossible dispatch.
+        # Both fell back instead of compiling an unsupported dispatch.
         self.assertEqual(seen, [2048, 1024])
+
+    def test_fp32_kernel_preserves_type_and_matches_reference(self):
+        with patch.dict(os.environ, {"BONSAI2_FUSED_FWHT": "1"}):
+            generator = np.random.default_rng(20260920)
+            shape = (2, 2048)
+            row = generator.normal(size=shape).astype(np.float32)
+            signs = np.where(
+                generator.integers(0, 2, size=shape[-1]), 1.0, -1.0
+            ).astype(np.float32)
+            expected = np.stack([
+                natural_fwht_blocked(values, 1024)
+                for values in (row * signs).reshape(-1, shape[-1])
+            ]).reshape(shape)
+            counters = ternary_kernel.new_fwht_counters()
+            counters["requested"] = True
+            ternary_kernel.set_fwht_counters(counters)
+            try:
+                got = fused_fwht(mx.array(row), mx.array(signs), 1024)
+                mx.eval(got)
+            finally:
+                ternary_kernel.set_fwht_counters(None)
+            self.assertEqual(str(got.dtype), "mlx.core.float32")
+            np.testing.assert_allclose(
+                np.asarray(got), expected, rtol=2e-5, atol=2e-5
+            )
+            self.assertEqual(counters["selected"], 1)
+            self.assertEqual(counters["fallbacks"], 0)
+            self.assertEqual(counters["input_dtypes"].get("float32"), 1)
 
     def test_hook_redirects_forward_transform_and_keeps_inverse_stock(self):
         import tempfile
@@ -342,7 +368,10 @@ class HookCompositionTests(unittest.TestCase):
                             if share:
                                 arm_memo()
                                 try:
-                                    x = mx.zeros((1, 2048))
+                                    # Keep this composition test on the
+                                    # unsupported path; the real fp32 kernel
+                                    # is covered by the numerical test above.
+                                    x = mx.zeros((1, 2048), dtype=mx.bfloat16)
                                     s = mx.zeros((2048,))
                                     first = fake.fwht(x, 1024, s)
                                     second = fake.fwht(x, 1024, s)
@@ -392,7 +421,7 @@ class HookCompositionTests(unittest.TestCase):
                     self.assertFalse(hasattr(fake, "_bonsai2_shared"))
                     arm_memo()
                     try:
-                        x = mx.zeros((1, 2048))
+                        x = mx.zeros((1, 2048), dtype=mx.bfloat16)
                         s = mx.zeros((2048,))
                         fake.fwht(x, 1024, s)
                         fake.fwht(x, 1024, s)

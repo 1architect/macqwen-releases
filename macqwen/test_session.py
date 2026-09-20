@@ -112,6 +112,22 @@ class SessionTests(unittest.TestCase):
         self.assertIsInstance(error, GenerationCancelled)
         self.assertEqual(presses, 1)
 
+    def test_generation_runner_reuses_one_worker_thread(self):
+        idents = []
+
+        def work(should_cancel):
+            del should_cancel
+            idents.append(threading.get_ident())
+            return 7
+
+        first, first_error, _ = _run_generation(work)
+        second, second_error, _ = _run_generation(work)
+        self.assertEqual((first, second), (7, 7))
+        self.assertIsNone(first_error)
+        self.assertIsNone(second_error)
+        self.assertEqual(len(idents), 2)
+        self.assertEqual(idents[0], idents[1])
+
     def test_ctrl_c_stages_close_then_quit(self):
         class LoadedBackend(FakeBackend):
             def __init__(self):

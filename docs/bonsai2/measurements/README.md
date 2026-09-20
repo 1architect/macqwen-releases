@@ -17,6 +17,12 @@ Current check: [`20260919-low-context-short-check.jsonl`](20260919-low-context-s
 measured 3,283 → 32 tokens at 7.375, 7.339, and 7.328 tok/s (median 7.339),
 with three matching greedy digests and 10.43 GB peak MLX memory.
 
+New live prefill screens are deliberately bounded: they use the `context-1k`
+fixture (32 records; under 1,000 rendered prompt tokens) and two
+reverse-interleaved rounds, four total arms. The historical 3,283-token,
+8K, and 16K records remain append-only evidence; we do not rerun them merely
+to fill a table, and a larger context requires explicit user authorization.
+
 ## Master results table
 
 | # | Run (raw artifact) | Prompt → output | Decode, tok/s by arm | Prefill, s by arm | Memory | Digests | Verdict |

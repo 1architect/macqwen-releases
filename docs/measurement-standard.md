@@ -43,6 +43,11 @@ and provenance are clear.
   forward and reverse arm order to reduce ordering and file-cache effects.
 - Report paired effects and the measured resolution band. A result inside the
   band is unresolved.
+- Do not hammer the machine with tests, especially on fanless hardware. Use
+  the smallest relevant controlled run, avoid redundant reruns and warmups,
+  and stop a branch once its correctness, execution-path, or feasibility gate
+  decisively fails. Repeat only when a new premise or explicit user
+  authorization justifies the cost.
 
 Missing historical provenance is `unknown`. We do not reconstruct it from
 filenames, timestamps, or assumptions.

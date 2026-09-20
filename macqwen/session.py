@@ -20,7 +20,8 @@ import re
 import signal
 import subprocess
 import sys
-from threading import Event, Thread
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -105,31 +106,33 @@ class _TurnTelemetry:
         )
 
 
+_GENERATION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="macqwen-generation"
+)
+
+
 def _run_generation(call):
-    """Run model work away from the signal-handling terminal loop."""
+    """Run model work away from the signal-handling terminal loop.
+
+    Every turn shares one persistent worker thread. Model runtimes
+    bind device state to the generating thread, so a fresh thread per
+    turn would invalidate the live cache and force a full prefill
+    replay on each continuation.
+    """
     stop = Event()
-    result = []
-    error = []
-
-    def worker():
-        try:
-            result.append(call(stop.is_set))
-        except BaseException as exc:
-            error.append(exc)
-
-    thread = Thread(target=worker, name="macqwen-generation")
-    thread.start()
+    future = _GENERATION_EXECUTOR.submit(call, stop.is_set)
     presses = 0
-    while thread.is_alive():
+    while not future.done():
         try:
             time.sleep(0.05)
         except KeyboardInterrupt:
             presses += 1
             stop.set()
-    thread.join()
-    if error and not presses:
-        raise error[0]
-    return (result[0] if result else None), error[0] if error else None, presses
+    error = future.exception()
+    result = None if error is not None else future.result()
+    if error is not None and not presses:
+        raise error
+    return result, error, presses
 
 
 def _backend_generate(backend, kwargs, should_cancel):
@@ -484,13 +487,15 @@ def build_backend(name: str, args, prefs: dict):
     if name == "bonsai2":
         if not args.model_path:
             raise SystemExit("--model-path is required for model 'bonsai2'")
-        from models.bonsai2.backend import BonsaiBackend
+        from models.bonsai2.backend import (
+            BonsaiBackend, PRODUCTION_ALLOCATOR_CACHE_MB,
+        )
         from models.bonsai2.settings import SESSION_DIR
 
         backend = BonsaiBackend(
             model_path=args.model_path,
             prefill_step_size=args.prefill_step_size,
-            allocator_cache_mb=256.0,
+            allocator_cache_mb=PRODUCTION_ALLOCATOR_CACHE_MB,
             session_dir=(args.session_dir or SESSION_DIR),
         )
         mirror_preferences(backend, prefs, prefs["profile"])

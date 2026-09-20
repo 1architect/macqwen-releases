@@ -33,7 +33,7 @@ class ProtocolTests(unittest.TestCase):
         )
         translated = first + opened + second + translator.finish()
         self.assertEqual(first, "checking")
-        self.assertEqual(opened, "<tool_call>")
+        self.assertEqual(opened, "")
         self.assertEqual(
             parse_tool_calls(translated),
             [("read_file", {"path": "README.md", "start_line": 2})],
@@ -85,6 +85,18 @@ class ProtocolTests(unittest.TestCase):
         translator = ProtocolTranslator()
         text = translator.feed("<tool_call>\nno function here") + translator.finish()
         self.assertEqual(parse_tool_calls(text), [])
+
+    def test_invalid_block_drops_only_it_and_preserves_suffix(self):
+        raw = "before<tool_call>not-a-call</tool_call>after"
+        for size in (1, 5, len(raw)):
+            with self.subTest(size=size):
+                translator = ProtocolTranslator()
+                text = "".join(
+                    translator.feed(raw[index:index + size])
+                    for index in range(0, len(raw), size)
+                ) + translator.finish()
+                self.assertEqual(text, "beforeafter")
+                self.assertEqual(parse_tool_calls(text), [])
 
     def test_delimiter_text_inside_arguments_round_trips(self):
         # A coding tool can legitimately write protocol text inside a

@@ -32,6 +32,7 @@ default on our English, code, Portuguese, and tag probes.
 | Prefill step | 512 |
 | Allocator cache cap | 256 MB in chat (backend default off; bench control is uncapped) |
 | Fused FWHT | On by default; `fused_fwht=False` is the explicit stock rollback |
+| Prepared QMM metadata | On by default; `prepared_qmm_metadata=False` is the explicit stock rollback |
 | Generation | Text-only, vision unloaded |
 | Context retention | Full |
 
@@ -70,9 +71,26 @@ harness. Use fresh child processes, at least three arms per condition, and
 forward/reverse/forward ordering. Do not add thermal warmup loops on the
 fanless reference Mac.
 
-Screening runs may use the `smoke` fixture with two rounds for directional
-evidence only. Screens never promote; promotion keeps the three-arm rule
-with a production fixture.
+Do not hammer the fanless machine with tests. We run only the smallest
+controlled set relevant to the active question, stop when a correctness,
+execution-path, performance-resolution, or compiler-feasibility gate is
+decisively closed, and do not repeat a benchmark without a new premise or
+explicit user authorization. Interrupted records remain evidence of what was
+actually attempted; they are not a reason to immediately restart the same
+work.
+
+Screening runs may use `context-1k` with two reverse-interleaved rounds
+(four total arms) for directional evidence only. This is the maximum context
+for the current prefill screens because larger prompts caused paging and yellow
+memory pressure on the fanless machine. Screens never promote; promotion keeps
+the three-arm rule with a production fixture and explicit authorization.
+
+Long-context arms are conditional. Run an 8k, 16k, or other materially long
+fixture only when it is relevant to the current research question and the
+user has explicitly authorized that run. Otherwise do not launch or wait for
+it; record the deferral and stop with the shorter evidence. Preserve
+append-only records from interrupted authorized arms, but do not restart
+them without new explicit authorization.
 
 ## Correctness invariants
 
@@ -85,6 +103,11 @@ with a production fixture.
 - Exact candidates must retain intermediate values and complete greedy token
   digests. Output-changing candidates require the sampled quality gate from
   `CONTRIBUTING.md`.
+- Fused-attention benchmark arms must record per-backend execution-path
+  counters before validation. The fused candidate must select at least two
+  calls, attempt every attention call, and keep fallback coverage at or below
+  10%; the stock control must show zero fused selections. Older records
+  without these counters are not reinterpreted.
 - One model runs per process. The transform hooks patch process-global
   runtime state, so multi-model residency in one process is unsupported.
 
@@ -117,12 +140,61 @@ This is diagnostic evidence only: VM swap activity occurred, and the current
 physical-read field includes prefill and decode. Revalidate the sustained and
 long-context baselines before making a promotion claim.
 
+The new question-only diagnostic follows FlashNext's short speed-test prompt,
+`Explique a fotossintese em duas frases.`, with no records, tools, or prior
+turn. Its rendered prefill is 23 tokens including Bonsai's chat framing. Three
+fresh greedy 32-token control arms measured 7.226, 7.196, and 7.173 tok/s
+(median 7.196), with identical complete digests and no validation failures.
+This is a minimum-context workload check only; it does not replace the
+3,283-token baseline or promote either experimental kernel. Evidence is in
+[`20260920-102501-baseline-question-short.jsonl`](measurements/20260920-102501-baseline-question-short.jsonl)
+and
+[`20260920-102501-baseline-question-short-arms.jsonl`](measurements/20260920-102501-baseline-question-short-arms.jsonl).
+
+We do not launch or wait for long-context arms unless they are relevant to the
+active question and the user explicitly authorizes them.
+
 ## Next work
 
 The 5.5 tok/s 2k product and 4.0 tok/s 16k figures remain historical
 references. The current 7.34 tok/s short check does not replace the sustained
-baseline. Next, revalidate the 256-token and 19.5k fixtures on a clean
-revision, then continue the 16k allocator confirmation, full shared-transform
+baseline. Revalidate the 256-token fixture and other short evidence on a
+clean revision as needed. Treat the 19.5k/16k work, full shared-transform
 comparison, stop-retention continuation checks, and 8-bit KV quality
-validation. Record new evidence in [`research.md`](research.md) and raw arms
-under [`measurements/`](measurements/).
+validation as conditional research: launch a long-context arm only when it
+is relevant to the current question and explicitly authorized by the user.
+Do not wait on deferred long-context work. Record new evidence in
+[`research.md`](research.md) and raw arms under [`measurements/`](measurements/).
+
+## Current handoff — 2026-09-20 QMM preparation result
+
+The opt-in `prepared_qmm_metadata` candidate prepares FP32 scales and biases
+once for the 401 non-embedding packed projections, adding about 0.745 GiB of
+resident metadata while retaining packed weights and stock QMM arithmetic.
+It passed the short question-only execution-path and greedy-digest checks:
+13,634 prepared calls per completed candidate arm, zero unsupported calls, and
+9.298/9.290 tok/s versus 7.586/7.332 tok/s for stock over two screening
+pairs (+24.64%, ±4.13 percentage points). This remains screening evidence,
+not a three-arm promotion result.
+
+The authorized 3,283-token prefill check failed the useful prefill hypothesis
+on its first complete pair: stock prefill was 135.190 s and the candidate was
+254.755 s (−88.44%). The greedy digest still matched, but the extra metadata
+did not produce a complete-runtime win; the candidate is not promoted. The
+second candidate arm was interrupted during decode and its partial evidence
+was preserved. We do not repeat this load on the fanless machine without a
+new premise and explicit authorization.
+
+The harness now exposes bounded arm phase progress, candidate/fallback
+counters, immediate execution-path validation, and explicit cancellation
+propagation. Historical measurement files remain append-only, and old fused
+records without path counters remain provenance-unknown rather than being
+reinterpreted.
+
+## Prefill test safety limit — 2026-09-20
+
+The runnable Bonsai prefill probes now default to `context-1k` and two
+reverse-interleaved rounds. The 3,283-token QMM attempt remains a preserved
+interrupted measurement, not a template for future runs. We do not launch
+`context-2k`, 8K, or 16K prefill arms from the test catalog without a new,
+relevant question and explicit user authorization.

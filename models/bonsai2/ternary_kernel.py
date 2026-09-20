@@ -18,7 +18,7 @@ from functools import lru_cache
 _FUSED_FWHT_SOURCE = """
 // One threadgroup per BLOCK slice of one row. Thread i owns element i.
 // This is a kernel body fragment: mx.fast.metal_kernel supplies the wrapper
-// and the x/signs/out buffers. Activations are fp16; signs are fp32.
+// and the x/signs/out buffers. Activations are fp16 or fp32; signs are fp32.
 {
   constexpr uint N = BLOCK;
   threadgroup float buf[N];
@@ -38,7 +38,7 @@ _FUSED_FWHT_SOURCE = """
     buf[i] = ((i & stride) == 0) ? (a + b) : (a - b);
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
-  out[base + i] = half(buf[i] * SCALE);
+  out[base + i] = OUTPUT_TYPE(buf[i] * SCALE);
 }
 """
 
@@ -49,6 +49,8 @@ def _dtype_tag(dtype) -> str:
         return "bfloat16"
     if "float16" in name or name == "half":
         return "half"
+    if "float32" in name or name == "float":
+        return "float32"
     return "unsupported:" + name
 
 
@@ -56,12 +58,15 @@ def _dtype_tag(dtype) -> str:
 def _get_kernel(block: int, width: int, dtype_tag: str):
     import mlx.core as mx
 
-    if dtype_tag != "half":
-        raise ValueError(f"fused FWHT supports fp16 activations, got {dtype_tag}")
+    if dtype_tag not in ("half", "float32"):
+        raise ValueError(
+            f"fused FWHT supports fp16 or fp32 activations, got {dtype_tag}"
+        )
     source = _FUSED_FWHT_SOURCE.replace("BLOCK", str(block))
     source = source.replace("WIDTH", str(width))
     scale = 1.0 / math.sqrt(block)
     source = source.replace("SCALE", repr(float(scale)))
+    source = source.replace("OUTPUT_TYPE", "half" if dtype_tag == "half" else "float")
     return mx.fast.metal_kernel(
         name=f"bonsai2_fused_fwht_b{block}_w{width}_{dtype_tag}",
         input_names=["x", "signs"],
@@ -81,6 +86,39 @@ _STOCK_OWNER = None
 _MEMO = None
 _ORIGINALS: dict = {}
 _INSTALLED = None
+_ACTIVE_COUNTERS = None
+
+
+def new_fwht_counters() -> dict:
+    return {
+        "requested": False,
+        "attempts": 0,
+        "selected": 0,
+        "fallbacks": 0,
+        "executed": False,
+        "input_dtypes": {},
+        "fallback_reasons": {},
+    }
+
+
+def set_fwht_counters(counters) -> None:
+    global _ACTIVE_COUNTERS
+    _ACTIVE_COUNTERS = counters
+
+
+def _fwht_event(name: str, *, dtype: str | None = None, reason: str | None = None) -> None:
+    if not isinstance(_ACTIVE_COUNTERS, dict):
+        return
+    if name in ("attempts", "selected", "fallbacks"):
+        _ACTIVE_COUNTERS[name] += 1
+    if name == "selected":
+        _ACTIVE_COUNTERS["executed"] = True
+    if dtype:
+        inputs = _ACTIVE_COUNTERS["input_dtypes"]
+        inputs[dtype] = inputs.get(dtype, 0) + 1
+    if reason:
+        reasons = _ACTIVE_COUNTERS["fallback_reasons"]
+        reasons[reason] = reasons.get(reason, 0) + 1
 
 
 def _tracked_runtime_module(checkpoint_path=None):
@@ -282,17 +320,26 @@ def fused_fwht(x, signs, block: int):
 
     Falls back to the stock runtime path when the row width is not a
     multiple of ``block``, the block exceeds the device threadgroup limit,
-    the activation dtype is not fp16, or the fused path is disabled.
+    the activation dtype is not fp16/fp32, or the fused path is disabled.
     """
     import mlx.core as mx
 
     width = x.shape[-1]
+    dtype_tag = _dtype_tag(x.dtype)
+    _fwht_event("attempts", dtype=dtype_tag)
     if (
         not fused_fwht_enabled()
         or width % block != 0
         or block > 1024
-        or _dtype_tag(x.dtype) != "half"
+        or dtype_tag not in ("half", "float32")
     ):
+        reason = (
+            "disabled" if not fused_fwht_enabled()
+            else "width_not_divisible" if width % block
+            else "block_too_large" if block > 1024
+            else "unsupported_dtype"
+        )
+        _fwht_event("fallbacks", reason=reason)
         if _STOCK_FWHT is not None:
             return _STOCK_FWHT(
                 x.astype(mx.float32), block, signs, inverse=False
@@ -302,7 +349,8 @@ def fused_fwht(x, signs, block: int):
         return stock_fwht(
             x.astype(mx.float32), block, signs, inverse=False
         ).astype(x.dtype)
-    kernel = _get_kernel(block, width, _dtype_tag(x.dtype))
+    _fwht_event("selected")
+    kernel = _get_kernel(block, width, dtype_tag)
     # MLX grid counts total threads, not threadgroups: one thread per
     # element, grouped in BLOCK-wide threadgroups of 1024 threads.
     outputs = kernel(

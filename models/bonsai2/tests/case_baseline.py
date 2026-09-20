@@ -4,20 +4,23 @@ from macqwen.testsuite.spec import COMMON_METRICS, TestSpec
 
 
 def command(config, result_path: Path) -> list[str]:
-    scratch = Path("/tmp") / f"macqwen-bonsai2-{result_path.stem}.jsonl"
+    evidence = result_path.with_name(f"{result_path.stem}-arms.jsonl")
     return [
         config.python, "-m", "models.bonsai2.bench", "--checkpoint", config.checkpoint,
-        "--compare", "baseline", "--fixture", "context-2k", "--horizon", "short",
-        "--window", "32", "--rounds", "3", "--sampling", "greedy",
-        "--seed", "7", "--jsonl", str(scratch),
+        "--compare", "baseline", "--fixture", "context-1k", "--horizon", "short",
+        "--window", "32", "--rounds", "2", "--sampling", "greedy",
+        "--seed", "7", "--experiment-id", "baseline-short-context-1k-v2",
+        "--jsonl", str(evidence),
     ]
 
 
 TEST = TestSpec(
-    id="baseline-short", title="Bonsai-2 short baseline", category="performance",
-    explanation="Runs the retained 32-token greedy Bonsai-2 control.",
-    why="Provides a canonical live control for the selected Bonsai-2 checkpoint.",
+    id="baseline-short", title="Bonsai-2 bounded short baseline", category="performance",
+    explanation="Runs a bounded 32-token greedy Bonsai-2 control and records paging counters.",
+    why="Provides a quick live control for the selected Bonsai-2 checkpoint.",
     script=command, metrics=COMMON_METRICS,
-    controls={"sampling": "greedy", "digest": "required", "horizon": "32 tokens"},
-    source="models/bonsai2/bench.py", promotion=True,
+    controls={"identity": "baseline-short-context-1k-v2", "sampling": "greedy",
+              "digest": "required", "horizon": "32 tokens",
+              "fixture": "context-1k; two reverse-interleaved rounds; two total arms"},
+    source="models/bonsai2/bench.py", promotion=False,
 )

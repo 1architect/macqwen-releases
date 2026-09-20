@@ -42,10 +42,18 @@ absent.
 
 | Path | Responsibility |
 |---|---|
-| `backend.py` | Resident generation, cache lifecycle, and session replay |
+| `backend.py` | Resident generation, cache lifecycle, session replay, and opt-in probes |
 | `checkpoint.py` | Checkpoint validation, discovery, and aliases |
 | `protocol.py` | Reasoning and tool-call translation |
 | `settings.py` | Model-owned environment and session defaults |
 | `bench.py` | Fresh-process paired benchmark harness |
 | `cache.py` | Instance-level KV growth test support |
+| `q2_kernel.py` | Opt-in packed-Q2/G128 MPP prefill probe and runtime hook |
+| `q4_attention_kernel.py` | Opt-in affine-Q4/G64 fused-attention probe |
+| `qmm_metadata.py` | Opt-in one-time FP32 QMM metadata preparation probe |
 | `test_*.py` | Checkpoint-free runtime and harness coverage |
+
+We keep live prefill screens on the bounded `context-1k` fixture and two
+rounds to limit exposure on the fanless reference Mac while retaining paging
+evidence. Historical larger-context records are preserved but are not rerun
+without explicit authorization.

@@ -586,6 +586,16 @@ operations require intermediate equality and whole-run greedy digest checks.
 Output-changing work also requires the sampled quality gate in
 `CONTRIBUTING.md`.
 
+### Long-context arm authorization
+
+Long-context arms are conditional research work, not automatic follow-ups.
+We run an 8k, 16k, or other materially long arm only when it is relevant to
+the current research question and the user has explicitly authorized that
+run. If either condition is missing, we do not launch or wait on the arm;
+we keep the shorter evidence and record the deferral. If an authorized arm
+is interrupted, we retain its append-only raw records as incomplete evidence
+and do not restart it without a new explicit authorization.
+
 We keep ternary weights, every context token, all layers, and current model
 semantics for milestone 1. Vision input, changed reasoning budgets, disk
 offload, KV recomputation, and speculative decoding are outside this scope.
@@ -622,3 +632,140 @@ pass after installing the declared `mlx-vlm==0.6.17` dependency and its
 required Pillow runtime. The current low-context diagnostic is recorded above;
 sustained and long-context validation remain outstanding, so no promotion
 claim is made from the diagnostic run.
+
+## 2026-09-20 — Packed-Q2 and fused-Q4 probe benchmark status
+
+The completed fixture contained 3,283 prompt tokens and 32 generated tokens.
+The paired fused-attention run kept tracing off in both arms and matched the
+complete greedy token digest in all six fresh processes. The configured fused
+option lost all three decode pairs: mean throughput delta was −24.25%, with
+a 5.47 percentage-point two-standard-error band. It therefore remains
+opt-in and is not promoted. These older records contain no execution-path
+counters: their empty `attention_events` arrays prove only that tracing was
+off, not that the fused kernel ran. We do not reconstruct that provenance.
+New runs record per-backend selection and fallback counters and reject arms
+that do not meet the explicit fused-coverage gate. The retained records are
+[`20260920-015510-q4-attention-fused-2k.jsonl`](measurements/20260920-015510-q4-attention-fused-2k.jsonl)
+and the raw arm log
+[`20260920-015510-q4-attention-fused-2k-arms.jsonl`](measurements/20260920-015510-q4-attention-fused-2k-arms.jsonl).
+
+Neither experimental kernel has established general numerical equivalence.
+Small FP32 Q4 checks differed from stock by up to about 1.7e-6. A nonzero
+synthetic Q2 check failed exactness with a maximum absolute difference of
+0.03125. We keep the intermediate-equality and complete greedy-digest gates
+unchanged; neither kernel is promoted or used as a production default.
+
+An 8k run was relevant to the long-context question and explicitly
+authorized, but was interrupted after its first stock arm while the fused
+arm was running, so it has no completed comparison. Its started and partial
+arm records are retained at
+[`20260920-021144-q4-attention-fused-8k.jsonl`](measurements/20260920-021144-q4-attention-fused-8k.jsonl)
+and
+[`20260920-021144-q4-attention-fused-8k-arms.jsonl`](measurements/20260920-021144-q4-attention-fused-8k-arms.jsonl).
+They do not establish an 8k performance result, and we do not restart that
+or any other long-context arm without explicit user authorization.
+
+## 2026-09-20 — FlashNext-style question-only speed arm
+
+We added a diagnostic `question-only` fixture to isolate the lowest-context
+live workload. It reuses FlashNext's reference question,
+`Explique a fotossintese em duas frases.`, with an empty system message and
+no records, tools, or prior turn. Bonsai's chat framing made the resulting
+prefill 23 tokens. We used three fresh control processes, greedy decoding,
+32 generated tokens, and no extra warmup; with one condition there was no
+paired arm order to reverse.
+
+| Arm | Prefill (s) | Decode rate (tok/s) | Greedy digest |
+|---|---:|---:|---|
+| Round 1 | 1.378 | 7.226 | `cdb7ac70…295ff5` |
+| Round 2 | 1.335 | 7.196 | `cdb7ac70…295ff5` |
+| Round 3 | 1.229 | 7.173 | `cdb7ac70…295ff5` |
+
+The median was 7.196 tok/s (mean 7.198; range 7.173–7.226). All arms
+completed and matched the greedy digest. Each arm made 544 stock attention
+calls, with zero fused attempts or selections. This is a short-workload
+diagnostic, not a replacement for the 3,283-token retained baseline and not
+a promotion claim. The append-only records are
+[`20260920-102501-baseline-question-short.jsonl`](measurements/20260920-102501-baseline-question-short.jsonl)
+and its raw arms
+[`20260920-102501-baseline-question-short-arms.jsonl`](measurements/20260920-102501-baseline-question-short-arms.jsonl).
+
+## 2026-09-20 — One-time QMM metadata preparation probe
+
+We integrated an opt-in runtime candidate that prepares the existing FP16
+Q2/G128 scales and biases as FP32 once per resident model. Packed `uint32`
+weights, Hadamard transforms, MLX's stock quantized-matmul arithmetic, and
+embedding metadata remain unchanged. The candidate prepared 401 non-embedding
+projections and added 799,948,800 bytes (about 0.745 GiB) of persistent
+metadata; preparation itself took 0.134–0.267 seconds in the question-only
+screen. Stock and candidate calls were recorded separately, and both completed
+candidate arms made 13,634 prepared FP32 calls with zero unsupported calls.
+
+The question-only screen used 23 rendered prompt tokens, greedy 32-token
+output, two reverse-interleaved rounds, fresh child processes, and matching
+complete digests. Candidate decode was 9.298 and 9.290 tok/s against stock
+7.586 and 7.332 tok/s: mean paired improvement +24.64% with a ±4.13 percentage
+point two-standard-error band. This is screening evidence only; it is not the
+three-arm promotion gate. Question-only prefill was 1.184 and 1.212 seconds
+against 1.338 and 1.199 seconds: +5.27% mean with a ±12.60 point band, so it
+was unresolved.
+
+We then started the one authorized comparison on the existing 3,283-token
+fixture and stopped it when the machine-load cost became clear. The first
+complete stock arm took 135.190 seconds to prefill and the first complete
+candidate arm took 254.755 seconds, a −88.44% prefill change. Their 32-token
+greedy digests matched, and the candidate recorded 16,040 prepared calls;
+the one-pair decode difference was +4.91% and is not a promotion result. A
+second candidate arm was interrupted during decode after partial evidence was
+written. The run therefore has no complete three-arm comparison. We keep the
+candidate opt-in for diagnosis, do not promote it, and stop this branch rather
+than hammering the fanless machine with repeats. Records are
+[`20260920-121033-prepared-qmm-metadata-question.jsonl`](measurements/20260920-121033-prepared-qmm-metadata-question.jsonl),
+[`20260920-121033-prepared-qmm-metadata-question-arms.jsonl`](measurements/20260920-121033-prepared-qmm-metadata-question-arms.jsonl),
+[`20260920-121312-prepared-qmm-metadata-2k.jsonl`](measurements/20260920-121312-prepared-qmm-metadata-2k.jsonl),
+and
+[`20260920-121312-prepared-qmm-metadata-2k-arms.jsonl`](measurements/20260920-121312-prepared-qmm-metadata-2k-arms.jsonl).
+
+The benchmark harness now streams bounded arm progress, writes raw and
+partial evidence before validation, records candidate-path counters, rejects
+invalid execution coverage from paired statistics, and stops scheduling after
+cancellation or a decisive child/path/digest failure. The project runner
+propagates interrupted outcomes and retains the partial canonical record.
+These changes are diagnostic infrastructure; they do not change Bonsai
+defaults or reinterpret older records that lack path counters.
+
+## 2026-09-20 — Prefill test safety cap
+
+The first 3,283-token QMM prefill attempt entered paging and raised yellow
+memory pressure on the fanless machine. We therefore changed the runnable
+prefill screens to the new `context-1k` fixture (32 records; under 1,000
+rendered prompt tokens) and two reverse-interleaved rounds, four total arms.
+The benchmark CLI now defaults to that bounded fixture as well. The older
+3,283-token, 8K, and 16K records remain append-only historical evidence; we do
+not rerun or extend them without a relevant question and explicit user
+authorization. The deferred 8K fused-attention catalog entry is not runnable.
+
+## 2026-09-20 — QMM metadata default promotion
+
+We promote `prepared_qmm_metadata` to default on.
+
+Evidence on record includes question-only `+17.77%` and 1k
+`+21.07% ±2.24` decode, with 1k prefill `+1.28% ±3.52`.
+All checked arms show matched provenance, complete 401/401 coverage, and
+matching greedy digests. The candidate adds about 763 MB residency and
+raises MLX peak from 8.08 to 8.75 GB with swap activity present.
+
+We retain `prepared_qmm_metadata=False` as our explicit stock rollback.
+
+## 2026-09-20 — Chat second-turn stream fix
+
+We fix the `There is no Stream(gpu, 3) in current thread` crash on the
+second chat turn. MLX binds materialized cache state to the generating
+thread's stream, and we ran each turn on a fresh worker thread. We now
+run every turn on one persistent worker thread, so the live cache
+stays valid and continuations never repay a full prefill. As a safety
+net we also rebuild the cache from the tape when generation arrives
+on a thread with no cache affinity, tracked with thread-local storage
+so recycled thread idents cannot fool the check. We pin this with a
+worker-reuse test, a two-thread replay test, and a live two-turn check
+with no replay and a holding cache invariant.
