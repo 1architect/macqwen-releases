@@ -755,6 +755,11 @@ All checked arms show matched provenance, complete 401/401 coverage, and
 matching greedy digests. The candidate adds about 763 MB residency and
 raises MLX peak from 8.08 to 8.75 GB with swap activity present.
 
+This promotion accepts the 1k evidence for the default. A 3,283-token
+probe showed prefill `-12.86%` (95.29 s stock vs 107.54 s prepared,
+matching digests), so the decode win stands at short context while the
+long-context cost stays open.
+
 We retain `prepared_qmm_metadata=False` as our explicit stock rollback.
 
 ## 2026-09-20 — Chat second-turn stream fix

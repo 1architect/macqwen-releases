@@ -82,8 +82,14 @@ work.
 Screening runs may use `context-1k` with two reverse-interleaved rounds
 (four total arms) for directional evidence only. This is the maximum context
 for the current prefill screens because larger prompts caused paging and yellow
-memory pressure on the fanless machine. Screens never promote; promotion keeps
-the three-arm rule with a production fixture and explicit authorization.
+memory pressure on the fanless machine.
+
+The 0.4.5 default accepts the 1k prepared-QMM evidence: decode `+21.07%
+±2.24` with matched provenance, complete 401/401 coverage, and matching
+greedy digests. Prefill was unresolved at 1k (`+1.28% ±3.52`), and a
+3,283-token probe showed prefill `-12.86%` with higher peak memory. The
+decode win stands at short context; the long-context cost stays open.
+Rollback is `prepared_qmm_metadata=False`.
 
 Long-context arms are conditional. Run an 8k, 16k, or other materially long
 fixture only when it is relevant to the current research question and the
