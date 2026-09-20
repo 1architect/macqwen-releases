@@ -1,4 +1,4 @@
-# FlashNext graphics
+# Flash-Next graphics
 
 These files illustrate the measurements in [`../research.md`](../research.md).
 

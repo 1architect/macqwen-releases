@@ -1,40 +1,48 @@
 # Live model measurement standard
 
-We use one project-level test terminal and one append-only JSONL record format
-for live model tests. Runtime folders provide test cases and metric adapters;
-they do not own terminal UI, result placement, or lifecycle recording.
+We use one project-owned test terminal and one append-only JSONL format for
+live model evidence. Runtime folders provide cases and metric adapters; they
+do not own terminal UI, result placement, or run lifecycle.
 
-## Running a test
+## Run a test
 
-Start the project terminal with:
+Start the terminal from the repository root:
 
 ```bash
 ./tests/run.sh
 ```
 
-The terminal discovers compatible checkpoints using the same selection rules as
-`chat.sh`, asks which model/checkpoint to test when necessary, and then loads
-tests from `models/<runtime>/tests/`.
+It discovers compatible checkpoints using the same rules as `chat.sh`, asks
+which runtime and checkpoint to use when necessary, and loads cases from
+`models/<runtime>/tests/`.
 
-Retained artifacts belong under:
+Retained records belong under:
 
 ```text
-docs/<runtime>/measurements/YYYYMMDD-HHMMSS-<experiment>.jsonl
+docs/<runtime>/measurements/YYYYMMDD[-HHMMSS]-<experiment>.jsonl
 ```
 
-Scratch logs are not published evidence.
+Scratch logs and output directories do not support published claims. Existing
+records with older names remain valid historical evidence when their metadata
+and provenance are clear.
 
 ## Record rules
 
-Every run uses schema 1 and records a `run`, each raw `arm`, validation/failure
-records, and a final `summary`. Raw arms are durable before validation. Greedy
-comparisons require exact token digests; sampled quality runs record their seed,
-sampler, completion status, and scoring information.
+- Use schema 1 and the shared measurement engine.
+- Write the `run` record before arms, then persist every raw `arm` before
+  validation or interpretation.
+- Preserve validation failures, interruptions, and partial runs. Mark them as
+  incomplete or diagnostic; never present them as promotion results.
+- Complete comparisons end with a `summary`. An interrupted or diagnostic file
+  may end earlier, but its `run` metadata must explain why.
+- Record the checkpoint, source fingerprints, harness, prompt, template,
+  sampler, effort, token limits, ordering, environment, and cache conditions.
+- Greedy comparisons require exact token digests. Sampled quality comparisons
+  record seeds, sampler, completion status, and scoring information.
+- Use fresh child processes and at least three arms per condition. Alternate
+  forward and reverse arm order to reduce ordering and file-cache effects.
+- Report paired effects and the measured resolution band. A result inside the
+  band is unresolved.
 
-Common measurements live under `metrics.common`. Runtime-specific values live
-under `metrics.<runtime>`. Missing historical provenance is recorded as
-`unknown`; agents must not reconstruct it from filenames or assumptions.
-
-Comparative tests use fresh child processes and reverse-interleaved arms. A
-failed or interrupted run remains useful evidence about what happened but is
-not a promotion result.
+Missing historical provenance is `unknown`. We do not reconstruct it from
+filenames, timestamps, or assumptions.

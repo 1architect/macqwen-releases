@@ -1,110 +1,66 @@
-# FlashNext live-test provider
+# Flash-Next live-test cases
 
-The terminal itself is project-owned. Start it with ./tests/run.sh from the
-repository root; this directory supplies FlashNext's discovered case_*.py
-providers and runtime-specific commands.
+Start the project-owned terminal from the repository root:
 
-This terminal uses the same colors, prompts, progress glow, and compact command
-language as `chat.sh`. It does not run a test until we type `/run TEST`
-and confirms with `yes`.
+```bash
+./tests/run.sh --model flashnext --checkpoint PATH
+```
 
-The compatibility launcher ./models/flashnext/tests/run.sh selects FlashNext
-explicitly and forwards to the project terminal.
+This directory supplies Flash-Next `case_*.py` providers. The shared terminal
+owns discovery, prompts, confirmation, execution, display, interruptions, and
+JSONL result storage. The compatibility launcher
+`./models/flashnext/tests/run.sh` forwards to the same terminal.
 
-Run trusted performance tests in Apple Terminal. An embedded Codex terminal
-activates the Codex renderer, GPU service, and WindowServer while the benchmark
-runs. The suite warns when `TERM_PROGRAM` is not `Apple_Terminal`.
-
-The terminal parent never imports MLX. Preflight helpers live in
-`models/flashnext/system_state.py`, which keeps the parent process from holding
-a second Metal device beside the benchmark child.
-
-Production comparisons keep per-read I/O profiling off. Use a separate
-diagnostic case ending in `-attribution` when queue and positioned-read timing
-is required.
-
-Primary commands:
+The interactive commands are:
 
 ```text
 /help
-/list performance
-/show up-swiglu
-/run up-swiglu
-/controls
-/config
-/config tokens 32
-/config pairs 6
-/config workers 16
-/config purge off
-/config settle 0
-/config timeout 60
-/config max-load 4
-/config compressor-rate 100
-/config checkpoint auto
-/config results ~/.cache/flashnext/test-results
-/config python .venv/bin/python
-/research prefetch
+/list
+/show CASE
+/run CASE
 /results
 /status
 /quit
 ```
 
-`/config` accepts `tokens`, `pairs`, `workers`, `purge`, `settle`, `timeout`,
-`max-load`, `compressor-rate`, `checkpoint`, `results`, and `python`.
-The suite requires at least three pairs for interleaved tests.
-Use `auto` or `automatic` to clear an explicit checkpoint.
+Do not add a second result directory or a runtime-owned terminal. Follow the
+[measurement standard](../../../docs/measurement-standard.md) for retained
+evidence.
 
-The project terminal discovers every case_*.py file in this folder. Adding a file
-does not require a central registry change.
+## Case contract
 
-Each case file must provide `TEST`, `TESTS`, or `get_tests()`. Every returned
-`TestSpec` must include:
+The catalog discovers every `case_*.py` file; no central registry change is
+needed. A case file must provide `TEST`, `TESTS`, or `get_tests()`. Each
+returned `TestSpec` needs:
 
 - a unique ID and title;
-- a plain explanation;
-- why the test was proposed;
+- a plain explanation and proposal rationale;
 - metrics and controls;
-- a source reference;
-- an executable script function for runnable tests.
+- a source reference; and
+- an executable function for runnable tests.
 
-Case files can also supply environment controls, a custom live metric parser,
-and a custom interpreter. This lets a new file test model behavior that the
-main terminal does not know yet.
-The project terminal keeps ownership of commands, confirmation, live display,
-canonical JSONL result storage, and interruption.
+Cases may add environment controls, a live-metric parser, or a custom
+interpreter. The catalog keeps three evidence levels: runnable retained
+benchmarks, verification/manual quality entries, and historical entries from
+the research record. Removed prototypes remain visible as non-runnable
+history.
 
-The catalog has three evidence levels:
+Every runnable case displays its purpose, rationale, controls, expected
+metrics, command, per-arm results, interpretation, and JSONL record.
 
-- Runnable retained benchmarks.
-- Verification and manual quality entries.
-- Historical entries generated from every research heading, bullet, and data
-  row. Removed prototypes remain visible but cannot run.
+## Flash-Next controls
 
-Every runnable test shows:
-
-- what it does;
-- why it was proposed;
-- enabled controls;
-- expected metrics;
-- the exact command;
-- live per-arm metrics;
-- a final interpretation;
-- a JSON result record.
-
-Historical compatible Q4/G32 benchmark cases use 60-slot skew plus Frontier
-8A as their control. `chat.sh` defaults to the MLX-backed Metal runtime, while
-REAP Q4/G64 uses generic MLX unless the experimental G64 executor is explicitly
-enabled. G64 slabs and stream-pack remain off. Benchmarks use greedy decoding
-and exact digests. We evaluate final quality with `chat.sh`, normal sampling,
-and `xhigh` effort.
+Historical Q4/G32 cases retain their original controls for provenance. Current
+REAP Q4/G64 uses the G64 Metal executor by default; set
+`FLASHNEXT_METAL_G64=0` for the generic-MLX rollback. G64 slabs and stream-pack
+remain off. New comparisons use greedy decoding and exact digests. Quality
+checks use `chat.sh`, normal sampling, and explicit effort settings.
 
 The future paired G64 quality comparison predeclares seeds 7, 19, and 73,
-alternates G64-off and G64-on order, and keeps slabs and stream-pack off. It
-requires completed outputs and blind scoring of the complete SketchUp `.rb`
-artifact. Seed 42 is a known regression case, not a representative quality
-seed. An interrupted generation is an incomplete gate, not a quality failure.
-The canonical prompt is recorded by `case_quality_chat.py`; do not paraphrase
-or translate it between arms.
+alternates arm order, keeps slabs and stream-pack off, and requires completed
+outputs plus blind scoring of the complete SketchUp `.rb` artifact. Seed 42 is
+a known regression case, not a representative quality seed. An interrupted
+generation is incomplete evidence, not a quality failure.
 
-The suite never requires a reboot. The VM quiescence gate and file-cache purge
-are optional diagnostics and disabled by default.
+Run trusted performance tests in Apple Terminal. The suite never requires a
+reboot; VM quiescence and file-cache purge remain optional diagnostics.

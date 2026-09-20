@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## MACQWEN 0.4.3 - 2026-09-19
 
 ### Added
 
@@ -12,12 +12,18 @@
   ternary projections. It is bit-exact on production shapes and keeps
   greedy digests on all comparison arms. Promoted to default on prefill
   evidence; `fused_fwht=False` rolls back to the stock path.
+- Add one project-owned live-test terminal with runtime case discovery and
+  append-only JSONL measurement records.
 
 ### Changed
 
 - Cap the Bonsai-2 chat allocator cache at 256 MB. The six-arm comparison
   shows pool memory falling from about 774 MB to about 300 MB with
   identical decode rates and matching digests at 2k context.
+- Use the managed repository `.venv` for all runtimes by default.
+- Make the REAP-288 G64 Metal executor the Flash-Next default under the
+  documented short exact-digest promotion exception; long-turn quality stays
+  unverified.
 
 ## MACQWEN 0.4.2 - 2026-09-17
 

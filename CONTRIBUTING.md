@@ -1,109 +1,91 @@
 # Contributing to MACQWEN
 
-## Required reading
+## Before changing code
 
-Read the current documents for the component before changing or measuring it.
+Read the active handoff and research record for the component you will touch.
+Then read its brief for scope and support status.
 
-For Flash-Next, use this order:
+For Flash-Next, also read [`AGENT_INVARIANTS.md`](docs/flashnext/AGENT_INVARIANTS.md).
+For live model work, read the [measurement standard](docs/measurement-standard.md).
 
-1. `docs/flashnext/handoff.md`
-2. `docs/flashnext/research.md`
-3. `docs/flashnext/brief.md`
-4. `README.md`
-5. `docs/README.md`
-
-The research record contains rejected approaches and prior measurements.
-Search it before starting an experiment.
-
-For K2-Horizon, use the equivalent active set:
-
-1. `docs/k2_horizon/handoff.md`
-2. `docs/k2_horizon/research.md`
-3. `docs/k2_horizon/brief.md`
-
-For Bonsai-2, use the equivalent active set:
-
-1. `docs/bonsai2/handoff.md`
-2. `docs/bonsai2/research.md`
-3. `docs/bonsai2/brief.md`
-
-## Documentation structure
-
-Each active component has three documents:
+Each active component uses the same documents:
 
 | Document | Content |
 |---|---|
 | `brief.md` | Purpose, scope, status, and main results |
-| `research.md` | Measurements, decisions, and rejected approaches |
+| `research.md` | Dated measurements, decisions, and rejected approaches |
 | `handoff.md` | Commands, constraints, validation, and next work |
 
-Update an existing document instead of adding a session report.
-Move superseded material to `docs/archive/` only when the active record stays complete.
+Update the existing active record instead of adding a session report. Move
+superseded material to `docs/archive/` only when the active record remains
+complete. Keep historical measurements and raw records unchanged.
+
+## Documentation style
+
+- Use plain language, present tense, and the project voice: “we”, “us”, and
+  “our”.
+- Put current instructions in handoffs, not in research history.
+- Date historical findings and label diagnostic, incomplete, rejected, and
+  unverified results explicitly.
+- Use the same runtime names everywhere: Flash-Next, K2-Horizon, Bonsai-2,
+  and Qwen3.8-27B. Keep lowercase identifiers only in code and paths.
+- Prefer one short paragraph or table over repeated explanations.
 
 ## Measurement rules
 
-- Use at least three arms for each condition.
-- Keep prompts, token limits, sampling, and reasoning effort constant.
-- Read the resolution band before interpreting a difference.
-- Confirm that each tested setting took effect.
-- Confirm that the SSD served the measured reads.
-- Use the complete runtime path for layout and throughput claims.
-- Publish rates only from a retained benchmark harness.
-- Record memory pressure, swap state, and cache conditions.
-- Do not require a reboot for measurements. Close unrelated workloads, use a
-  file-cache purge only when the experiment needs a cold cache, and require a
-  clean VM-counter and load window before measurement.
-- Run only one model during a benchmark.
+- Start the project terminal with `./tests/run.sh` for retained live-model tests.
+- Use at least three arms per condition and alternate arm order in reverse
+  rounds to reduce ordering and cache effects.
+- Keep the checkpoint, prompt, template, sampler, reasoning effort, and token
+  limits fixed across a comparison.
+- Use a fresh child process per arm. Avoid unnecessary warmups on the fanless
+  reference machine.
+- Confirm that every setting took effect and that the measured reads came from
+  the SSD when the claim depends on physical I/O.
+- Publish raw arms before validation. Preserve failures and interruptions;
+  never infer missing provenance from filenames or assumptions.
+- Report paired effects with the measured resolution band. A result inside the
+  band is unresolved, not evidence of no effect.
+- Use greedy decoding and exact token digests for exact comparisons. Use the
+  recommended sampler and explicit seeds for sampled quality comparisons.
+- Do not use greedy benchmark output as a chat-quality conclusion.
+- Do not calculate drive bandwidth from total token time; the drive is idle
+  during other parts of a token.
+- Do not repeat overlap, prefetch, or read-ahead work without a new mechanism
+  or evidence; those approaches lost to memory-controller contention here.
 
-Do not calculate drive bandwidth from complete token time.
-The drive stays idle during other parts of each token.
-
-Do not retry overlap, prefetch, or read-ahead without new evidence.
-These methods lost to memory-controller contention on the reference Mac.
-
-Benchmarks use greedy decoding to compare token IDs.
-Chat uses Qwen's recommended sampler.
-Do not use greedy benchmark output for chat-quality conclusions.
+The measurement standard defines the JSONL schema, filename rules, and how to
+label complete, diagnostic, failed, and interrupted records.
 
 ## Quality gate
 
-Use a quality gate when a change can alter model output.
-This includes checkpoints, routing, quantization, speculation, and approximations.
+Use a quality gate when a change can alter model output. This includes
+checkpoints, routing, quantization, speculation, and approximations.
 
-Use this exact prompt for every retained quality-gate arm:
+Use this prompt for every retained quality-gate arm:
 
 ```text
 crie uma extensão para sketchup que extrude várias faces ao mesmo tempo até uma altura definida pelo usuário. produza o código para eu salvar em um arquivo .rb
 ```
 
-Run the gate at `medium` and `high` effort with sampling enabled.
-Use identical settings and the same explicit `--seed` for both conditions.
-Add `xhigh` when the change can affect long reasoning.
+Run it at `medium` and `high` effort with sampling enabled. Add `xhigh` when
+the change can affect long reasoning. Use the same seed and settings across
+conditions. Score the complete `.rb` file, not only the named API method.
 
-Check the complete file, not only the named API method.
-The recorded oQ3-MTP test used `pushpull` with an invalid second argument.
-The oQ4 checkpoint produced a working file in the same test.
-
-For the pending REAP G64 comparison, we retain Astra's recommendation: we
-predeclare seeds 7, 19, and 73, pair the MLX-backed Metal runtime G64-off
-versus G64-on, and alternate arm order. We keep slabs and stream-pack off in
-both arms. We score the completed SketchUp `.rb` outputs blind to arm labels
-using functional criteria: the file must load, use the correct SketchUp API,
-extrude multiple faces, and honor the user-defined height. Seed 42 is a known
-regression case, not a representative quality seed. An interrupted generation
-is an incomplete gate, not a quality failure, and cannot be scored as a
-completed answer.
+The current Flash-Next G64 comparison has an explicit short exact-digest
+promotion exception; its long-turn quality gate remains open. Follow the
+[Flash-Next handoff](docs/flashnext/handoff.md) rather than copying its
+checkpoint-specific controls to another runtime.
 
 ## Repository rules
 
-- Commit to `main` unless the repository policy changes.
-- Do not add automated tools as contributors.
+- Keep unrelated user changes intact. Do not reset or discard them implicitly.
+- Run unit tests with `.venv/bin/python` after `./chat.sh setup`.
+- Use `./tests/run.sh` for the project live-test terminal; do not start a
+  runtime-owned terminal for retained evidence.
+- Keep raw measurement records append-only under `docs/<runtime>/measurements/`.
 - Do not add generated `Co-Authored-By` trailers.
+- Use plain commit titles that start with a capital letter; do not use
+  conventional-commit prefixes.
 - Push only validated release changes to the public repository.
-
-## Machine rules
-
-- Run tests with `~/models/.venv-qwen4exp/bin/python`.
-- Keep `~/models/.venv-qwen4exp` intact.
-- Keep `~/mlx-qwen38-kernel-lab` intact.
 - Do not benchmark while another workload uses the SSD or unified memory.

@@ -1,12 +1,18 @@
 # Project live-test terminal
 
-Start the shared test terminal with ./tests/run.sh.
+Start the shared terminal from the repository root:
 
-It uses the same installed-checkpoint discovery and model selection behavior as
-chat.sh, then discovers live-test providers from models/<runtime>/tests/.
-Runtime folders provide case_*.py definitions; the project terminal owns the
-prompt, confirmation, execution, display, and canonical JSONL measurement
-records.
+```bash
+./tests/run.sh
+```
 
-Use --model and --checkpoint to select a model without the interactive choice.
-Retained records are written under docs/<runtime>/measurements/.
+The terminal uses the same checkpoint discovery and model selection as
+`chat.sh`, then discovers cases from `models/<runtime>/tests/`. The project
+terminal owns prompts, confirmation, execution, display, interruptions, and
+canonical JSONL records. Runtime folders provide only the cases and metric
+adapters.
+
+Use `--model` and `--checkpoint` to skip interactive selection. Retained
+records belong under `docs/<runtime>/measurements/`. See the
+[measurement standard](../docs/measurement-standard.md) before creating or
+retaining a live run.

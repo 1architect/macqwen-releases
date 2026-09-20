@@ -1,8 +1,8 @@
-# FlashNext / MLX Metal Backend Findings
+# Flash-Next / MLX Metal backend findings
 
 ## Executive summary
 
-This report reviews the MLX 0.32.2 Metal backend against the FlashNext decode loop used by **MACQWEN**, a 176B sparse MoE running on an M4 Mac with 16 GB unified memory and streaming expert weights from SSD.
+This report reviews the MLX 0.32.2 Metal backend against the Flash-Next decode loop used by **MACQWEN**, a 176B sparse MoE running on an M4 Mac with 16 GB unified memory and streaming expert weights from SSD.
 
 The central observation is:
 
@@ -16,7 +16,7 @@ The highest-value next step is therefore **not another benchmark**. Re-analyze t
 
 ## Workload
 
-Per decode token, FlashNext runs 48 layers. Each layer roughly does:
+Per decode token, Flash-Next runs 48 layers. Each layer roughly does:
 
 1. GPU computes router scores.
 2. `mx.eval(scores)` blocks the host.
@@ -85,7 +85,7 @@ The compute encoder uses `MTL::DispatchTypeConcurrent` (`device.cpp:580`), makin
 
 ### Why it matters
 
-FlashNext decode is effectively a long dependent chain. A large fraction of dispatches may therefore be separated by full buffer barriers.
+Flash-Next decode is effectively a long dependent chain. A large fraction of dispatches may therefore be separated by full buffer barriers.
 
 A barrier can contribute GPU time without appearing as a named compute kernel. Under simultaneous NVMe DMA / unified-memory traffic, post-barrier memory access may become more expensive.
 
@@ -188,7 +188,7 @@ This directly explains stack samples containing:
 IOSurfaceSharedEvent waitUntilSignaledValue
 ```
 
-With ~98 evals/token, FlashNext pays roughly:
+With ~98 evals/token, Flash-Next pays roughly:
 
 - 98 shared events;
 - ≥98 fresh fences;
@@ -389,7 +389,7 @@ Relevant source:
 - `device.cpp:345-358`
 - `convert.cpp:203-221`
 
-Thus FlashNext pays hundreds of fresh Metal host-memory wraps and releases every token.
+Thus Flash-Next pays hundreds of fresh Metal host-memory wraps and releases every token.
 
 ### What remains unknown
 

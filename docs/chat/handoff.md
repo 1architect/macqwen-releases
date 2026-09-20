@@ -11,7 +11,7 @@
 ./chat.sh --model bonsai2 --checkpoint b2 --profile agent
 ./chat.sh BUILD --profile plain
 ./chat.sh BUILD --profile agent
-./chat.sh /server
+./chat.sh --server
 ```
 
 `BUILD` is a Qwen27B V4 directory suffix.
@@ -42,6 +42,8 @@ trust.
 | `macqwen/backends/` | Adapt each model runtime to the session loop |
 | `models/k2_horizon/` | Own K2 loading, settings, protocol adaptation, and tests |
 | `models/bonsai2/` | Own Bonsai-2 loading, settings, protocol adaptation, and tests |
+| `models/flashnext/` | Own Flash-Next loading, routing, streaming, and tests |
+| `models/qwen27b/` | Own Qwen3.8-27B loading, cache, and research utilities |
 | `docs/k2_horizon/` | Hold K2 status, research decisions, operation, and measurements |
 | `docs/bonsai2/` | Hold Bonsai-2 status, research decisions, operation, and measurements |
 
@@ -98,13 +100,11 @@ The 200 ms minimum tool display time is visual only. It is not part of the repor
 
 The final statistics aggregate every generation segment. This includes generation before and after tool results.
 
-The `gen` rate covers the complete decode. The `tail` rate starts after the eight-token routing warmup and expert pin operation. The
-accepted clean-boot `buffer-chunk2` comparison measures 2.83 tok/s for `gen`,
-2.70 for `tail`, and 457.7 MB/token. The older 2.713 and 2.59 figures are
-pre-buffer records.
-
-Cache-aware routing measured 2.79 tok/s against 2.54 in one hot interleaved run. Pairing adjacent arms gave an 8.3 percent mean gain. This
-mode changes expert choices, so its answer can differ from exact-quality.
+The `gen` rate covers the complete decode and `tail` starts after the routing
+warmup. Runtime-specific rates and routing comparisons belong in the
+[Flash-Next measurement records](../flashnext/measurements/), not in this
+shared-chat reference. Cache-aware routing can change expert choices and may
+change the answer.
 
 The ready line shows model, chat profile, and a `/help` hint. `/status` shows thinking status, routing profile, context, and memory.
 Changing the profile resets the conversation and rebuilds the toolbox.
@@ -143,13 +143,12 @@ Its clauses keep direct answers, reject invented API names and results, request 
 
 Run the shared suite:
 
-```bash
-python3 -m unittest discover -s macqwen -p 'test_*.py'
-python3 -m unittest discover -s models/flashnext -p 'test_*.py'
-python3 -m unittest discover -s models/qwen27b -p 'test_*.py'
-python3 -m unittest discover -s models/k2_horizon -p 'test_*.py'
-python3 -m unittest discover -s models/bonsai2 -p 'test_*.py'
-python3 -m compileall -q macqwen models/flashnext models/qwen27b models/k2_horizon models/bonsai2
+.venv/bin/python -m unittest discover -s macqwen -p 'test_*.py'
+.venv/bin/python -m unittest discover -s models/flashnext -p 'test_*.py'
+.venv/bin/python -m unittest discover -s models/qwen27b -p 'test_*.py'
+.venv/bin/python -m unittest discover -s models/k2_horizon -p 'test_*.py'
+.venv/bin/python -m unittest discover -s models/bonsai2 -p 'test_*.py'
+.venv/bin/python -m compileall -q macqwen models/flashnext models/qwen27b models/k2_horizon models/bonsai2
 git diff --check
 ```
 
@@ -202,6 +201,6 @@ Flash-Next session validation errors use English. Their schema and payload forma
 
 ## Current next work
 
-Current setup work is tracked in [#11](https://github.com/1architect/macqwen-releases/issues/11).
-
-Flash-Next remains the primary optimization target. Expert reads set its decode rate. See [Flash-Next research](../flashnext/research.md).
+Runtime-specific next work belongs in the corresponding handoff. Shared chat
+changes should preserve the command table, profile boundaries, session rules,
+and backend interface described above.

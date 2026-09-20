@@ -8,7 +8,7 @@ Qwen3.8-27B uses the same managed runtime as the other supported models:
 .venv/bin/python
 ```
 
-MACQWEN prepares it on setup or on the first launch. We retain
+MACQWEN prepares it with `./chat.sh setup` or on the first launch. We retain
 `MACQWEN_QWEN27B_PYTHON` as an explicitly validated developer override.
 
 ## Model selection
@@ -51,19 +51,22 @@ checkpoint-local `bf16-ends/` assets required by the default loader.
 
 ## Validation
 
-Run backend and parser tests in the 27B environment:
+Run backend and parser tests in the managed environment:
 
 ```bash
-~/mlx-qwen38-kernel-lab/bin/python3 -m unittest \
+.venv/bin/python -m unittest \
   macqwen.test_qwen27b_backend macqwen.test_tools
 ```
 
 Run the lightweight import check:
 
 ```bash
-~/mlx-qwen38-kernel-lab/bin/python3 -c \
+.venv/bin/python -c \
   'from models.qwen27b.frankenstein_engine import FrankensteinEngine'
 ```
+
+For kernel-specific experiments, a compatible external environment may be
+selected explicitly with `MACQWEN_QWEN27B_PYTHON`.
 
 A live test requires an installed compatible checkpoint.
 

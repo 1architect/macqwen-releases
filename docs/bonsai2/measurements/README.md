@@ -9,15 +9,23 @@ arm, and forward/reverse/forward rounds unless noted. Throughput shows median
 with arm range where present. Every arm carries its token digest; a mismatched
 digest rejects the comparison before any speed reading.
 
+The current low-context verification is retained separately from the
+historical table below. It is diagnostic only: system VM activity occurred,
+and schema-1 physical-read values span prefill plus decode.
+
+Current check: [`20260919-low-context-short-check.jsonl`](20260919-low-context-short-check.jsonl)
+measured 3,283 → 32 tokens at 7.375, 7.339, and 7.328 tok/s (median 7.339),
+with three matching greedy digests and 10.43 GB peak MLX memory.
+
 ## Master results table
 
 | # | Run (raw artifact) | Prompt → output | Decode, tok/s by arm | Prefill, s by arm | Memory | Digests | Verdict |
 |---|---|---|---|---|---|---|---|
-| 1 | Short 2k ([JSONL](20260918-baseline-short.jsonl)) | 3,282 → 32 | 4.97, 5.84, 5.74 | 103, 130, 124 | peak 10.43 GB | 3/3 `d2004e2ef089` | Baseline |
-| 2 | Product 2k ([JSONL](20260918-baseline-product.jsonl)) | 3,282 → 256 | 5.44, 5.55, 5.54 | 117, 126, 124 | peak 10.43 GB | 3/3 `cbd9b4e29f07` | Accepted baseline |
+| 1 | Short 2k ([JSONL](20260918-baseline-short.jsonl)) | 3,282 → 32 | 4.97, 5.84, 5.74 | 103, 130, 124 | peak 10.43 GB | 3/3 `d2004e2ef089` | Historical reference |
+| 2 | Product 2k ([JSONL](20260918-baseline-product.jsonl)) | 3,282 → 256 | 5.44, 5.55, 5.54 | 117, 126, 124 | peak 10.43 GB | 3/3 `cbd9b4e29f07` | Historical; revalidate |
 | 3 | Prefill chunk 512/1024/2048 at 8k ([JSONL](20260918-prefill-wide-8k.jsonl), 7 of 9 arms) | 9,752 → 32 | 4.7–5.0, flat | 400–546, flat | peak 11.63 / 13.0 / 15.47 GB | all `161f886164bb` | Keep 512 |
 | 4 | Cache step 256/1024 at 16k product ([JSONL](20260918-cache-step-16k.jsonl), 2 of 6 arms) | 19,458 → 256 | 3.94 vs 3.99 | 1477 vs 1006 | KV 2,774 MB both | both `a6bbfb944b17` | Directional only |
-| 5 | Allocator cap at 2k product ([JSONL](20260918-allocator-2k.jsonl)) | 3,282 → 256 | control 5.56–5.58, capped 5.55–5.56 | tied ~124 | pool 774 → ~300 MB | all `cbd9b4e29f07` | Promoted to chat default |
+| 5 | Allocator cap at 2k product ([JSONL](20260918-allocator-2k.jsonl)) | 3,282 → 256 | control 5.56–5.58, capped 5.55–5.56 | tied ~124 | pool 774 → ~300 MB | all `cbd9b4e29f07` | Historical promotion; revalidate |
 | 6 | Wired limit at 2k product ([JSONL](20260918-wired-2k.jsonl)) | 3,282 → 256 | tied ~5.56; one 5.90 outlier tracks page warmth | tied | — | all match | Keep off |
 | 7 | Post-generation clear at 2k product ([JSONL](20260918-clear-cache-2k.jsonl)) | 3,282 → 256 | tied ~5.57 | tied | pool → ~1 MB | all match | Opt-in diagnostic |
 | 8 | Fused FWHT at 2k short ([JSONL](20260919-fused-fwht-short.jsonl)) | 3,282 → 32 | control 7.27, 5.96, 6.00 vs fused 6.30, 6.29, 6.08 | tied | peak 10.54 fused | all `d2004e2ef089` | Default-on on prefill evidence; decode unresolved |
@@ -32,6 +40,17 @@ digest rejects the comparison before any speed reading.
 | 15 | Decode 3k tg256 ([JSONL](20260919-decode-3k-tg256.jsonl)) | 3,282 → 256 | 5.57, 5.79, 5.75 | — | — | all match | Locked reference |
 | 16 | Custom GEMV at tg128 ([JSONL](20260919-gemv-decode.jsonl)) | 3,282 → 128 | control 6.45, 5.32, 5.27 vs gemv 5.50, 5.37, 5.21 | tied | — | all match | Rejected for default |
 | 17 | Allocator cap at 16k product ([JSONL](20260919-allocator-16k.jsonl), 3 of 6 arms) | 19,458 → 256 | control 4.29 vs capped 3.82, 3.92 | control 1327 vs capped 895, 870 | pool 2,890 → ~270 MB | all match | Directional; fast-first pattern |
+
+## Incomplete diagnostics
+
+These records are retained for failure and provenance, not promotion:
+
+- [`20260919-q4-attention-8k.jsonl`](20260919-q4-attention-8k.jsonl) contains
+  an interrupted arm.
+- [`20260919-q4-attention-smoke.jsonl`](20260919-q4-attention-smoke.jsonl) is a
+  one-arm smoke check.
+- [`20260919-low-context-short-check.jsonl`](20260919-low-context-short-check.jsonl)
+  is a current diagnostic check, not a sustained baseline.
 
 ## Paired effects
 
@@ -88,16 +107,18 @@ on the complete 2k evidence.
 
 ## Decisions and scope
 
-Accepted:
+Current evidence:
 
-- We accept the product 2k control at about 5.5 tok/s with MLX peak
-  10.43 GB as our sustained baseline.
+- We record the current short low-context control at 7.34 tok/s as a
+  diagnostic rate only; it is not our sustained baseline.
 - We keep prefill chunk 512 and wired off.
 
-Not promoted:
+Historical decisions requiring current revalidation:
 
-- The allocator cap ships as the chat default on the complete 2k evidence;
-  the 16k confirmation still awaits affordable machine time.
+- The allocator cap remains the chat default on complete historical 2k
+  evidence; the current short check does not validate its memory behavior.
+- The historical 5.5 tok/s product baseline remains unconfirmed on the
+  current runtime.
 - We do not promote any 16k cache-step result; only 2 of 6 arms completed.
 - We reject greedy `logsumexp` skipping (0.5 ms of ~190 ms/token),
   `mx.compile` of the decode step (Python dispatch is ~5% of the token),

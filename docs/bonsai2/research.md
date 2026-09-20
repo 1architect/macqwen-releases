@@ -2,7 +2,7 @@
 
 This is our active record of Bonsai-2 measurements, rejected ideas, and
 design decisions. Current operation belongs in [`handoff.md`](handoff.md).
-Exact commands, the compact results table, and retained JSONL arms will live
+Exact commands, the compact results table, and retained JSONL arms are indexed
 in [`measurements/`](measurements/).
 
 ## 2026-09-18 — Branch setup
@@ -86,16 +86,37 @@ every comparison.
 
 ### Baselines
 
+The rows below are historical reference artifacts from the earlier harness
+and runtime. We keep them for comparison, but do not treat them as current
+promotion evidence until they are rerun on a clean revision.
+
 | Run | Prompt → output | Decode median | Prefill | MLX active / peak |
 |---|---|---:|---|---|
 | Short 2k | 3,282 → 32 | 5.7 tok/s | ~124 s | 8.28 / 10.43 GB |
 | Product 2k | 3,282 → 256 | 5.5 tok/s | ~124 s | 8.31 / 10.43 GB |
 | 16k probe (cache-step file, 2 arms) | 19,458 → 256 | 4.0 tok/s | ~1,240 s | — / 13.42 GB |
 
-Decode falls from 5.5 tok/s at 2k to 4.0 tok/s at 19.5k context. Prefill runs
-about 26 tok/s at 2k and 16 tok/s at 19.5k. Round-1 arms run slower
-throughout; weight paging from the page cache dominates long-prefill timing
-more than chunk compute does.
+### Current low-context verification
+
+On 2026-09-19 we ran three fresh full-precision control children with the
+current benchmark structure and the bundled runtime. The `context-2k`
+fixture currently tokenizes to 3,283 prompt tokens and generated 32 tokens
+per arm. Decode measured 7.375, 7.339, and 7.328 tok/s, for a 7.339 tok/s
+median and a 0.65% arm spread. All arms completed, matched greedy digest
+`108ee966ba929`, and reached about 10.43 GB peak MLX memory. Prefill was
+83.0–87.2 seconds, with an 84.3-second median.
+
+This is a current diagnostic rate, not a sustained product baseline. System
+swap activity occurred, and schema-1 physical-read accounting spans prefill
+plus decode. We therefore promote only
+the decode-rate observation from this run. Raw evidence is retained at
+[`20260919-low-context-short-check.jsonl`](measurements/20260919-low-context-short-check.jsonl).
+
+The historical artifacts show decode falling from 5.5 tok/s at 2k to 4.0
+tok/s at 19.5k context. Their prefill runs about 26 tok/s at 2k and 16 tok/s
+at 19.5k. Round-1 arms run slower throughout; weight paging from the page
+cache dominates long-prefill timing more than chunk compute does. The current
+short check above is not a replacement for these sustained comparisons.
 
 ### Prefill chunk sweep (512 vs 1024 vs 2048, 8k fixture, 7 of 9 arms)
 
@@ -107,8 +128,9 @@ the default. Digests match across all three sizes.
 ### Allocator, wired limit, post-generation clear (2k product, 6 arms each)
 
 - Allocator cap 256 MB: pool drops from ~774 MB to ~300 MB with identical
-  decode medians (5.56 vs 5.57 tok/s) and matching digests. The cap is free
-  memory at 2k; promote it to the default after a 16k confirmation run.
+  decode medians (5.56 vs 5.57 tok/s) and matching digests. The cap remains
+  the chat default from this historical 2k evidence; current sustained and
+  16k confirmation runs are still required.
 - Wired limit: five of six arms tie near 5.56 tok/s; the sixth (5.90 tok/s
   with a faster prefill) tracks page-cache warmth, not wiring. No resolved
   benefit; keep off. This matches the K2 wired rejection.
@@ -251,7 +273,7 @@ smoke (`7*8=56` correct, finish stop both turns) on M4.
 `Conversation._separator` skipped the newline after the close when
 generated text ended with newlines, producing
 `<|im_end|><|im_start|>` where the template (chat_template.jinja line 109:
-every message ends `<|im_end|>\n`) and FlashNext always emit
+every message ends `<|im_end|>\n`) and Flash-Next always emit
 `<|im_end|>\n<|im_start|>`. Content trailing newlines belong to the
 message, not the join. When this side appends the close itself
 (truncated turn) the newline is now unconditional; the already-closed
@@ -340,7 +362,9 @@ and ms-per-token fields.
 Closed without building or promoting: ANE offload, full FWHT-matmul
 fusion, PLD, MTP and small-M dispatch, greedy logsumexp skip, mx.compile,
 lm_head prefill skip.
-Open: the 16k allocator confirmation only.
+Open: sustained-baseline revalidation, the 16k allocator confirmation, the
+full shared-transform comparison, stop-retention continuation checks, and
+8-bit KV quality validation.
 
 ### Q2/G128 GEMV experiment (rejected for default)
 
@@ -363,7 +387,7 @@ not survive the complete runtime on this hardware.
 - D10 small-M dispatch: no consumer without MTP or PLD. Deferred.
 - D11 sampling fast path: already shipped as the top-k survivor path.
 
-### Runtime ownership (Phase 10 recommendation)
+### Runtime ownership (current recommendation)
 Keep the native MLX backend and import ideas selectively, as done
 throughout this record. Adopting mlx-serve as the engine is rejected on
 evidence: decode ties GGUF at matched context, the prefill gap sits inside
@@ -591,7 +615,8 @@ arm, so a failed raw control cannot poison later filtering. Bonsai and K2
 protocol doubles now accept and assert the propagated thinking setting.
 
 The shared suite passed locally under the available Python 3.12 MLX runtime
-(276 tests), and the complete Bonsai suite now passes all 105 tests after
-installing the declared `mlx-vlm==0.6.17` dependency and its required Pillow
-runtime. Live checkpoint execution and benchmark validation remain outstanding,
-so no benchmark result is promoted by this patch.
+(298 tests), the complete Bonsai suite passes 113 tests, and compile checks
+pass after installing the declared `mlx-vlm==0.6.17` dependency and its
+required Pillow runtime. The current low-context diagnostic is recorded above;
+sustained and long-context validation remain outstanding, so no promotion
+claim is made from the diagnostic run.

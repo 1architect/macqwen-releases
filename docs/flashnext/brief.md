@@ -29,7 +29,7 @@ with `FLASHNEXT_METAL_G64=1`. We retain generic MLX expert execution as the
 explicit rollback with `FLASHNEXT_METAL_G64=0`. G64 slabs and stream-pack remain
 off with `FLASHNEXT_SLAB_G64=0` and `FLASHNEXT_STREAM_PACK=0`.
 
-We request this promotion on 2026-09-17 after six reversed interleaved pairs
+We enabled this default on 2026-09-17 after six reversed interleaved pairs
 of 32 tokens. Reference median is 2.374 tok/s; Metal median is 2.665 tok/s.
 Our paired gain is +13.4% mean and +15.1% median, with 6/6 wins and
 two-sided sign-test `p=0.031`. All output digests match. Our
@@ -42,7 +42,9 @@ Packed residency remains unpromoted.
 
 The runtime saves an explicit `--checkpoint` choice and otherwise selects the sole complete compatible local checkpoint.
 
-The model has 512 experts per routed layer. Each token uses a small expert set. The large hashed n-gram table is also sparse at lookup time.
+REAP has 288 routed experts per layer; the oQ4 baseline has 512. Each token
+uses a small expert set. The large hashed n-gram table is also sparse at
+lookup time.
 
 ## Runtime structure
 

@@ -15,8 +15,9 @@ The chat supports four runtimes:
   runtime, text-only.
 - `qwen27b` runs the Qwen3.8-27B V4 runtime with a custom MLX build.
 
-Each runtime selects a compatible Python environment before model loading.
-Flash-Next, K2-Horizon, and Bonsai-2 can use the same project environment.
+Each runtime selects a compatible Python environment before model loading. The
+managed `.venv` is the default for every runtime; validated model-specific
+overrides remain available for development.
 
 ## Profiles
 
@@ -42,7 +43,8 @@ Answer precisely. Never invent an API, a name, or a result. Ask for what you nee
 
 ## Shared behavior
 
-The chat manages input, commands, preferences, prompts, streaming, tools, and sessions. Both models use one command table. Each backend owns
+The chat manages input, commands, preferences, prompts, streaming, tools, and
+sessions. All runtimes use one command table. Each backend owns
 its session format.
 
 The ready line shows the model, profile, and `/help` hint. `/status` shows
@@ -55,12 +57,11 @@ Flash-Next routing changes apply through `/config model`. This includes
 The terminal shows measured prefill progress. It streams complete words with separate answer and reasoning colors. Tool protocol stays
 hidden. Tool states and execution time remain visible.
 
-## FlashNext research boundary
+## Research boundary
 
-The next FlashNext performance work stays in the FlashNext runtime. It does
-not change shared chat behavior. The active fronts are the pre-load wired-limit
-test (#43), Metal barrier and fence instrumentation (#45), and expert working
-set tests (#24 and #25).
+Runtime-specific performance work stays in that runtime's handoff and research
+record. Shared chat changes should not duplicate benchmark results or runtime
+controls here.
 
 Answer allowance and reasoning capacity use separate settings. Request statistics combine all generation segments.
 
@@ -81,6 +82,6 @@ The API key directory uses mode `0700`. The key file uses mode `0600`.
 
 ## Status
 
-The shared package is active. Flash-Next remains our primary optimization
-target. K2-Horizon provides a resident 7B option, and Qwen27B remains available
-for research.
+The shared package is active. Flash-Next is the primary runtime, K2-Horizon is
+the resident 7B option, Bonsai-2 is experimental and text-only, and Qwen3.8-27B
+remains available for research.

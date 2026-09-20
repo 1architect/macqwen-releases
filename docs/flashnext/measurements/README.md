@@ -1,18 +1,21 @@
-# Published measurement records
+# Flash-Next measurement records
 
-A performance number in `README.md`, `CHANGELOG.md`, or an overview must link to a file in this directory. `logs/` contains untracked
-scratch data and cannot support a published result.
-
-Produce a file with the standard harness:
+This directory contains retained Flash-Next evidence. New live runs use the
+project terminal:
 
 ```bash
-python models/flashnext/bench_production.py --json docs/flashnext/measurements/NAME.json
+./tests/run.sh --model flashnext --checkpoint PATH
 ```
 
-Each file records every arm, physical MB per token, free memory, elapsed time, and rate correlation. Quote the median and range. Do not
-quote the best arm or a two-arm mean. The older warm two-arm subset produced
-an invalid 2.83 tok/s baseline. The current accepted 2.83 result comes from
-the 12-arm clean-boot `buffer-chunk2` comparison.
+Follow the [measurement standard](../../measurement-standard.md). Older JSON
+files below were produced by the historical Flash-Next benchmark harness; keep
+their commands and schema for provenance, but do not use them as a template
+for new records.
+
+A performance number in `README.md`, `CHANGELOG.md`, or an overview must link
+to a retained record with clear checkpoint, harness, controls, and raw-arm
+provenance. Do not quote a best arm, a synthetic fixed-route ceiling, or an
+incomplete run as a product rate.
 
 ## Retained files
 
@@ -25,5 +28,7 @@ the 12-arm clean-boot `buffer-chunk2` comparison.
 | `track-resident.json` | Tracked resident reads against pinned-only reads |
 | `swap-resident.json` | Exact routing against cache-aware routing |
 
-`swap-resident.json` supports the cache-aware claim. Its medians are 2.539 and 2.790 tok/s. Physical reads are 417.8 and 347.6 MB per token.
-The arms alternate. Pairing all eight adjacent condition arms gives a mean 8.3 percent gain, with seven pairs faster.
+`swap-resident.json` supports the historical cache-aware claim. Its medians are
+2.539 and 2.790 tok/s, with 417.8 and 347.6 MB of physical reads per token.
+The arms alternate; the paired eight-arm subset measured an 8.3% mean gain.
+See the Flash-Next brief and research record for scope and limitations.

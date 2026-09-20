@@ -8,14 +8,14 @@ This file is the single active research record for Flash-Next. It preserves the 
 - Adaptive routing crossed a page-cache working-set boundary.
 - Exact-quality residency stabilizes the generation tail when RAM is free.
 - Large-prompt allocator release restored decode performance after prefill.
-- Prefill throughput increases with prompt length. A prompt near 5,000 tokens may reach about 40 to 50 tok/s under favorable conditions. Controlled synthetic runs reached higher rates, including 62.19 tok/s at 5,002 tokens.
+- Prefill throughput increases with prompt length. A prompt near 5,000 tokens may reach about 40 to 50 tok/s under favorable conditions. Synthetic fixed-route diagnostics reached higher rates, including 62.19 tok/s at 5,002 tokens; they are not production results.
 - Repacking, prefetch, weight caches, and in-process overlap failed controls.
 - Exact MTP and speculative paths did not improve the complete runtime.
 
 ## Current operational decision, 2026-09-17
 
-We promote the REAP Q4/G64 Metal executor to our default at our explicit
-request: `FLASHNEXT_METAL_RUNTIME=1` and `FLASHNEXT_METAL_G64=1`.
+We promoted the REAP Q4/G64 Metal executor to our default:
+`FLASHNEXT_METAL_RUNTIME=1` and `FLASHNEXT_METAL_G64=1`.
 We retain `FLASHNEXT_METAL_G64=0` as the explicit generic MLX rollback.
 G64 slabs, stream-pack, and QSA optimization flags remain off.
 

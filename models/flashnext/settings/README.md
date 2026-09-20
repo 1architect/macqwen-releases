@@ -1,6 +1,6 @@
-# Backend setting providers
+# Flash-Next setting providers
 
-Add related FlashNext settings to a `setting_*.py` provider. Export `SETTING`,
+Add related Flash-Next settings to a `setting_*.py` provider. Export `SETTING`,
 `SETTINGS`, or `get_settings()`. Each `Setting` must declare its lifecycle,
 visibility, effective reader, and source. Keep providers pure Python. Do not
 import MLX during discovery.

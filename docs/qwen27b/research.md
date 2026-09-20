@@ -18,7 +18,7 @@ _Last updated: 2026-08-20_
 
 ## 0. Purpose of this document
 
-> Session of 2026-08-20: see `SESSION-2026-08-20.md` for the full record of
+> Session of 2026-08-20: see [`../archive/qwen27b/session-2026-08-20.md`](../archive/qwen27b/session-2026-08-20.md) for the full record of
 > that day, including the measured performance ceilings, the ideas that were
 > tested and rejected, and the open list. Sections 45 to 52 below carry the
 > detail.

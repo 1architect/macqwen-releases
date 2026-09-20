@@ -5,8 +5,9 @@ library Hadamard transform, and a downcast. This module folds all three into
 one dispatch over 1024-element blocks. Anything the kernel does not cover
 falls back to the stock ``runtime.fwht``.
 
-The kernel stays opt-in behind ``BONSAI2_FUSED_FWHT=1`` until a controlled
-comparison with matching greedy digests promotes it.
+The backend enables the kernel by default through ``fused_fwht=True``. The
+stock path remains available with ``fused_fwht=False``; the internal
+``BONSAI2_FUSED_FWHT`` flag is managed by ``apply_runtime_hooks``.
 """
 from __future__ import annotations
 

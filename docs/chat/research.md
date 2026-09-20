@@ -1,9 +1,14 @@
 # Shared chat design record
 
+This is the active design record for the shared chat. Current operation
+belongs in [`handoff.md`](handoff.md); runtime-specific evidence belongs in
+the corresponding runtime record.
+
 ## Problem
 
-The project first used one chat per model. Features diverged. The models also require incompatible MLX environments. One shared interface
-now starts each model through its required launcher.
+The project first used one chat per model, so features diverged. One shared
+interface now starts each runtime through its compatible launcher. The managed
+`.venv` is the default; validated runtime overrides remain supported.
 
 ## Main design decisions
 

@@ -3,8 +3,8 @@
 Read this file, [`research.md`](research.md), and
 [`AGENT_INVARIANTS.md`](AGENT_INVARIANTS.md) before changing code or starting
 an experiment. [`CONTRIBUTING.md`](../../CONTRIBUTING.md) defines the project
-rules. Release 0.4.1 closes the corrective REAP integration work; inspect the
-worktree before every change instead of relying on a recorded clean/dirty
+rules. The current branch contains the corrective REAP integration; inspect
+the worktree before every change instead of relying on a recorded clean/dirty
 state.
 
 ## Decision and current state
@@ -59,7 +59,7 @@ FLASHNEXT_QSA_SCATTER_DECODE=0
 We roll back to generic MLX Q4/G64 execution with an explicit override:
 
 ```bash
-FLASHNEXT_METAL_G64=0 ./chat.sh --checkpoint reap
+FLASHNEXT_METAL_G64=0 ./chat.sh --checkpoint "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
 ```
 
 The runtime flag selects the MLX-backed Metal path. The separate G64 flag
@@ -100,9 +100,8 @@ a follow-up item.
 
 The following are the validation records we may use while resuming work:
 
-- Current non-model validation: 251 `macqwen` tests and 323 FlashNext tests.
-  The FlashNext suite includes 56 focused Metal/runtime and slab tests; none
-  of these checks load a checkpoint or generate model tokens.
+- Current non-model validation covers the shared and Flash-Next checkpoint-free
+  suites. These checks do not load a checkpoint or generate model tokens.
 - Our terminal sanity check on 2026-09-12 used 3 arms and 32 tokens. The baseline
   median was 3.74 tok/s, range 3.23–3.78, tail 3.45 tok/s, and 193.3 MB/token;
   the token digest was `1a9abb4b5fdc523a`. This is a quick sanity check, not a
@@ -130,7 +129,8 @@ experiments belong in `research.md`, not in this operational summary.
 
 ## Required benchmark protocol
 
-Use `models/flashnext/bench_production.py` for published decode numbers and
+Start retained runs with `./tests/run.sh`; the Flash-Next cases call
+`models/flashnext/bench_production.py` for published decode numbers and
 `models/flashnext/bench_slab_production.py` for selective slab comparisons.
 Before any run, we must record:
 
@@ -197,7 +197,7 @@ Interrupted generations are incomplete gates, not quality failures.
 | `models/flashnext/metal_runtime.py` | Compatible MLX Metal Q4/G32 paths |
 | `models/flashnext/slab_pack.py` | File-backed compatible slab storage |
 | `models/flashnext/settings/` | Settings registry and safe launch defaults |
-| `models/flashnext/tests/` | Interactive research test catalog |
+| `models/flashnext/tests/` | Flash-Next live-test cases |
 | `models/flashnext/bench_production.py` | Standard production benchmark |
 | `models/flashnext/bench_slab_production.py` | Paired slab benchmark |
 | `models/flashnext/diskio.py` | Physical-read accounting |
@@ -206,7 +206,7 @@ Set up the local environment with:
 
 ```bash
 ./chat.sh setup
-./chat.sh --checkpoint reap
+./chat.sh --checkpoint "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
 ```
 
 Use `--model-path` or `MACQWEN_FLASHNEXT_MODEL` for an explicit complete
@@ -232,8 +232,8 @@ user changes intact and do not reset or discard them implicitly.
   fallback checkpoint.
 - Issue #43 tracks the pre-load wired-memory comparison.
 - Issue #45 tracks interval-valid Metal/SSD DMA contention evidence.
-- Issue #48 tracks SSD DMA and GPU contention outside FlashNext.
-- Issue #49 tracks FlashNext prefill when opened for plain and agent profiles.
+- Issue #48 tracks SSD DMA and GPU contention outside Flash-Next.
+- Issue #49 tracks Flash-Next prefill when opened for plain and agent profiles.
 
 We keep a candidate's speed result unresolved when it falls inside its measured
 resolution band. Our 2026-09-17 G64 short result clears its reported band;

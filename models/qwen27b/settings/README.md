@@ -1,4 +1,4 @@
-# Qwen27B setting providers
+# Qwen3.8-27B setting providers
 
 Add related startup settings to a `setting_*.py` provider. Export `SETTING`,
 `SETTINGS`, or `get_settings()`. Providers use the shared pure-Python

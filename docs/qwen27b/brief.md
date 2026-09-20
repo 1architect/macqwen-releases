@@ -7,7 +7,8 @@ techniques.
 
 ## Model
 
-The runtime targets Qwen3.8-27B checkpoints with vocabulary size `248320`. Local V4 builds use measured heterogeneous affine quantization.
+The runtime targets Qwen3.8-27B checkpoints with vocabulary size `248320`.
+Local V4 builds use measured heterogeneous affine quantization.
 
 The last documented V4-flat build used 13.05 GB on disk. Its lean loader kept about 12.65 GB resident by moving the embedding outside
 resident memory.
@@ -23,14 +24,16 @@ resident memory.
 
 ## Limits
 
-The 27B runtime needs a custom MLX environment. Builds above about 12.6 GB resident memory caused swap and large generation losses on the
-tested machine.
+The runtime uses the managed `.venv` by default. A validated
+`MACQWEN_QWEN27B_PYTHON` override is available for kernel-specific work.
+Builds above about 12.6 GB resident memory caused swap and large generation
+losses on the tested machine.
 
 The most recent local verification found no installed V4 checkpoint. Unit and import tests still pass.
 
 ## Scope boundary
 
-The revised performance direction applies to FlashNext. This Qwen27B runtime
+The revised performance direction applies to Flash-Next. This Qwen27B runtime
 has no new measurement or code change from that work.
 
 ## Status

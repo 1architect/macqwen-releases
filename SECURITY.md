@@ -21,8 +21,9 @@ MACQWEN stores managed API keys at:
 
 The directory uses mode `0700`. The file uses mode `0600`.
 
-Use `/keys set SERVICE` to enter a key without echo. Do not pass keys inline or
-store them in the repository.
+Use `/config keys set SERVICE` to enter a key without echo. The compatibility
+command `/keys set SERVICE` is also accepted. Do not pass keys inline or store
+them in the repository.
 
 Tool, checker, editor, cache, and status child processes receive an environment
 with secret-like variables removed.
@@ -34,6 +35,8 @@ cache data. Keep these directories private:
 
 ```text
 ~/.cache/flashnext/sessions/
+~/.cache/k2-horizon/sessions/
+~/.cache/bonsai2/sessions/
 ~/.frankenstein/sessions/
 ```
 

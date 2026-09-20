@@ -104,19 +104,25 @@ tool formats preserve payload bytes and literal protocol tags; benchmark
 fixtures and digest references are filtered by clean-arm state; and the Bonsai
 and K2 protocol doubles accept `enable_thinking`.
 
-The retained uncommitted checkpoint and budget fixes are part of this work.
-The full shared suite passes (276 tests), and the complete Bonsai suite passes
-all 105 tests in the available Python 3.12 MLX runtime after installing the
-declared `mlx-vlm==0.6.17` dependency and Pillow. Before merging, run compile
-checks and the required live execution validation with the bundled runtime.
-No live benchmark or promotion claim is made yet; use fresh child processes
-and the interleaved reverse-order protocol when execution is available.
+The checkpoint and budget fixes are covered by the current tests. The shared
+suite passes 298 tests, the Bonsai suite passes 113 tests, and compile checks
+pass in the managed Python 3.12 MLX runtime with the declared
+`mlx-vlm==0.6.17` and Pillow dependencies.
+
+We also completed a low-context check with three fresh
+control children: 3,283 prompt tokens, 32 output tokens, and 7.33, 7.34,
+and 7.38 tok/s with matching greedy digests. The raw record is
+[`20260919-low-context-short-check.jsonl`](measurements/20260919-low-context-short-check.jsonl).
+This is diagnostic evidence only: VM swap activity occurred, and the current
+physical-read field includes prefill and decode. Revalidate the sustained and
+long-context baselines before making a promotion claim.
 
 ## Next work
 
-Baselines remain 5.5 tok/s product at 2k with 10.43 GB peak and 4.0 tok/s at
-16k with 13.42 GB peak. After execution validation, the open research items
-are the 16k allocator confirmation, the full shared-transform comparison,
-stop-retention continuation checks, and 8-bit KV quality validation. Record
-new evidence in [`research.md`](research.md) and raw arms under
-[`measurements/`](measurements/).
+The 5.5 tok/s 2k product and 4.0 tok/s 16k figures remain historical
+references. The current 7.34 tok/s short check does not replace the sustained
+baseline. Next, revalidate the 256-token and 19.5k fixtures on a clean
+revision, then continue the 16k allocator confirmation, full shared-transform
+comparison, stop-retention continuation checks, and 8-bit KV quality
+validation. Record new evidence in [`research.md`](research.md) and raw arms
+under [`measurements/`](measurements/).

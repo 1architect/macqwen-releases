@@ -1,8 +1,9 @@
-# FlashNext Agent Invariants
+# Flash-Next agent invariants
 
-This file records hard constraints for agents working on FlashNext. Read it
+This file records hard constraints for agents working on Flash-Next. Read it
 with [`handoff.md`](handoff.md) and [`research.md`](research.md) before code
 changes or experiments.
+The shared measurement rules are in [`../measurement-standard.md`](../measurement-standard.md).
 
 ## Runtime invariants
 
@@ -95,7 +96,7 @@ provide its explanation, proposal reason, controls, metrics, source, and
 executable script through the test plugin API.
 
 Preserve the established 32-token arm when comparing against the current
-FlashNext baseline. A longer horizon changes route locality, page-cache state,
+Flash-Next baseline. A longer horizon changes route locality, page-cache state,
 memory pressure, and GPU utilization. Treat any duration change as a separate
 experiment with its own baseline. Report token-level or block-level metrics
 when the harness provides them.

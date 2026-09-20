@@ -2,42 +2,50 @@
 
 [![CI](https://github.com/1architect/macqwen-releases/actions/workflows/ci.yml/badge.svg)](https://github.com/1architect/macqwen-releases/actions/workflows/ci.yml)
 
-MACQWEN runs large language models on low-memory Apple Silicon Macs. Our focus
-is running LLMs that exceed available RAM by streaming selected data from SSD.
+MACQWEN runs large language models on low-memory Apple Silicon Macs. Its
+primary runtime streams selected Flash-Next model data from SSD while keeping
+the dense model core in unified memory.
 
-We support the SSD-streamed Qwen Flash-Next family as our primary large-LLM
-runtime. We also support the resident K2-Horizon 7B MLX model and the ternary
-Bonsai-2 27B model as dense alternatives, and the Qwen3.8-27B V4 runtime for
-research.
+The repository contains runtime code, tests, documentation, and measurement
+records. It does not contain model weights.
 
-The tested system is an M4 Mac with 16 GB of unified memory and a 256 GB SSD.
-The project includes no model weights.
+## Supported runtimes
+
+| Runtime | Role | Checkpoint | Launch |
+|---|---|---|---|
+| Flash-Next | Primary SSD-streamed runtime | oQ4 quality baseline; REAP-288 research checkpoint | `./chat.sh --model flashnext --checkpoint oq4` |
+| K2-Horizon 7B | Resident MLX alternative | Official 8-bit MLX checkpoint | `./chat.sh --model k2-horizon --checkpoint k2` |
+| Bonsai-2 27B | Experimental ternary, text-only runtime | Official 2-bit MLX checkpoint | `./chat.sh --model bonsai2 --checkpoint b2` |
+| Qwen3.8-27B | Research runtime | Compatible local V4 build | `./chat.sh BUILD --profile plain` |
 
 ## Reference performance (Flash-Next)
 
-| Model | Operation | Result |
+| Runtime | Operation | Result |
 |---|---|---:|
 | Flash-Next | REAP terminal sanity, 32 tokens | 3.74 tok/s median, 3.45 tok/s tail, 193.3 MB/token |
-| Flash-Next | Historical Q4/G32 60-slot control | 3.08 tok/s gen, 3.00 tok/s tail, 279.7 MB/token |
-| Flash-Next | Long-prompt prefill near 5,000 tokens | About 40 to 50 tok/s; 62.19 tok/s synthetic result |
+| Flash-Next | Historical Q4/G32 60-slot control | 3.08 tok/s generation, 3.00 tok/s tail, 279.7 MB/token |
+| Flash-Next | Long-prompt prefill near 5,000 tokens | About 40–50 tok/s; 62.19 tok/s in a synthetic diagnostic |
 
-These results come from the reference Mac and cover Flash-Next only.
-K2-Horizon and Qwen3.8-27B have no published README rates.
-Speed changes with memory pressure,
-SSD state, and the macOS file cache. See the
-[measurement evidence](docs/flashnext/measurements/) for test conditions.
+These reference observations come from the M4 test system and cover
+Flash-Next only. The REAP row is a short terminal sanity check, the Q4/G32
+row is historical control data, and the 62.19 tok/s figure is not production
+throughput. See the [Flash-Next measurement evidence](docs/flashnext/measurements/)
+for conditions and provenance.
 
-The listed controlled results preserve token IDs.
+Flash-Next REAP-288 currently uses the G64 Metal executor by default. Its
+short exact-digest speed result supports that executor choice under the tested
+conditions; long-turn quality remains unverified. See the
+[Flash-Next handoff](docs/flashnext/handoff.md) for the operational state.
 
-## Quick start (Flash-Next)
+We test on an M4 Mac with 16 GB of unified memory and a 256 GB SSD. Results
+vary with memory pressure, SSD state, and the macOS file cache.
 
-This path installs a Flash-Next checkpoint. For K2 see K2-Horizon 7B.
-For 27B see Qwen3.8-27B research runtime.
+## Quick start
 
-You need an Apple Silicon Mac, Python 3.12, a fast SSD, and enough free space
-for one checkpoint. We test on an M4 Mac with 16 GB of unified memory.
+Requirements: an Apple Silicon Mac, Python 3.12, a fast SSD, and enough free
+space for at least one checkpoint.
 
-Clone MACQWEN and create our managed Python environment:
+Clone the repository and create its managed environment:
 
 ```bash
 git clone https://github.com/1architect/macqwen-releases.git
@@ -45,195 +53,117 @@ cd macqwen-releases
 ./chat.sh setup
 ```
 
-For the recommended first setup, download oQ4:
+Download the recommended oQ4 checkpoint:
 
 ```bash
 hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ4 \
   --local-dir "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ4"
 ```
 
-Start chatting:
+Start a chat:
 
 ```bash
-./chat.sh --checkpoint oq4
+./chat.sh --model flashnext --checkpoint oq4
 ```
 
-Run the project live-test terminal. It asks which installed model/checkpoint
-to test and discovers that runtime's cases automatically:
+When exactly one compatible checkpoint is installed, MACQWEN selects it
+automatically. With multiple checkpoints, select one with `--model` and
+`--checkpoint`.
+
+Run the project live-test terminal:
 
 ```bash
 ./tests/run.sh
 ```
 
-MACQWEN remembers the selected checkpoint. After the first run, `./chat.sh` is
-enough.
+It asks which installed runtime and checkpoint to test, discovers that
+runtime's cases, and writes retained JSONL records under
+`docs/<runtime>/measurements/`.
 
-## Choose a Flash-Next checkpoint
+## Flash-Next
 
-Model weights are not included in this repository.
+Flash-Next streams routed experts and n-gram data from SSD. `exact-quality` is
+the normal routing profile. The other profiles are research controls and may
+change output; use them only with the quality and measurement rules in the
+[Flash-Next documentation](docs/flashnext/brief.md).
 
-This table lists Flash-Next only. K2-Horizon and Qwen3.8-27B use their own sections.
-
-| Checkpoint | Disk size | Choose it when... |
-|---|---:|---|
-| oQ4 | 111.7 GB | You want the recommended setup with passing code quality |
-| oQ3-MTP | 86.2 GiB | Not recommended: it failed our code quality gate; use only for disk-constrained testing |
-| REAP-288 | 73.5 GB | You are helping test the current research checkpoint |
-
-The production runtime does not use the MTP weights included with oQ3-MTP.
-Our recorded SketchUp API test passed on oQ4 and failed on oQ3-MTP, so prefer
-oQ4 for code that depends on exact third-party APIs. REAP-288 support is
-available. We promote its G64 executor on short controlled speed evidence,
-but general quality and long-turn equivalence remain unverified.
-
-Download oQ4:
+The current REAP rollback is generic MLX expert execution:
 
 ```bash
-hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ4 \
-  --local-dir "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ4"
+FLASHNEXT_METAL_G64=0 ./chat.sh --checkpoint "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
 ```
 
-Download REAP-288:
+G64 slabs, stream packing, and QSA optimization flags remain off. The removed
+native-runtime prototype is not part of the supported launcher.
+
+### Flash-Next checkpoints
+
+| Alias | Checkpoint | Use |
+|---|---|---|
+| `oq4` | `Vontra/Qwen3.8-Flash-Next-MLX-oQ4` | Recommended quality baseline |
+| `oq3` / `oq3-mtp` | `Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP` | Disk-constrained research only; it failed the recorded code-quality gate |
+| — | `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit` | Current research checkpoint; use its full path |
+
+Download REAP-288 with:
 
 ```bash
 hf download sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit \
   --local-dir "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
 ```
 
-When only one compatible checkpoint is installed, MACQWEN finds it
-automatically. Otherwise, select it by alias or full path:
+Set `MACQWEN_MODEL_ROOT` when checkpoints live outside `~/models`. The
+launcher accepts a full checkpoint path with `--checkpoint` and validates the
+checkpoint before loading it.
 
-```bash
-./chat.sh --checkpoint oq4
-./chat.sh --checkpoint oq3
-./chat.sh --checkpoint /path/to/a/compatible-checkpoint
-```
-
-Set `MACQWEN_MODEL_ROOT` when checkpoints are outside `~/models`. MACQWEN
-creates and reuses `.venv` for every supported model; the first launch also
-prepares it automatically if setup has not run yet. Developers can explicitly
-override it with `MACQWEN_PYTHON` or a model-specific `MACQWEN_*_PYTHON`
-variable, and MACQWEN validates that override against the pinned runtime.
-
-## Flash-Next routing modes
-
-These modes apply to Flash-Next only. They have no effect on K2-Horizon or Qwen3.8-27B.
-
-The default `exact-quality` mode is the right choice for most users:
-
-```bash
-./chat.sh --exact-quality
-```
-
-Other modes are available for controlled experiments:
-
-```bash
-./chat.sh --cache-aware
-./chat.sh --standard
-./chat.sh --fast
-./chat.sh --fast-quality
-./chat.sh --fused-quality
-```
-
-| Mode | Purpose |
-|---|---|
-| `exact-quality` | Default mode with selective expert residency |
-| `cache-aware` | Faster mode with small routing substitutions |
-| `standard` | Threshold routing without selective pinning |
-| `fast` | Aggressive approximate routing |
-| `fast-quality` | Approximate routing with quality recovery |
-| `fused-quality` | Experimental draft verification |
-
-Use `exact-quality` for code, long work, and tasks that require precise facts.
-Cache-aware routing changes some expert choices and can change the reply.
-The fast modes trade output accuracy for speed.
-
-Read the [Flash-Next brief](docs/flashnext/brief.md) for current mode status.
-Read the [Flash-Next research record](docs/flashnext/research.md) for full results.
-
-## How Flash-Next works
-
-MACQWEN keeps the core model in unified memory and reads the routed experts it
-needs from SSD. Flash-Next is a good fit because its experts are small enough
-to stream selectively. The normal launcher uses MLX and Metal; it does not use
-our abandoned native-runtime prototype.
-
-For REAP-288, we default to the G64 Metal executor (`FLASHNEXT_METAL_G64=1`).
-We retain generic MLX execution as an explicit rollback: `FLASHNEXT_METAL_G64=0`.
-G64 slabs, expert-major stream packing, and QSA optimization flags remain off.
-We request this promotion on the 2026-09-17 short benchmark evidence and skip
-the long-turn quality gate at our request. We do not claim general quality
-or long-turn equivalence. See our [handoff](docs/flashnext/handoff.md) for evidence.
-
-## Other models
+## Other runtimes
 
 ### K2-Horizon 7B
 
-K2-Horizon is a dense 7B alternative that uses about 9.6 GB of disk space. It
-runs through MLX-LM and does not use the Flash-Next streaming or routing modes.
-
-Download the official 8-bit MLX checkpoint:
+K2-Horizon is a resident 7B MLX model. It does not use Flash-Next streaming or
+routing.
 
 ```bash
 hf download abenzerps/K2-Horizon-7B-MLX-8bit \
   --local-dir "$HOME/models/K2-Horizon-7B-MLX-8bit"
-```
-
-Start it with the `k2` checkpoint alias:
-
-```bash
 ./chat.sh --model k2-horizon --checkpoint k2
 ```
 
-K2-Horizon supplies its MLX model implementation in `model.py`. Loading this
-checkpoint executes that local file, so only use a checkpoint source we trust.
-
-Read the [K2-Horizon brief](docs/k2_horizon/brief.md) for current status, the
-[research record](docs/k2_horizon/research.md) for measured decisions, and the
+The checkpoint supplies executable `model.py` code. Use a checkpoint source we
+trust. Read the [K2-Horizon brief](docs/k2_horizon/brief.md) and
 [handoff](docs/k2_horizon/handoff.md) before changing or benchmarking it.
 
-### Bonsai-2 27B (experimental, text-only)
+### Bonsai-2 27B
 
-Bonsai-2 is a ternary-weight 27B alternative that uses about 8.6 GB of disk
-space. It runs through its bundled Hadamard runtime and does not use the
-Flash-Next streaming or routing modes.
-
-Download the 2-bit MLX checkpoint:
+Bonsai-2 is an experimental ternary-weight 27B runtime. Milestone 1 is
+text-only and uses the checkpoint's bundled `runtime/` loader.
 
 ```bash
 hf download prism-ml/Ternary-Bonsai-2-27B-mlx-2bit \
   --local-dir "$HOME/models/Ternary-Bonsai-2-27B-mlx-2bit"
-```
-
-Start it with the `b2` checkpoint alias:
-
-```bash
 ./chat.sh --model bonsai2 --checkpoint b2
 ```
 
-Bonsai-2 requires its checkpoint-supplied `runtime/` loader. Loading this
-checkpoint executes that local code, so only use a checkpoint source we trust.
-MACQWEN checks that loader before selecting the checkpoint.
+The backend validates the bundled loader before selecting the checkpoint. Use
+a checkpoint source we trust. See the [Bonsai-2 brief](docs/bonsai2/brief.md),
+[research record](docs/bonsai2/research.md), and
+[handoff](docs/bonsai2/handoff.md).
 
-Read the [Bonsai-2 brief](docs/bonsai2/brief.md) for current status, the
-[research record](docs/bonsai2/research.md) for measured decisions, and the
-[handoff](docs/bonsai2/handoff.md) before changing or benchmarking it.
+### Qwen3.8-27B
 
-### Qwen3.8-27B research runtime
-
-This runtime uses the shared managed MLX environment and a compatible local V4
-checkpoint. The repository does not provide a ready V4 checkpoint; supported
-V4 builds must include their `bf16-ends/` assets beside the weights.
+The research runtime uses the managed environment and a compatible local V4
+checkpoint. A supported build must include `bf16-ends/` beside its weights.
+`BUILD` is the directory suffix under the model root:
 
 ```bash
 ./chat.sh BUILD --profile plain
 ```
 
-Read the [Qwen3.8-27B handoff](docs/qwen27b/handoff.md) for setup and validation details.
+See the [Qwen3.8-27B handoff](docs/qwen27b/handoff.md) before using or
+benchmarking this runtime.
 
 ## Daily use
 
-Run `/help` inside the chat to see the current commands. The essentials are:
+Inside the chat, use:
 
 ```text
 /help [all]
@@ -244,19 +174,20 @@ Run `/help` inside the chat to see the current commands. The essentials are:
 /quit
 ```
 
-Use `/status` to inspect the model, routing mode, context, and memory. Use
-`/config display animate off` if you prefer output without the text animation.
+Use `/status` for model, profile, routing, context, and memory information.
+Use `/config display animate off` to disable output animation.
 
 ## Local API server
 
-Start the server:
+Start the local server with:
 
 ```bash
-./chat.sh /server
+./chat.sh --server
 ```
 
-The default address is `http://127.0.0.1:8080`.
-The server processes one generation at a time.
+The compatibility command `/server` is also accepted inside chat. The default
+address is `http://127.0.0.1:8080`, and the server processes one generation at
+a time.
 
 | Protocol | Endpoint |
 |---|---|
@@ -264,29 +195,26 @@ The server processes one generation at a time.
 | OpenAI Chat Completions | `/v1/chat/completions` |
 | Anthropic Messages | `/v1/messages` |
 
-Localhost mode accepts any client key.
-The server reuses its cache when the next prompt extends the prior prompt exactly.
-
-Allow a specific browser origin with:
-
-```bash
-./chat.sh --server --allow-origin http://localhost:3000
-```
-
-A non-local address requires a shared key:
+Localhost does not require authentication by default. A non-local bind
+requires a shared key:
 
 ```bash
 export MACQWEN_SERVER_API_KEY="PRIVATE_VALUE"
 ./chat.sh --server --host 0.0.0.0
 ```
 
-Keep the server on localhost or a trusted local network.
-Read [SECURITY.md](SECURITY.md) before changing the host or enabling repository tools.
+Allow browser requests only for a trusted origin:
+
+```bash
+./chat.sh --server --allow-origin http://localhost:3000
+```
+
+Read [SECURITY.md](SECURITY.md) before changing the host, allowing browser
+origins, or enabling repository tools.
 
 ## Keys and local data
 
-Tavily requires an API key. Context7 accepts an optional key.
-Manage these keys inside the chat:
+Manage optional Tavily and Context7 keys inside the chat:
 
 ```text
 /config keys
@@ -295,10 +223,8 @@ Manage these keys inside the chat:
 /config keys delete tavily
 ```
 
-The compatibility commands `/keys` and `/api-keys` remain accepted.
-Key management works in both chat profiles.
-
-Key input does not echo.
+Key input does not echo. Session files can contain private prompts and model
+state; keep them private.
 
 | Data | Default location |
 |---|---|
@@ -306,92 +232,66 @@ Key input does not echo.
 | API keys | `~/Library/Application Support/MACQWEN/api_keys.json` |
 | Flash-Next sessions | `~/.cache/flashnext/sessions/` |
 | K2-Horizon sessions | `~/.cache/k2-horizon/sessions/` |
+| Bonsai-2 sessions | `~/.cache/bonsai2/sessions/` |
 | Qwen3.8-27B sessions | `~/.frankenstein/sessions/` |
 
-Session files can contain private prompts and model state.
-Do not publish session files, credentials, or custom system prompts.
+The launcher uses `.venv` by default. Developers can provide a validated
+override with `MACQWEN_PYTHON` or a model-specific `MACQWEN_*_PYTHON` variable.
 
 ## Troubleshooting
 
-- If no checkpoint appears, pass its full path with `--checkpoint`.
-- If the checkpoint is incomplete, resume the `hf download` command.
-- If generation becomes slower, close memory-heavy apps and retry.
-- If multiple checkpoints exist, select `oq4` or a full path.
-- For K2-Horizon, include `--model k2-horizon`; the no-argument launcher keeps
-  Flash-Next as its default.
-- If a command changed, run `/help` for the active command list.
+- No checkpoint appears: pass its full path with `--checkpoint`.
+- A download is incomplete: resume the `hf download` command into the same directory.
+- Several checkpoints are installed: provide both `--model` and `--checkpoint`.
+- Generation slows down: close memory-heavy applications and retry.
+- K2-Horizon or Bonsai-2 is not selected: provide its model and checkpoint aliases explicitly.
+- A command has changed: run `/help` for the active command list.
 
-The Flash-Next loader checks the checkpoint configuration, index, and required shard files.
+## Tests and development
 
-## Repository layout
+Run the shared unit tests:
+
+```bash
+.venv/bin/python -m unittest discover -s macqwen -p 'test_*.py'
+```
+
+Run a runtime's unit tests with the same pattern, replacing `RUNTIME`:
+
+```bash
+.venv/bin/python -m unittest discover -s models/RUNTIME -p 'test_*.py' -q
+```
+
+Use `./tests/run.sh` for retained live-model evidence. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) and the
+[measurement standard](docs/measurement-standard.md) before changing code or
+running experiments.
+
+## Documentation and layout
+
+The [documentation index](docs/README.md) lists the current component
+documents. Each active runtime follows the same structure:
+
+- `brief.md`: purpose, scope, status, and main results;
+- `research.md`: dated measurements, decisions, and rejected approaches;
+- `handoff.md`: current operation, validation, constraints, and next work.
+
+Historical records are in [docs/archive](docs/archive/README.md). They preserve
+provenance and may contain obsolete commands.
 
 ```text
-macqwen/                 Shared chat, commands, settings, tools, and test engine
-tests/                   Project live-test terminal launcher and documentation
-models/flashnext/        Flash-Next runtime and benchmarks
-models/flashnext/settings/ FlashNext setting registry and launch defaults
-models/flashnext/tests/  FlashNext live-test provider and case catalog
-models/k2_horizon/       K2-Horizon runtime, protocol adapter, settings, and tests
-models/bonsai2/          Bonsai-2 runtime, ternary kernels, settings, and tests
-models/qwen27b/          Qwen3.8-27B runtime and research utilities
-docs/                    Current guides, results, and historical records
-docs/MLX/               MLX Metal backend source notes
-docs/flashnext/graphics/ FlashNext trace screenshots and plots
-docs/k2_horizon/         K2-Horizon brief, research, handoff, and measurements
-docs/bonsai2/            Bonsai-2 brief, research, handoff, and measurements
+macqwen/                    Shared chat, commands, settings, tools, and test engine
+tests/                      Project live-test terminal
+models/flashnext/           Flash-Next runtime and benchmarks
+models/k2_horizon/          K2-Horizon runtime, adapter, settings, and tests
+models/bonsai2/             Bonsai-2 runtime, kernels, settings, and tests
+models/qwen27b/             Qwen3.8-27B runtime and research utilities
+docs/                       Current guides, evidence, and historical records
 ```
-
-`chat.sh` selects the model and complete checkpoint, then loads it in our
-managed runtime. `tests/run.sh` uses the same selection rules and writes live
-records under `docs/<runtime>/measurements/`.
-
-## Tests
-
-Run shared tests:
-
-```bash
-.venv/bin/python -m unittest discover \
-  -s macqwen -p 'test_*.py'
-```
-
-Run Flash-Next tests:
-
-```bash
-.venv/bin/python -m unittest discover \
-  -s models/flashnext -p 'test_*.py' -q
-```
-
-Run Qwen3.8-27B tests:
-
-```bash
-.venv/bin/python -m unittest discover \
-  -s models/qwen27b -p 'test_*.py' -q
-```
-
-Run K2-Horizon adapter tests:
-
-```bash
-.venv/bin/python -m unittest discover \
-  -s models/k2_horizon -p 'test_*.py' -q
-```
-
-Run Bonsai-2 adapter tests:
-
-```bash
-.venv/bin/python -m unittest discover \
-  -s models/bonsai2 -p 'test_*.py' -q
-```
-
-## Documentation
-
-The [documentation index](docs/README.md) links to each current brief, research record, and handoff.
-Historical experiments stay in [docs/archive](docs/archive/README.md).
 
 ## License
 
-MACQWEN source code uses the MIT License.
-Models and dependencies use their own licenses.
-See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+MACQWEN source code uses the MIT License. Models and dependencies use their
+own licenses. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Acknowledgements
 
@@ -407,7 +307,7 @@ MACQWEN uses and builds on these third-party projects and platform tools:
   this project and its evidence record.
 - The Qwen team provides the Qwen model architecture, tokenizer, sampling
   guidance, and checkpoint family used by MACQWEN.
-- Vontra provides the public FlashNext MLX checkpoints used in this work.
+- Vontra provides the public Flash-Next MLX checkpoints used in this work.
 - IFM provides K2-Horizon, and abenzerps provides its public MLX checkpoint.
 - Tavily and Context7 provide optional search and documentation tools for the
   repository-tool chat profile.
@@ -415,6 +315,3 @@ MACQWEN uses and builds on these third-party projects and platform tools:
 - GitHub provides repository hosting, issue tracking, and GitHub Actions CI.
 - The MACQWEN research record credits external reports and source notes where
   they affect a measurement or a decision.
-
-Each dependency, model, checkpoint, and platform tool keeps its own license
-and terms. Review those terms before redistribution.

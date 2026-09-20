@@ -1,5 +1,15 @@
 # K2-Horizon measurements
 
+New live runs start with the project-owned terminal:
+
+```bash
+./tests/run.sh --model k2-horizon --checkpoint k2
+```
+
+The direct commands in this file reproduce retained historical records. They
+are not a second test workflow. Follow the [measurement standard](../../measurement-standard.md)
+for new evidence, filenames, and incomplete-run labels.
+
 This directory supports the active
 [`research.md`](../research.md); operational instructions remain in
 [`handoff.md`](../handoff.md).
@@ -26,17 +36,17 @@ retained run shapes (the greedy seed does not affect the required digest):
 ```bash
 cd /Users/gioma/Developer/MACQWEN
 
-/Users/gioma/models/.venv-qwen4exp/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare baseline --fixture context-2k --horizon product --window 32 --rounds 3 --sampling greedy --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/20260916-baseline-product.jsonl
+.venv/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare baseline --fixture context-2k --horizon product --window 32 --rounds 3 --sampling greedy --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/20260916-baseline-product.jsonl
 
-/Users/gioma/models/.venv-qwen4exp/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare baseline --fixture context-2k --horizon short --window 32 --rounds 3 --sampling greedy --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/20260916-baseline-short.jsonl
+.venv/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare baseline --fixture context-2k --horizon short --window 32 --rounds 3 --sampling greedy --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/20260916-baseline-short.jsonl
 
-/Users/gioma/models/.venv-qwen4exp/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare prefill --fixture context-2k --horizon short --window 32 --rounds 3 --sampling greedy --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/20260916-prefill-short.jsonl
+.venv/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare prefill --fixture context-2k --horizon short --window 32 --rounds 3 --sampling greedy --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/20260916-prefill-short.jsonl
 
-/Users/gioma/models/.venv-qwen4exp/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare prefill --fixture context-8k --horizon short --window 32 --rounds 3 --sampling greedy --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/20260916-prefill-8k.jsonl
+.venv/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare prefill --fixture context-8k --horizon short --window 32 --rounds 3 --sampling greedy --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/20260916-prefill-8k.jsonl
 
-/Users/gioma/models/.venv-qwen4exp/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare wired --fixture context-2k --horizon short --window 32 --rounds 3 --sampling greedy --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/20260916-wired-short.jsonl
+.venv/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare wired --fixture context-2k --horizon short --window 32 --rounds 3 --sampling greedy --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/20260916-wired-short.jsonl
 
-/Users/gioma/models/.venv-qwen4exp/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare baseline --fixture context-2k --horizon short --window 32 --rounds 3 --sampling sampled --thinking --effort medium --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/20260916-sampled-short.jsonl
+.venv/bin/python -m models.k2_horizon.bench --checkpoint k2 --compare baseline --fixture context-2k --horizon short --window 32 --rounds 3 --sampling sampled --thinking --effort medium --prefill-step-size 512 --seed 7 --jsonl docs/k2_horizon/measurements/20260916-sampled-short.jsonl
 ```
 
 The older greedy control rows for the short prefill and wired runs carry a
@@ -63,7 +73,7 @@ Throughput shows median with arm range in parentheses where present.
 
 The table rounds display values; the JSONL artifacts remain authoritative for
 every byte, counter, timing, token, and full digest. Product tail means tokens
-33–256. We do not apply FlashNext's expert-warmup definition to K2.
+33–256. We do not apply Flash-Next's expert-warmup definition to K2.
 
 ## Decisions and scope
 
