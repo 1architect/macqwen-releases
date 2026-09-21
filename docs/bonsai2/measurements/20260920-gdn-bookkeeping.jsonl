@@ -1,0 +1,9 @@
+{"purpose": "GDN bookkeeping in-graph probes, synthetic shapes, no checkpoint load, 48 calls one eval each", "schema": 1, "status": "started", "type": "run"}
+{"ms48": 0.776, "op": "concat-65KB", "type": "probe", "us_call": 16.2}
+{"ms48": 0.107, "op": "take-49KB-cache-write", "type": "probe", "us_call": 2.2}
+{"ms48": 0.087, "op": "split-views", "type": "probe", "us_call": 1.8}
+{"ms48": 0.663, "note": "production runs q+k, double to ~1.3ms", "op": "qk-rmsnorm-single", "type": "probe", "us_call": 13.8}
+{"ms48": 2.87, "note": "reread next token similar; round-trip ~5.7ms, recurrence-mandated", "op": "state-2MB-fp32-write", "type": "probe", "us_call": 59.8}
+{"ms48": 0.426, "note": "production 128 adds over 64 layers, ~1.1ms", "op": "residual-add-8KB", "type": "probe", "us_call": 8.9}
+{"ms48": 0.451, "op": "gated-norm", "type": "probe", "us_call": 9.4}
+{"decision": "bookkeeping reconciled; no removable multi-ms chain; runtime unchanged", "status": "completed", "type": "summary"}

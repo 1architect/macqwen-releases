@@ -1,0 +1,4 @@
+{"purpose": "FWHT-QMM fusion gate: gate/up shape equivalence + in-graph marginal, synthetic, no checkpoint load", "schema": 1, "status": "started", "type": "run"}
+{"count": "64+64=128", "down_attention_gdn": "differ, stock fallback", "gate": "17408x5120 block1024 signs5120 Q2/G128 F16", "gemv_artifact": "wheel qmv_fast_impl, bit-exact gate/down, M=1 only", "name": "gate-up-equivalence", "type": "probe", "up": "identical"}
+{"fwht_marginal128_ms": 1.08, "name": "stock128-vs-qmmonly128-one-eval", "qmmonly_precached_ms": 42.32, "stock_fwht_qmm_ms": 43.39, "type": "probe", "verdict": "removable intermediate+launches project under 0.5ms, below 2ms gate"}
+{"decision": "stop FWHT-QMM fusion family; runtime near bandwidth floor; further gains need representation change", "status": "completed", "type": "summary"}

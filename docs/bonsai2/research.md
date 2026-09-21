@@ -993,3 +993,46 @@ gate would likely reject as well. Our 8.16 ms figure measured
 surrounding GDN bookkeeping or sync floors, not the conv kernel,
 which costs about 1.1 ms in-graph. Our record is
 [`20260920-gdn-conv-probe.jsonl`](measurements/20260920-gdn-conv-probe.jsonl).
+
+## 2026-09-20 — GDN bookkeeping census and reconciliation
+
+We profile GDN bookkeeping apart from conv with synthetic shapes and
+no checkpoint load, 48 calls in one graph with one eval. Concat of
+65 KB costs 0.776 ms per 48. State take of 49 KB costs 0.107 ms.
+Split views cost 0.087 ms. One q/k norm costs 0.663 ms, doubled to
+about 1.3 ms since production runs q plus k. State write of 2 MB
+fp32 costs 2.87 ms, with a similar reread next token, so the
+round-trip is about 5.7 ms and is recurrence-mandated. Residual adds
+cost 0.426 ms per 48, or about 1.1 ms for our 128 production adds.
+Gated norm costs 0.451 ms. Our record is
+[`20260920-gdn-bookkeeping.jsonl`](measurements/20260920-gdn-bookkeeping.jsonl).
+
+We reconcile our token as QMM ~88, FWHT 7.2, conv 1.1, bookkeeping
+traffic ~2.4, state round-trip ~5.7, attention ~2, sampler ~1,
+totaling about 107 ms against our 106.9 ms wall within probe error.
+No multi-ms removable chain remains: concat feeds both conv and
+cache, takes write required cache, norms feed the fused kernel, and
+state traffic is genuine dependency. Views stay views. Runtime code
+is unchanged.
+
+## 2026-09-20 — FWHT-QMM fusion gate stops the family
+
+We verify gate and up match exactly: 17408 by 5120, block 1024,
+sign width 5120, Q2/G128, F16 scales, 64 plus 64 calls. Down,
+attention, and GDN shapes differ and stay on stock fallback. Our
+existing `gemv_kernel.py` calls wheel `qmv_fast_impl` and is
+bit-exact on gate and down at M equals 1.
+
+We measure the removable margin in one graph with one eval over 128
+gate/up pairs. Stock FWHT plus QMM costs 43.39 ms against 42.32 ms
+for QMM on precached transforms, so our FWHT marginal is 1.08 ms
+for the highest-value shape. A fused kernel keeps the arithmetic and
+removes only intermediate traffic near 2.5 MB plus launch overhead,
+projecting under 0.5 ms against our 2 ms gate. We build no kernel
+and wire nothing into decode. Our record is
+[`20260920-fwht-qmm-gate.jsonl`](measurements/20260920-fwht-qmm-gate.jsonl).
+
+We stop this optimization family. Our exact runtime sits near its
+mathematical bandwidth floor near 87.5 GB/s against a 90.7 GB/s
+roof. Further large gains need a representation or model-level
+change that reduces our 7.7 GB of projection traffic per token.
