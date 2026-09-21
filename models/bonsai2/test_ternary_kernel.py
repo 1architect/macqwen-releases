@@ -135,6 +135,10 @@ class FusedFwhtTests(unittest.TestCase):
             fake.__file__ = str(checkpoint / "runtime" / "runtime.py")
             with patch.dict(sys.modules, {"runtime": fake}):
                 with patch.dict(os.environ, {"BONSAI2_FUSED_FWHT": "1"}):
+                    from models.bonsai2.ternary_kernel import (
+                        restore_runtime_hooks,
+                    )
+
                     ternary_kernel._STOCK_FWHT = None
                     try:
                         self.assertTrue(install_packed_hook(checkpoint))
@@ -146,9 +150,14 @@ class FusedFwhtTests(unittest.TestCase):
                         result = fake.fwht(odd, 1024, odd, inverse=True)
                         self.assertIsInstance(result, mx.array)
                     finally:
+                        # Restore through the hook so no stale original
+                        # survives keyed by this module id. A deleted
+                        # entry would let a later recycled id restore
+                        # another test's stock implementation.
+                        self.assertTrue(restore_runtime_hooks(checkpoint))
                         ternary_kernel._STOCK_FWHT = None
-                        del fake.fwht
-                        del fake._bonsai2_fused
+                        self.assertIs(fake.fwht, stock)
+                        self.assertFalse(hasattr(fake, "_bonsai2_fused"))
         self.assertEqual(calls, [(1024, False), (1024, True)])
 
     def test_share_hook_reuses_identical_calls(self):
@@ -174,33 +183,45 @@ class FusedFwhtTests(unittest.TestCase):
         checkpoint = Path(tmp.name)
         (checkpoint / "runtime").mkdir()
         fake.__file__ = str(checkpoint / "runtime" / "runtime.py")
+        from models.bonsai2.ternary_kernel import restore_runtime_hooks
+
         try:
             with patch.dict(sys.modules, {"runtime": fake}):
                 with patch.dict(os.environ, {"BONSAI2_SHARE_FWHT": "1"}):
-                    self.assertTrue(install_share_hook(checkpoint))
-                    arm_memo()
                     try:
-                        x = mx.zeros((1, 2048))
-                        s = mx.zeros((2048,))
-                        t = mx.zeros((2048,))
-                        first = fake.fwht(x, 1024, s)
-                        second = fake.fwht(x, 1024, s)
-                        third = fake.fwht(x, 1024, t)
-                        fourth = fake.fwht(x, 1024, s, inverse=True)
+                        self.assertTrue(install_share_hook(checkpoint))
+                        arm_memo()
+                        try:
+                            x = mx.zeros((1, 2048))
+                            s = mx.zeros((2048,))
+                            t = mx.zeros((2048,))
+                            first = fake.fwht(x, 1024, s)
+                            second = fake.fwht(x, 1024, s)
+                            third = fake.fwht(x, 1024, t)
+                            fourth = fake.fwht(x, 1024, s, inverse=True)
+                        finally:
+                            disarm_memo()
+                        # One shared computation; same-width signs share
+                        # the memo entry because the backend verifies
+                        # their bytes match per checkpoint.
+                        # Inverse transforms bypass the memo.
+                        self.assertIs(first, second)
+                        self.assertIs(first, third)
+                        self.assertEqual(len(calls), 2)
+                        # Disarmed hook passes straight through.
+                        self.assertEqual(
+                            fake.fwht(x, 1024, s), fake.fwht(x, 1024, s)
+                        )
+                        self.assertEqual(len(calls), 4)
                     finally:
-                        disarm_memo()
-            # One shared computation; same-width signs share the memo entry
-            # because the backend verifies their bytes match per checkpoint.
-            # Inverse transforms bypass the memo.
-            self.assertIs(first, second)
-            self.assertIs(first, third)
-            self.assertEqual(len(calls), 2)
-            # Disarmed hook passes straight through.
-            self.assertEqual(fake.fwht(x, 1024, s), fake.fwht(x, 1024, s))
-            self.assertEqual(len(calls), 4)
+                        # Restore through the hook so no stale original
+                        # survives keyed by this module id. A deleted
+                        # entry would let a later recycled id restore
+                        # another test's stock implementation.
+                        self.assertTrue(restore_runtime_hooks(checkpoint))
+                        self.assertIs(fake.fwht, stock)
+                        self.assertFalse(hasattr(fake, "_bonsai2_shared"))
         finally:
-            del fake.fwht
-            del fake._bonsai2_shared
             module._MEMO = None
 
     def test_memo_belongs_to_the_backend_that_armed_it(self):
