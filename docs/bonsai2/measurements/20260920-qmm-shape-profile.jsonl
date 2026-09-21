@@ -1,0 +1,4 @@
+{"purpose": "Per-shape QMM+FWHT probes, real per-token tensor sets, one graph one eval each, fp32 activations, prepared-FP32 metadata", "schema": 1, "status": "started", "type": "run"}
+{"down": 20.83, "gate": 20.54, "head": 6.36, "in_qkv": 10.42, "in_z": 10.45, "k": 0.97, "name": "per-shape-ms-token", "note": "includes ~18us FWHT per call; QMM-only total ~85ms", "o": 5.52, "out": 8.4, "q": 6.79, "total": 111.5, "type": "result", "up": 21.04, "v": 1.11}
+{"down_GBs": 82, "gate_GBs": 82, "head_GBs": 56, "in_qkv_GBs": 74, "k_GBs": 33, "name": "bandwidth-by-shape", "out_GBs": 57, "q_GBs": 43, "type": "result", "verdict": "large shapes bandwidth-bound, small shapes launch-bound"}
+{"decision": "no kernel justified; small-shape fusion ceiling sub-ms; big shapes at bandwidth floor", "status": "completed", "type": "summary"}

@@ -200,6 +200,7 @@ def install(
     max_temporary_bytes: int | None = None,
     pressure_check=None,
     clock=time.perf_counter,
+    exclude_weight_shapes: tuple[tuple[int, ...], ...] | None = None,
 ) -> dict:
     """Prepare eligible packed projections and install the opt-in dispatch.
 
@@ -223,6 +224,7 @@ def install(
         "elapsed_seconds": 0.0,
         "activation_dtype": "mlx.core.float32",
         "eligible_module_manifest": [],
+        "excluded_module_manifest": [],
         "prepared_module_manifest": [],
         "preparation_peak_bytes": 0,
         "preparation_peak_active_bytes": 0,
@@ -293,9 +295,15 @@ def install(
     ):
         raise ValueError("metadata preparation temporary budget must be non-negative")
     started = clock()
+    excluded_shapes = {
+        tuple(shape) for shape in (exclude_weight_shapes or ())
+    }
     eligible = []
     for name, module in model.named_modules():
         if not _is_packed(module, packed_type):
+            continue
+        if tuple(int(v) for v in module.weight.shape) in excluded_shapes:
+            stats["excluded_module_manifest"].append({"name": name})
             continue
         if tuple(module.scales.shape) != tuple(module.biases.shape):
             raise ValueError(f"packed metadata shape mismatch at {name}")

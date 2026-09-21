@@ -108,7 +108,7 @@ median and a 0.65% arm spread. All arms completed, matched greedy digest
 
 This is a current diagnostic rate, not a sustained product baseline. System
 swap activity occurred, and schema-1 physical-read accounting spans prefill
-plus decode. We therefore promote only
+plus decode. We therefore promoted only
 the decode-rate observation from this run. Raw evidence is retained at
 [`20260919-low-context-short-check.jsonl`](measurements/20260919-low-context-short-check.jsonl).
 
@@ -175,7 +175,7 @@ dequantized to fp32 program with fp16 precision. Results close the line:
   more work for a path already rejected twice over.
 
 The 2026-08-24 verdict stands for Bonsai-2: sound idea, hardware cannot
-hold it. We spend no further machine time here.
+hold it. We spent no further machine time here.
 
 ### Full FWHT-into-matmul fusion (assessed, not built)
 
@@ -581,7 +581,7 @@ fresh process per arm, at least three arms per condition, and
 forward/reverse/forward ordering. Avoid arbitrary warmups on the fanless Mac.
 
 Report paired effects and the two-standard-error resolution band alongside
-the raw arms. You decide what promotes based on that evidence. Exact
+the raw arms. We decide what promotes based on that evidence. Exact
 operations require intermediate equality and whole-run greedy digest checks.
 Output-changing work also requires the sampled quality gate in
 `CONTRIBUTING.md`.
@@ -590,7 +590,7 @@ Output-changing work also requires the sampled quality gate in
 
 Long-context arms are conditional research work, not automatic follow-ups.
 We run an 8k, 16k, or other materially long arm only when it is relevant to
-the current research question and the user has explicitly authorized that
+the current research question and explicit authorization was given for that
 run. If either condition is missing, we do not launch or wait on the arm;
 we keep the shorter evidence and record the deferral. If an authorized arm
 is interrupted, we retain its append-only raw records as incomplete evidence
@@ -602,7 +602,7 @@ offload, KV recomputation, and speculative decoding are outside this scope.
 
 ## 2026-09-19 — Boundary and protocol regression closure
 
-We closed the remaining correctness gaps from the previous handoff without
+We closedd the remaining correctness gaps from the previous handoff without
 changing model defaults. The forcing sampler now inspects a naturally sampled
 `</think>` before the next sampler call, so a lookahead immediately before the
 think-budget boundary cannot add a second close. The backend routes token
@@ -667,7 +667,7 @@ or any other long-context arm without explicit user authorization.
 
 ## 2026-09-20 — FlashNext-style question-only speed arm
 
-We added a diagnostic `question-only` fixture to isolate the lowest-context
+We addeded a diagnostic `question-only` fixture to isolate the lowest-context
 live workload. It reuses FlashNext's reference question,
 `Explique a fotossintese em duas frases.`, with an empty system message and
 no records, tools, or prior turn. Bonsai's chat framing made the resulting
@@ -747,7 +747,7 @@ authorization. The deferred 8K fused-attention catalog entry is not runnable.
 
 ## 2026-09-20 — QMM metadata default promotion
 
-We promote `prepared_qmm_metadata` to default on.
+We promoted `prepared_qmm_metadata` to default on.
 
 Evidence on record includes question-only `+17.77%` and 1k
 `+21.07% ±2.24` decode, with 1k prefill `+1.28% ±3.52`.
@@ -764,22 +764,22 @@ We retain `prepared_qmm_metadata=False` as our explicit stock rollback.
 
 ## 2026-09-20 — Chat second-turn stream fix
 
-We fix the `There is no Stream(gpu, 3) in current thread` crash on the
+We fixed the `There is no Stream(gpu, 3) in current thread` crash on the
 second chat turn. MLX binds materialized cache state to the generating
 thread's stream, and we ran each turn on a fresh worker thread. We now
 run every turn on one persistent worker thread, so the live cache
 stays valid and continuations never repay a full prefill. As a safety
 net we also rebuild the cache from the tape when generation arrives
 on a thread with no cache affinity, tracked with thread-local storage
-so recycled thread idents cannot fool the check. We pin this with a
+so recycled thread idents cannot fool the check. We pinned this with a
 worker-reuse test, a two-thread replay test, and a live two-turn check
 with no replay and a holding cache invariant.
 
 ## 2026-09-20 — Decode host vs MLX split
 
-We measure host time outside MLX/Metal per decode token.
+We measured host time outside MLX/Metal per decode token.
 
-We add two perf counters in our decode loop. `next_s` covers
+We added two perf counters in our decode loop. `next_s` covers
 `next(steps_iter)`, including model forward, sampler graph build, and
 all MLX eval and sync waits. `host_s` covers tape append, sampler
 observe, `stream_decode`, protocol feed, and callbacks, excluding
@@ -787,14 +787,14 @@ terminal emit through `DecodeTimer`. Our change adds no `mx.eval`,
 no warmup, no sleep, and no cache flush. Our bench exports the trace
 as `decode_trace` alongside `stop_token_sync`.
 
-We run three fresh baseline arms. Our fixture is `question-only`
+We ran three fresh baseline arms. Our fixture is `question-only`
 with 23 prompt tokens and 32 greedy output tokens. Our seed is 7.
 Our defaults hold, including prepared QMM metadata on. All arms
 complete with digest `cdb7ac707f12`. Decode rates are 9.178, 9.388,
 and 9.302 tok/s. Our record is
 [`20260920-decode-outside-split.jsonl`](measurements/20260920-decode-outside-split.jsonl).
 
-We report steady tokens only, excluding token 1. Token 1 carries the
+We reported steady tokens only, excluding token 1. Token 1 carries the
 prefill boundary and measures 1,141 to 2,353 ms.
 
 | Metric | Result |
@@ -806,13 +806,13 @@ prefill boundary and measures 1,141 to 2,353 ms.
 | Per-arm host medians | 0.1371, 0.1390, 0.1175 ms |
 
 Our bench harness adds its own spikes. Resource sampling and progress
-pipe add about 6.4 to 6.7 ms on every third token. We exclude those
+pipe added about 6.4 to 6.7 ms on every third token. We excluded those
 spikes from our production claim. Our base set holds 63 tokens under
 1.0 ms host time.
 
 Our `stop_token_sync` reports 20.31 to 24.16 ms per token over 32
 calls. This `.item()` waits for prior GPU sampler output inside the
-model call. We count it as Metal wait, not host compute. It lives
+model call. We counted it as Metal wait, not host compute. It lives
 inside `next_s`.
 
 Our prior `cProfile` bounds total Python at about 5% of wall. At
@@ -830,7 +830,7 @@ sync counters.
 We split our steady 106.9 ms decode token into necessary work and
 bubbles. Our scope stays question-only with no context-1k arm.
 
-We parse our safetensors header only, loading no weights. Our
+We parsed our safetensors header only, loading no weights. Our
 language-model pack holds 7,673,714,688 bytes: 6.256 GiB packed
 `uint32` weights plus 0.391 GiB scales, 0.391 GiB biases, 0.109 GiB
 F32 signs and metadata, and 0.782 GiB F16 tables. Each decode token
@@ -839,7 +839,7 @@ traffic is about 7.7 GB per token. GDN state adds about 0.3 GB
 read plus write per token. KV payload is 7.2 MB at this context.
 Total necessary traffic is about 8.2 GB per token.
 
-We probe our achievable device roof with a resident 180 MB `float16`
+We probed our achievable device roof with a resident 180 MB `float16`
 sum. Cold run measures 41.8 GB/s and warm run measures 90.7 GB/s.
 At 90 GB/s, 8.2 GB needs about 91 ms. Our measured token is
 106.9 ms. Necessary memory traffic therefore covers about 80 to 85%
@@ -847,7 +847,7 @@ of the token. The 15 to 20 ms remainder holds FWHT math, attention
 softmax, GDN recurrence, norms, sampler, Python build, and any
 barrier or fence wait.
 
-We rule four bubble sources near zero in steady state. Disk reads
+We ruled four bubble sources near zero in steady state. Disk reads
 are 507,904 bytes on warm arms with zero pageout. MLX cache holds
 steady at 52 MB against 8.67 GB active. Wired limit stays off, so
 residency commits nothing. Host post-processing measures 0.1207 ms
@@ -855,7 +855,7 @@ median, or 0.11% of the token. One-ahead overlap hides most Python
 build behind GPU execution because GPU work exceeds host work by
 about 20 to 1.
 
-We attempt one single-token `.gputrace` capture with
+We attempted one single-token `.gputrace` capture with
 `MTL_CAPTURE_ENABLED=1`. Without the flag, capture fails closed
 with `Capture layer is not inserted`. With the flag, capture opens
 and closes cleanly around our token 4 to 5 window. The bundle
@@ -870,11 +870,11 @@ inspection needs Xcode GPU tools and stays open. Even if our full
 15 to 20 ms remainder were bubbles, bubbles cap at about 15 to 20%
 and necessary work floors at about 80%.
 
-We run no further capture or comparison on this question. Our
+We ran no further capture or comparison on this question. Our
 machine stays cool and our evidence stands on the header parse,
 the roofline probe, the retained split arms, and one gated capture.
 
-We recapture one single-token bundle for Xcode at your request. It
+We recaptured one single-token bundle for Xcode analysis. It
 lives at `~/Downloads/bonsai-decode-1tok.gputrace` with 8.3 GB on
 disk. Our derived record is
 [`20260920-decode-gpu-xcode.jsonl`](measurements/20260920-decode-gpu-xcode.jsonl)
@@ -883,7 +883,7 @@ Token 5 carries the capture stop cost and stays diagnostic only.
 
 ## 2026-09-20 — One-token GPU census and simplification ranking
 
-We build our one-token GPU census from the MLX side because our 8.3 GB
+We built our one-token GPU census from the MLX side because our 8.3 GB
 `.gputrace` bundle has no Xcode-free decoder. Its `capture` stream
 holds 3,784 opaque ID runs across 135 IDs, but no kernel names, so we
 do not quote dispatch counts from it. Our MLX-side census is exact at
@@ -905,7 +905,7 @@ Our top repeated chains are FWHT plus QMM times 401, GDN
 swiglu plus down times 64, residual plus norm plus projection, and
 attention QKV plus norm plus RoPE plus SDPA plus out times 16.
 
-We rank five simplification candidates. Shared FWHT memo removes up
+We ranked five simplification candidates. Shared FWHT memo removes up
 to 144 launches with zero math change. GDN conv specialization caps
 at 8.1 ms or 4% with custom-kernel cost. QMM metadata slimming has
 negative expected value because it reverses our +21% prepared win.
@@ -913,20 +913,20 @@ Swiglu, norm, and residual micro-fusion caps near 0.2 ms of traffic.
 Attention-prep fusion caps near 0.5 ms at short context where KV is
 7.2 MB.
 
-We test shared FWHT first at question-only with two reversed rounds.
+We tested shared FWHT first at question-only with two reversed rounds.
 Control rates are 9.440 and 8.957 tok/s against shared 9.448 and
 9.479 tok/s. All digests match `cdb7ac707f12`. Paired effect is
 +2.96% with a ±5.75 band, so our result is unresolved and we do not
 promote it. Our record is
 [`20260920-share-fwht-question.jsonl`](measurements/20260920-share-fwht-question.jsonl).
 
-We implement nothing further. No candidate shows a resolved positive
+We implemented nothing further. No candidate shows a resolved positive
 result, and every remaining ceiling sits at or below 4% against
 custom-kernel cost. Our runtime code is unchanged.
 
 ## 2026-09-20 — FWHT contradiction, GDN finding, chain split
 
-We resolve our FWHT contradiction from recorded counters. Shared arms
+We resolved our FWHT contradiction from recorded counters. Shared arms
 show 8,738 FWHT attempts against 13,634 on control arms. The
 difference is 4,896 over 34 forwards, or exactly 144 per forward, so
 the memo removes 144 launches per token as designed. QMM stays at
@@ -936,9 +936,9 @@ band. Launch count is therefore not our bottleneck: 144 launches
 carry about 2.6 ms of kernel work, matching our point estimate but
 sitting below resolution.
 
-We correct our GDN ceiling. The 4% label was stale against a 190 ms
+We corrected our GDN ceiling. The 4% label was stale against a 190 ms
 token. General-path conv costs 0.17 ms per layer, so 48 layers cost
-8.16 ms against our 106.9 ms token, or 7.6%. We find the cause in
+8.16 ms against our 106.9 ms token, or 7.6%. We found the cause in
 source: decode takes the compiled `_causal_conv1d_decode` branch only
 when conv weights are fp16 or bf16, but our checkpoint stores all 48
 `conv1d.weight` tensors as F32 with shape 10240 by 4 by 1. Every
@@ -953,10 +953,10 @@ production weights, totaling about 88 ms. Elementwise rms plus add
 costs 8.9 us per pair, or about 4 ms across our ~900 launches. Glue
 between FWHT and QMM is zero launches on our prepared FP32 path.
 
-We attribute our ~19 ms gap to FlashNext as Hadamard tax plus
+We attributed our ~19 ms gap to FlashNext as Hadamard tax plus
 linear-attention tax: FWHT 7.2 ms, GDN general conv 8.2 ms, and extra
 norm and bookkeeping across 64 layers. FlashNext pays about 16 ms of
-sparse MoE against our dense 401 plus GDN extras. We drop QMM
+sparse MoE against our dense 401 plus GDN extras. We dropped QMM
 metadata slimming per instruction and keep our +21% prepared win.
 
 | Class | Launches/token | GPU ms/token | Share | Bytes/token | Removable ms |
@@ -969,10 +969,10 @@ metadata slimming per instruction and keep our +21% prepared win.
 | Sampler | 1 | ~1 | ~1% | vocab row | 0 |
 | Total | ~1,767 | ~110 | ~100% | ~8.2 GB | GDN only material target |
 
-You read 135.286 ms of GPU span in Xcode for our token 4 to 5
+The Xcode read showed 135.286 ms of GPU span for our token 4 to 5
 window. That window holds about 1.2 to 1.3 steady tokens of GPU work
 plus one-ahead lookahead, so it correctly exceeds our 106.9 ms
-steady wall. Your counters confirm our bound: active cores near
+steady wall. The reported counters confirmed our bound: active cores near
 100%, bandwidth peak 85.5 GiB/s against our 90.7 GB/s roofline probe,
 and ALU utilization 46.53% at the cursor. That is a memory-bound
 signature. Necessary traffic near 8.2 GB per token explains the wall,
@@ -980,7 +980,7 @@ and MLX bubbles stay capped at about 15 to 20%.
 
 ## 2026-09-20 — GDN conv probe stops the hook
 
-We probe our GDN decode conv with synthetic shapes and no checkpoint
+We probed our GDN decode conv with synthetic shapes and no checkpoint
 load. Isolated per-call timing is sync-floor dominated: general
 0.359 ms against fused fp16 0.4 ms and fused F32 0.567 ms per call.
 Those numbers cannot attribute production cost, so we probe 48 calls
@@ -996,7 +996,7 @@ which costs about 1.1 ms in-graph. Our record is
 
 ## 2026-09-20 — GDN bookkeeping census and reconciliation
 
-We profile GDN bookkeeping apart from conv with synthetic shapes and
+We profiled GDN bookkeeping apart from conv with synthetic shapes and
 no checkpoint load, 48 calls in one graph with one eval. Concat of
 65 KB costs 0.776 ms per 48. State take of 49 KB costs 0.107 ms.
 Split views cost 0.087 ms. One q/k norm costs 0.663 ms, doubled to
@@ -1007,32 +1007,265 @@ cost 0.426 ms per 48, or about 1.1 ms for our 128 production adds.
 Gated norm costs 0.451 ms. Our record is
 [`20260920-gdn-bookkeeping.jsonl`](measurements/20260920-gdn-bookkeeping.jsonl).
 
-We reconcile our token as QMM ~88, FWHT 7.2, conv 1.1, bookkeeping
+We reconciled our token as QMM ~88, FWHT 7.2, conv 1.1, bookkeeping
 traffic ~2.4, state round-trip ~5.7, attention ~2, sampler ~1,
 totaling about 107 ms against our 106.9 ms wall within probe error.
+
+## 2026-09-20 — Xcode SIMD-group census corrects two claims
+
+The reported table held 27 unique kernels by SIMD groups over our token 4 to 5
+window, about 34,609 groups for 1.2 tokens. Cost percent is
+unavailable, so groups ranked work, not time. Our record holds the reported
+full table in
+[`20260920-decode-gpu-xcode-r2.jsonl`](measurements/20260920-decode-gpu-xcode-r2.jsonl).
+
+We corrected our first claim: `affine_qmv_fast_float_gs_128_b_2`
+exists with 15,078 groups, so our prepared path already runs a
+qmv-structured kernel. Our narrow kernel mirrors it, which explains
+our bit-identical result. Our second correction concerns copies:
+`gg1`, `g1`, `g2`, `gg2`, and two `v_copy` casts total about 2,800
+groups near 8% of all groups. Every copy moves its tensor twice
+with no arithmetic, so copy elimination outranks further QMM tuning.
+Norms total about 2,100 groups across `rms` variants, and
+`depthwise_conv_1d_float32` holds 792 groups. Gated delta holds
+3,997 groups and fused FWHT holds 4,032 across widths. Small
+sigmoid, multiply, add, subtract, exp, rope, gather, and conversion
+kernels make up our measured elementwise tail.
 No multi-ms removable chain remains: concat feeds both conv and
 cache, takes write required cache, norms feed the fused kernel, and
 state traffic is genuine dependency. Views stay views. Runtime code
 is unchanged.
 
+## 2026-09-20 — Copy attribution closes the family
+
+The Cost percent read on our 178 MB attribution capture showed about 44%
+as script RNG artifact (`rbitsc`, `Erfinv`, `Minimum`,
+`copyuint32`, `all_reduce_sum` from an in-capture random plus sum,
+`arange` from take positions), so we excluded it. Our confirmed
+mapping is `gg1_copy` from scatter-style in-place strided writes,
+`gather_axis` 8.25% from `take_along_axis`, Greater plus Select
+from `where`, and `rmsfloat16` 2.63% from strided norm. Our record
+is
+[`20260920-copy-attr.jsonl`](measurements/20260920-copy-attr.jsonl).
+
+## 2026-09-20 — Q2 weights are ternary, packing audit passes
+
+We streamed every packed tensor once and count codes per class. Code
+11 measures exactly 0.000% in all eleven projection classes, with
+00, 01, and 10 near 33.6, 32.7, and 33.6%. Entropy 1.585 equals
+log2(3). Only non-decode tensors outside our classes use code 11.
+Our record is
+[`20260920-ternary-audit.jsonl`](measurements/20260920-ternary-audit.jsonl).
+
+Five trits per byte (3^5 = 243) encodes 1.6 bits per weight against
+2.0 now. Packed traffic drops 6.40 to 5.12 GB per token, saving
+1.28 GB for a ceiling near 14 ms. Gate and up alone save 0.57 GB
+for a ceiling near 6.3 ms. Super-blocks of 640 weights keep
+per-128 scale grouping intact because packing order never affects
+scale application. Decode stays branch-free with fixed unroll of 5
+per byte. The prototype stands queued for gate and up scope.
+
+## 2026-09-20 — Ternary decoder loses to cooperative qmv
+
+We built table and divmod base-243 decoders for gate and up with a
+2.32 GB sidecar that round-trips 128 of 128 modules bit-exactly.
+Both variants reach maxabs 1.4e-06 against prepared QMM, so our
+math is right at single-ULP level. Both lose decisively on speed:
+prepared 40.28 ms against table 143.34 ms and divmod 110.91 ms over
+128 real calls. Our per-thread GEMV cannot match the wheel
+simdgroup-cooperative qmv with vectorized loads and quad
+accumulations; lost vectorization dwarfs our 20% traffic saving.
+Divmod beats table because device-memory table loads cost more than
+ALU division here. We ran no full-token arms and expanded to no
+further shapes. Our 1.28 GB hypothesis is falsified as a kernel win:
+traffic saved, execution lost. Code stays default-off. Our record
+is
+[`20260920-ternary-decoder.jsonl`](measurements/20260920-ternary-decoder.jsonl).
+
+## 2026-09-20 — Ternary qmv-structured attempt closed permanently
+
+We rebuilt ternary decode inside qmv traversal: 640-weight steps
+with integer strides, dual-scale arithmetic selects for straddling
+lanes, unrolled divmod unpack, same grid and per-group order. Our
+first attempt indexed the wrong group bases and read maxabs 0.65;
+we fix lane-local groups and reach maxabs 1.1e-06, so our math is
+right at single-ULP level. Speed is not close: prepared 43.22 ms
+against ternary 908.41 ms over 128 real calls. Divmod chains plus
+selects expand ALU about 15 times, and no table variant closes a
+900 ms gap, so we attempt no second redesign. Lossless ternary
+compression is closed. Code stays default-off. Our record is
+[`20260920-ternary-qmv.jsonl`](measurements/20260920-ternary-qmv.jsonl).
+
+## 2026-09-20 — Exact decode saturated for this checkpoint
+
+We marked exact Bonsai decode optimization saturated. No family
+below reopens without genuinely new evidence.
+
+| Family | Measured result | Why it failed |
+|---|---|---|
+| QMM tuning | At bandwidth floor ~85 GB/s | Large shapes bandwidth-bound, small shapes sub-ms ceilings |
+| Narrow F16 metadata | −0.44% ±0.20 resolved | Gate/up QMM is dequant-ALU-bound, not bandwidth-bound |
+| Ternary packing | −865 ms component | qmv cooperation loss dwarfs 20% traffic win |
+| FWHT fusion/share | +2.96% ±5.75 n.s. | 144 launches carry ~2.6 ms, below resolution |
+| GDN conv | General wins 1.11 vs 1.46 ms | Compiled path slower; 8.16 ms figure was bookkeeping |
+| Copies | Mandated cache writes | gg1 appends and fills required; copiable ~0.3 ms |
+| Speculative | −22% with perfect draft | 5-wide pass costs 6.2 tokens, yields at most 5 |
+| Python/C++ | 0.12 ms host, ~5% Python | Nothing material outside GPU |
+
+Our exact baseline holds 106.9 ms per token with 9.3 to 9.8 tok/s
+question-only and digest `cdb7ac707f12`. Prefill runs 1.1 to 1.2 s
+for 23 tokens. MLX peak holds 8.92 GB with 8.67 GB active and a
+52 MB cache. Steady physical reads hold near 0.5 MB with zero
+pageout. Narrow arms confirm 8.66 GB peak with 273 prepared
+modules. Exact Bonsai stays our control. New representations must
+report decode speed, prefill, memory, and quality, never kernel
+microbenchmarks alone.
+
+We ranked representation-level directions by bytes per token with
+quality risk. Smaller ternary sidecars with qmv-structured lanes
+keep 5.12 GB packed traffic with low trajectory risk but need a
+cooperative decoder we could not build cheaply. Fewer resident
+projections through routing sparsity cut traffic proportionally
+with high trajectory risk. Lower-precision KV extends context, not
+decode speed, with medium quality risk. Distilled small-draft
+speculation needs a draft model that does not exist locally, with
+high trajectory risk. Larger-group quantization regroups scales
+with medium numerical risk. We implemented none of these in this
+round.
+
+## 2026-09-20 — Speculative verifier closed on arithmetic
+
+We decomposed our existing K=4 oracle arms with no new runs. Seven
+blocks propose 25 draft tokens and accept all 25, with 32 target
+tokens and zero rollback or commit over 32 output tokens. Accepted
+per pass is 3.57, or 4.57 with bonus, which clears every acceptance
+bar. Verification seconds equal total seconds, so one 5-wide pass
+costs about 820 ms or 6.2 stock tokens while perfect acceptance
+yields at most 5. A perfect draft still loses 22%, and narrower or
+wider K keeps the same per-row activation overhead against fewer or
+capped bonus tokens, so no width reverses the ratio. Our 128-token
+attempt already showed the oracle needs a complete transcript
+upfront. We closed this idea and run no fresh arms. Reopening needs
+a verifier that costs about one sweep, not new draft weights.
+
+We closed the copy family without code change. Production `gg1`
+copies are cache appends with offsets, which are mandated writes,
+not removable materialization. Scalar `s_copy` fills are required
+initialization. Our 27 MB non-state copiable ceiling stands, and no
+single source reaches our 1 ms gate. Norms stay untouched per our
+ordering rule.
+
 ## 2026-09-20 — FWHT-QMM fusion gate stops the family
 
-We verify gate and up match exactly: 17408 by 5120, block 1024,
+We verified gate and up match exactly: 17408 by 5120, block 1024,
 sign width 5120, Q2/G128, F16 scales, 64 plus 64 calls. Down,
 attention, and GDN shapes differ and stay on stock fallback. Our
 existing `gemv_kernel.py` calls wheel `qmv_fast_impl` and is
 bit-exact on gate and down at M equals 1.
 
-We measure the removable margin in one graph with one eval over 128
+We measured the removable margin in one graph with one eval over 128
 gate/up pairs. Stock FWHT plus QMM costs 43.39 ms against 42.32 ms
 for QMM on precached transforms, so our FWHT marginal is 1.08 ms
 for the highest-value shape. A fused kernel keeps the arithmetic and
 removes only intermediate traffic near 2.5 MB plus launch overhead,
-projecting under 0.5 ms against our 2 ms gate. We build no kernel
+projecting under 0.5 ms against our 2 ms gate. We built no kernel
 and wire nothing into decode. Our record is
 [`20260920-fwht-qmm-gate.jsonl`](measurements/20260920-fwht-qmm-gate.jsonl).
 
-We stop this optimization family. Our exact runtime sits near its
+We stopped this optimization family. Our exact runtime sits near its
 mathematical bandwidth floor near 87.5 GB/s against a 90.7 GB/s
 roof. Further large gains need a representation or model-level
 change that reduces our 7.7 GB of projection traffic per token.
+
+## 2026-09-20 — QMM bytes census and representation decision
+
+We scanned every packed-weight tensor once, offline, with no runtime
+change. Packed Q2 codes carry entropy near 1.585 of 2.0 bits with a
+zstd ratio near 80% and zero zero-words. They are essentially
+incompressible, so we reject GPU-friendly decompression on measured
+data. Scales peak at 0.4 and biases peak at 0.4 with zero non-finite
+values, so F16 narrow-load is safe everywhere.
+
+Our per-token reads total 8.01 GB prepared: 6.40 GB packed weights,
+1.60 GB FP32 metadata, and 0.0116 GB signs. Narrow-load reads F16
+metadata instead, saving 0.80 GB per token for a ceiling near
+8.8 ms. Reconstruction is bit-exact because F16 finite values extend
+exactly to F32. Stock QMM with F16 scales is excluded as a vehicle
+because it restores our measured-slow promotion path, so the
+prototype needs a custom kernel. Signs narrowing saves 0.006 GB and
+we ignore it.
+
+| Candidate | Now | Proposed | Saved | Exact | Ceiling | ALU | Complexity | Call |
+|---|---|---:|---|---:|---|---|---|---|
+| Narrow F16 metadata kernel | 8.01 GB | 7.21 GB | 0.80 GB | yes | ~8.8 ms | convert per group | custom kernel | prototype |
+| Packed recompression | 6.40 GB | 6.40 GB | 0 | n/a | 0 | n/a | n/a | reject |
+| Signs F16 | 0.0116 GB | 0.0058 GB | 0.006 GB | yes | ~0.06 ms | trivial | low | ignore |
+| Prepared-path removal | 8.01 GB | 7.21 GB | 0.80 GB | yes | negative | n/a | n/a | reject |
+
+Our record is
+[`20260920-qmm-bytes-census.jsonl`](measurements/20260920-qmm-bytes-census.jsonl).
+We built no kernel this round. The narrow-metadata prototype clears
+our 2 ms gate on paper and stands as our high-priority experiment.
+
+## 2026-09-20 — Per-shape QMM profile corrects the bound
+
+We timed every projection class with its real per-token tensor set in
+one graph with one eval, FP32 activations with prepared metadata.
+FWHT plus QMM per token runs gate 20.54, up 21.04, down 20.83,
+in_qkv 10.42, in_z 10.45, out 8.40, q 6.79, k 0.97, v 1.11, o 5.52,
+and head 6.36 ms, totaling 111.5 ms against our 106.9 ms wall. Less
+about 7.2 ms of FWHT, QMM runs about 85 ms. Our record is
+[`20260920-qmm-shape-profile.jsonl`](measurements/20260920-qmm-shape-profile.jsonl).
+
+We refined our bound verdict per shape. Large shapes run near 80
+GB/s and are bandwidth-bound with nothing removable. Small shapes
+fall to 30 to 55 GB/s and are launch-bound, but their total is
+about 15 ms and launch fusion across 16 calls caps below 1 ms. No
+repeated dequant sequence shows a concrete 2 ms opportunity, so we
+propose no kernel. The repeating unit stays one `load_vector` plus
+four `qdot` calls with `scale*accum + sum*bias` per 512-block step.
+
+## 2026-09-20 — Narrow-F16 gate/up prototype stops on dtype
+
+We implemented our narrow branch by reusing wheel `qmv_fast_impl`
+behind a shape gate for 17408 by 5120 with stock F16 metadata. Our
+prepared install excludes gate/up by weight shape, and our progress
+log confirms 273 prepared modules. Our component check proves
+narrow output equals stock F16 output bit-identically, while our
+promoted prepared FP32 path already differs from stock in low bits
+with matching digests.
+
+Our full-token arm fails closed and loud. Production Packed inputs
+are FP32, but `qmv_fast_impl<half,128,2>` accepts only half input,
+so our lazy Metal build fails at eval with no matching overload.
+All 128 decode gate/up calls fall back or fail, and our gate
+requires zero fallbacks. Casting activations to half would change
+math and rebuild the promotion we remove, so we stop before the
+remaining 273 projections. A float-capable tail would reopen this,
+but that is a new kernel, not a reuse. Our routing, exclusion, and
+counter machinery stays behind its default-off flag with passing
+unit tests. Our record is
+[`20260920-narrow-f16-gateup.jsonl`](measurements/20260920-narrow-f16-gateup.jsonl).
+
+## 2026-09-20 — Narrow-F16 custom kernel loses on gate/up
+
+We built our float-input narrow kernel in
+`models/bonsai2/metal/qmv_f32_narrow.metal` with dispatch in
+`gemv_kernel.py`. It loads packed weights plus F16 scales and
+biases, promotes metadata exactly in registers, and follows stock
+per-group order. Our component check is bit-identical against
+prepared-F32 QMM across all 128 gate/up projections with maxabs
+0.0. Our 128-population in-cache delta is 0.32 ms, which hides
+traffic by cache residence.
+
+Our full-token comparison resolves against us. Two reversed rounds
+at question-only give control 9.773 and 9.786 tok/s against narrow
+9.720 and 9.753 tok/s. All digests match `cdb7ac707f12`. Narrow
+takes all 4,224 decode gate/up calls with legitimate fallbacks only
+on prefill multi-row and non-gate shapes. Paired effect is −0.44%
+mean with a ±0.20 band: a resolved slight regression. Saving
+0.32 GB of metadata traffic buys nothing because gate/up QMM is
+dequant-ALU-bound, not bandwidth-bound. We expanded to no further
+shapes. Our code stays default-off. Records are
+[`20260920-narrow-f16-gateup-r3.jsonl`](measurements/20260920-narrow-f16-gateup-r3.jsonl)
+with the valid comparison plus earlier attempt files.

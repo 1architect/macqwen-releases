@@ -158,7 +158,7 @@ and
 [`20260920-102501-baseline-question-short-arms.jsonl`](measurements/20260920-102501-baseline-question-short-arms.jsonl).
 
 We do not launch or wait for long-context arms unless they are relevant to the
-active question and the user explicitly authorizes them.
+active question and explicit authorization covers them.
 
 ## Next work
 
@@ -168,7 +168,7 @@ baseline. Revalidate the 256-token fixture and other short evidence on a
 clean revision as needed. Treat the 19.5k/16k work, full shared-transform
 comparison, stop-retention continuation checks, and 8-bit KV quality
 validation as conditional research: launch a long-context arm only when it
-is relevant to the current question and explicitly authorized by the user.
+is relevant to the current question and carries explicit authorization.
 Do not wait on deferred long-context work. Record new evidence in
 [`research.md`](research.md) and raw arms under [`measurements/`](measurements/).
 

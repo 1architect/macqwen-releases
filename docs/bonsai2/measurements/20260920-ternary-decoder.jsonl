@@ -1,0 +1,4 @@
+{"purpose": "Ternary gate/up decoder: table vs divmod vs prepared QMM on all 128 real modules, one graph one eval, fp32 x", "schema": 1, "status": "started", "type": "run"}
+{"bit_identical": false, "divmod_maxabs": 1.430511474609375e-06, "name": "exactness", "table_maxabs": 1.430511474609375e-06, "type": "result", "verdict": "single-ULP level, math right; digest gate moot after timing"}
+{"divmod_ms": 110.91, "name": "timing128", "prepared_ms": 40.28, "table_ms": 143.34, "type": "result", "verdict": "3x slower; per-thread GEMV cannot match simdgroup-cooperative qmv; traffic win dwarfed by lost vectorization"}
+{"decision": "stop ternary family; no full-token arms; code stays default-off", "status": "completed", "type": "summary"}

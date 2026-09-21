@@ -949,6 +949,7 @@ class BonsaiBackend(Conversation):
         q4_attention_tiling: bool = True,
         fused_q4_attention: bool = False,
         prepared_qmm_metadata: bool = True,
+        narrow_f16_gateup: bool = False,
         q2_prefill_mpp: bool = False,
         exact_speculative_decode: bool = False,
         speculative_block_size: int = 4,
@@ -1022,14 +1023,26 @@ class BonsaiBackend(Conversation):
         self.attention_counters = _new_attention_counters()
         from .qmm_metadata import install as install_qmm_metadata, new_counters
         from .q2_kernel import install_q2_prefill_hook, new_q2_counters
+        from .gemv_kernel import (
+            NARROW_GATEUP_WEIGHT_SHAPE,
+            install_narrow_hook,
+            new_narrow_counters,
+        )
 
+        self.narrow_f16_gateup = bool(narrow_f16_gateup)
+        self.narrow_counters = new_narrow_counters()
         self.qmm_metadata_counters = new_counters()
         self.qmm_metadata_stats = install_qmm_metadata(
             model,
             self.prepared_qmm_metadata,
             self.qmm_metadata_counters,
             pressure_check=_qmm_metadata_pressure_check,
+            exclude_weight_shapes=(
+                (NARROW_GATEUP_WEIGHT_SHAPE,) if self.narrow_f16_gateup else None
+            ),
         )
+        if self.narrow_f16_gateup:
+            install_narrow_hook(self.narrow_counters)
         self.q2_counters = new_q2_counters()
         install_q2_prefill_hook(self.q2_prefill_mpp, self.q2_counters)
         _install_q4_attention_tiling(
@@ -1179,6 +1192,8 @@ class BonsaiBackend(Conversation):
             "q4_attention_tiling": self.q4_attention_tiling,
             "fused_q4_attention": self.fused_q4_attention,
             "prepared_qmm_metadata": self.prepared_qmm_metadata,
+            "narrow_f16_gateup": self.narrow_f16_gateup,
+            "narrow_counters": dict(self.narrow_counters),
             "qmm_metadata": dict(self.qmm_metadata_stats),
             "q2_prefill_mpp": self.q2_prefill_mpp,
             "exact_speculative_decode": self.exact_speculative_decode,

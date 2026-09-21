@@ -1,0 +1,4 @@
+{"purpose": "Ternary qmv-structured decoder: 640-block steps, dual-scale selects, divmod unpack, 128 real gate/up calls one graph one eval", "schema": 1, "status": "started", "type": "run"}
+{"bit_identical": false, "maxabs": 1.1324882507324219e-06, "name": "exactness", "type": "result", "verdict": "single-ULP, math right after lane-group fix (first attempt had wrong group bases, maxabs 0.65)"}
+{"delta_ms": -865.19, "name": "timing128", "prepared_ms": 43.22, "ternary_qmv_ms": 908.41, "type": "result", "verdict": "divmod+select expansion costs ~15x ALU; traffic win irrelevant"}
+{"decision": "stop permanently; lossless ternary compression closed; no second redesign", "status": "completed", "type": "summary"}

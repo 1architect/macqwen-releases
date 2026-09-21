@@ -129,7 +129,11 @@ COMPARISONS = {
             "exact_speculative_decode": True, "speculative_block_size": 8,
         },
     },
-    "share-fwht": {"control": {}, "shared": {"share_fwht": True}},}
+    "share-fwht": {"control": {}, "shared": {"share_fwht": True}},
+    "narrow-f16-gateup": {
+        "qmm-prepared": {},
+        "qmm-narrow": {"narrow_f16_gateup": True},
+    },}
 DIAGNOSTIC_COMPARISONS = {"profile"}
 PRODUCTION_COMPARISONS = {
     "baseline", "q4-attention", "q4-attention-fused", "prepared-qmm-metadata",
@@ -291,6 +295,7 @@ def source_fingerprints() -> dict[str, str | None]:
         "models/bonsai2/protocol.py", "models/bonsai2/settings.py",
         "models/bonsai2/ternary_kernel.py", "models/bonsai2/q2_kernel.py",
         "models/bonsai2/q4_attention_kernel.py", "models/bonsai2/qmm_metadata.py",
+        "models/bonsai2/gemv_kernel.py",
         "macqwen/backends/base.py", "macqwen/conversation.py",
         "macqwen/sampling.py", "macqwen/text.py", "macqwen/agent.py",
     )
@@ -752,6 +757,16 @@ def _fused_fwht_stats(backend: Any) -> dict[str, Any]:
 def _stop_token_sync_stats(backend: Any) -> dict[str, Any]:
     stats = getattr(backend, "stop_token_sync_stats", None)
     return dict(stats) if isinstance(stats, dict) else {}
+
+
+def _narrow_counters(backend: Any) -> dict[str, Any]:
+    counters = getattr(backend, "narrow_counters", None)
+    if not isinstance(counters, dict):
+        return {}
+    return {
+        key: dict(value) if isinstance(value, dict) else value
+        for key, value in counters.items()
+    }
 
 
 def _decode_trace(backend: Any) -> list[dict[str, Any]]:
@@ -1325,6 +1340,7 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
         record["fused_fwht"] = _fused_fwht_stats(backend)
         record["stop_token_sync"] = _stop_token_sync_stats(backend)
         record["decode_trace"] = _decode_trace(backend)
+        record["narrow_counters"] = _narrow_counters(backend)
         try:
             provenance_after = provenance_manifest(checkpoint)
         except BaseException as error:
@@ -1483,6 +1499,7 @@ def child_arm(*, checkpoint: str, arm_id: str, condition: str, options: dict[str
             record["fused_fwht"] = _fused_fwht_stats(backend)
             record["stop_token_sync"] = _stop_token_sync_stats(backend)
             record["decode_trace"] = _decode_trace(backend)
+            record["narrow_counters"] = _narrow_counters(backend)
         if arrivals:
             record["tokens"] = [item["token"] for item in arrivals]
             record["token_digest"] = _digest(record["tokens"])
@@ -1903,6 +1920,33 @@ def _execution_path_validation(comparison: str, row: dict[str, Any]) -> dict[str
             "passed": passed,
             "reason": "prepared_qmm_selected" if passed else "prepared_qmm_not_selected",
         }
+    if comparison == "narrow-f16-gateup":
+        if row.get("condition") == "qmm-narrow":
+            counters = row.get("narrow_counters")
+            if not isinstance(counters, dict):
+                return {"passed": False, "reason": "missing_narrow_counters"}
+            calls = int(counters.get("narrow_calls", 0) or 0)
+            fallbacks = int(counters.get("narrow_fallbacks", 0) or 0)
+            reasons = counters.get("fallback_reasons")
+            reasons = reasons if isinstance(reasons, dict) else {}
+            # Prefill multi-row gate/up calls and all non-gate shapes
+            # legitimately fall back: the narrow tail is decode-only.
+            # 128 gate/up modules take at most a few prefill forwards.
+            allowed = {"kernel_none", "shape_or_dtype"}
+            kernel_none = int(reasons.get("kernel_none", 0) or 0)
+            passed = (
+                calls >= 128 * 32
+                and set(reasons) <= allowed
+                and kernel_none <= 128 * 4
+            )
+            return {
+                "narrow_calls": calls,
+                "narrow_fallbacks": fallbacks,
+                "fallback_reasons": reasons,
+                "passed": passed,
+                "reason": "narrow_gateup_selected" if passed else "narrow_gateup_not_selected",
+            }
+        return None
     if comparison == "q2-prefill-mpp":
         counters = row.get("q2_counters")
         if not isinstance(counters, dict):
