@@ -384,4 +384,10 @@ class Qwen4ExactSpeculativeVerifier(Qwen3_5ExactSpeculativeVerifier):
             )
             if hidden_sink is not None and index in capture:
                 hidden_sink.append(self._hyper(model.hyper_connection_mixer, hidden))
+        # Explicit [] requests only the final pre-mixer HC residual.
+        # None keeps the old behavior of no special HC capture. The base
+        # verifier appends the final mixed hidden for return_hidden=True,
+        # so callers read hidden_states[0] as pre-final and [-1] as final.
+        if hidden_sink is not None and capture_layer_ids == []:
+            hidden_sink.append(hidden)
         return self._hyper(model.hyper_connection_mixer, hidden)

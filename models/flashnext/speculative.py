@@ -662,6 +662,10 @@ class MTPGreedy:
     """Maintain exact target and MTP caches across appended chat turns."""
 
     def __init__(self, language, depth: int = 4):
+        from mlx_vlm.models.qwen3_5 import language as qwen35_language
+
+        from .qwen4_verifier import Qwen4ExactSpeculativeVerifier
+
         self.language = language
         self.depth = max(1, int(depth))
         self.target_cache = language.make_cache()
@@ -672,6 +676,10 @@ class MTPGreedy:
         self.draft_hidden = None
         self.hist_offset = 0
         self.stats = MTPStats()
+        # Same exact verifier FastDraftGreedy installs. MTPGreedy must
+        # not assume another decoder already installed it.
+        self.verifier = Qwen4ExactSpeculativeVerifier()
+        qwen35_language._EXACT_SPECULATIVE_VERIFIER = self.verifier
         # Backend contract: generate() installs and clears a routing
         # observer around decoding. Stored only; MTP verification runs
         # under the ambient exact routing profile.
@@ -706,6 +714,39 @@ class MTPGreedy:
                 f"MTP hidden width is {hidden.shape[-1]}, expected {expected}"
             )
         return logits, hidden
+
+    def _target_verify(self, ids):
+        """Verify one draft block with the exact speculative verifier.
+
+        Ordinary cached multi-token forwards do not reproduce singleton
+        numerics/state transitions, so block verification must go through
+        Qwen4ExactSpeculativeVerifier like FastDraftGreedy does. Returns
+        singleton-equivalent target predictions plus the matching exact
+        pre-final-mixer backbone states that advance the MTP draft chain.
+        """
+        out = self.language(
+            ids,
+            cache=self.target_cache,
+            speculative_verify=True,
+            return_hidden=True,
+            skip_logits=True,
+            capture_layer_ids=[],
+        )
+        hc_hidden = out.hidden_states[0]
+        final_hidden = out.hidden_states[-1]
+        expected_hc = (
+            self.language.args.hidden_size * self.language.args.hc_count
+        )
+        if hc_hidden.shape[-1] != expected_hc:
+            raise RuntimeError(
+                f"MTP hidden width is {hc_hidden.shape[-1]}, "
+                f"expected {expected_hc}"
+            )
+        target_ids = self.language.speculative_argmax_from_hidden(
+            final_hidden
+        )[0].astype(mx.uint32)
+        mx.eval(target_ids, hc_hidden)
+        return target_ids, hc_hidden
 
     def _target_replay(self, snapshot, ids) -> None:
         restore_cache(self.target_cache, snapshot)
@@ -801,8 +842,7 @@ class MTPGreedy:
 
             block = [int(self.next_main.item()), *drafts]
             block_ids = mx.array(block, dtype=mx.uint32).reshape(1, -1)
-            logits, hidden = self._target_capture(block_ids)
-            target_ids = mx.argmax(logits[0], axis=-1).astype(mx.uint32)
+            target_ids, hidden = self._target_verify(block_ids)
             host_targets = target_ids.tolist()
 
             accepted = 0

@@ -308,5 +308,67 @@ class SpeculativeTinyTest(unittest.TestCase):
         self.assertTrue(decoder.draft_disabled)
         self.assertEqual(int(decoder.next_main.item()), expected)
 
+    def test_exact_verifier_exposes_pre_mixer_residual(self):
+        values = [5, 9, 13]
+        plain = self.language(
+            mx.array([values], dtype=mx.uint32),
+            cache=self.prefill(),
+            speculative_verify=True,
+            return_hidden=True,
+            skip_logits=True,
+        )
+        captured = self.language(
+            mx.array([values], dtype=mx.uint32),
+            cache=self.prefill(),
+            speculative_verify=True,
+            return_hidden=True,
+            skip_logits=True,
+            capture_layer_ids=[],
+        )
+        # Without the request the sink holds only the final mixed hidden.
+        self.assertEqual(len(plain.hidden_states), 1)
+        # With [] the sink holds pre-final HC residual first, final last.
+        self.assertEqual(len(captured.hidden_states), 2)
+        hc_hidden, final_hidden = captured.hidden_states
+        self.assertEqual(hc_hidden.shape[-1], 64 * 2)
+        self.assertEqual(final_hidden.shape[-1], 64)
+        mx.eval(hc_hidden, final_hidden)
+        # The final mixed hidden is unchanged by the extra capture.
+        self.assertEqual(
+            float(
+                mx.max(mx.abs(plain.hidden_states[-1] - final_hidden)).item()
+            ),
+            0.0,
+        )
+
+    def test_mtp_multi_cycle_matches_sequential_target(self):
+        from models.flashnext.mtp import attach
+        from models.flashnext.speculative import MTPGreedy
+
+        language = tiny_language()
+        attach(language)
+        prompt = mx.array([[3, 7, 11]], dtype=mx.uint32)
+        cache = language.make_cache()
+        output = language(prompt, cache=cache)
+        token = mx.argmax(output.logits[:, -1, :], axis=-1).astype(mx.uint32)
+        expected = []
+        for _ in range(24):
+            expected.append(int(token.item()))
+            output = language(token.reshape(1, 1), cache=cache)
+            token = mx.argmax(
+                output.logits[:, -1, :], axis=-1
+            ).astype(mx.uint32)
+            mx.eval(token)
+
+        language._position_ids = None
+        language._rope_deltas = None
+        decoder = MTPGreedy(language, depth=3)
+        decoder.append(prompt)
+        actual = list(decoder.generate(24, set()))
+        self.assertEqual(actual, expected)
+        # The draft chain must actually execute, not sit idle.
+        self.assertGreater(decoder.stats.drafted, 0)
+        self.assertGreater(decoder.stats.cycles, 1)
+
 if __name__ == "__main__":
     unittest.main()
