@@ -133,6 +133,42 @@ class RoutingTests(unittest.TestCase):
         self.assertLessEqual(profile.pinned_bytes, profile.pin_budget)
         self.assertEqual(profile.pinned, {0: {2}})
 
+    def test_exact_quality_pin_settings_leave_routing_masks_alone(self):
+        from models.flashnext import adaptive_topk
+
+        before = {k: set(v) for k, v in adaptive_topk._RESIDENT_EXPERTS.items()}
+        profile = self.make("exact-quality")
+        with unittest.mock.patch.object(
+            adaptive_topk, "set_resident_experts"
+        ) as setter:
+            profile._apply_pinned_settings({0: [1, 2, 3]})
+        setter.assert_not_called()
+        self.assertEqual(
+            {k: set(v) for k, v in adaptive_topk._RESIDENT_EXPERTS.items()},
+            before,
+        )
+
+    def test_fast_quality_pin_settings_install_resident_experts(self):
+        from models.flashnext import adaptive_topk
+
+        saved = (
+            list(adaptive_topk._THRESHOLD),
+            dict(adaptive_topk._LAYER_THRESHOLDS),
+            list(adaptive_topk._RENORM_BLEND),
+        )
+        try:
+            profile = self.make("fast-quality")
+            with unittest.mock.patch.object(
+                adaptive_topk, "set_resident_experts"
+            ) as setter:
+                profile._apply_pinned_settings({0: [1, 2, 3]})
+            setter.assert_called_once_with({0: [1, 2, 3]})
+        finally:
+            adaptive_topk._THRESHOLD[:] = saved[0]
+            adaptive_topk._LAYER_THRESHOLDS.clear()
+            adaptive_topk._LAYER_THRESHOLDS.update(saved[1])
+            adaptive_topk._RENORM_BLEND[:] = saved[2]
+
 
 if __name__ == "__main__":
     unittest.main()

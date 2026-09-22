@@ -4092,8 +4092,24 @@ includes it. No restart-requirement change was implemented.
 Speed run (photosynthesis prompt, closed thinking, greedy, 64
 tokens, production defaults): 1.73 tok/s generation, 1.99 tok/s
 tail, 489 MB/token physical, digest `1ea80270588d1997`, 578 ms
-per token. Dynamic pins hold 4.53 GB (mlock) beside the 3.18 GB
+per token. Dynamic pins hold 4.53 GB beside the 3.18 GB
 resident model.
+
+Correction appended 2026-09-22: two statements above need a
+precise correction. First, exact-quality pins are NOT force-kept
+in routing: `RoutingProfile._apply_pinned_settings()` calls
+`set_resident_experts()` only for `fast-quality`, so changing
+`resident_experts` under `exact-quality` changes which pages are
+mlocked, not which experts the router computes. A pin-depth
+comparison under exact-quality is therefore route-identical and
+a valid exact experiment. Second, `SafeTensorStore.pin_rows()`
+mlocks the file-backed checkpoint mapping itself, not anonymous
+expert copies. The correct pressure statement is: file-backed
+mlocked expert pages plus resident MLX model allocations plus
+the slab/file-cache working set compete for 16 GB of physical
+memory. The measured numbers (4.53 GB pinned, 3.18 GB resident,
+1.9 GB file-cache eviction and 0.7 GB swap growth in one 64-token
+run) stand; only the mechanism interpretation is corrected.
 
 Steady-tail census (separate instrumented run, 64 tokens):
 average 7.97 kept experts per layer (top-10 routing, distribution
@@ -4112,7 +4128,11 @@ would need quality gates, not just a speed comparison.
 Output-head census: untied Q4/G32 `lm_head`, 248320x2560, about
 397 MB resident. Bounded microbenchmark on decode-shaped input:
 projection 4.28 ms/token, argmax 0.23 ms/token, under 1% of token
-time. Head closed as an optimization target.
+time. Head closed as an optimization target. (The earlier
+pin-budget paragraph is superseded by the correction above: pin
+depth under exact-quality does not change arithmetic, so a
+controlled pin comparison needs no quality gate, only identical
+token/route digests.)
 
 Layer-0 Metal exclusion stays: historical implementation guard
 (first eligible custom-kernel layer is layer 1). Recoverable cost
@@ -4137,3 +4157,68 @@ recommended experiment: only if memory pressure is relieved,
 test whether a smaller force-kept pin set preserves trajectory
 quality while returning gigabytes to the file cache; otherwise
 treat QSA long-context work as the next checkpoint.
+
+## Vontra pin-depth experiment: 8 beats 32, 2026-09-22
+
+A later correction (appended to the diagnosis above) established
+that exact-quality pins are file-backed mlocked pages and do not
+change routing, so this is a valid exact comparison. Starting
+commit `9117fd4`. Canonical profile copied per arm from the
+compatible Vontra history; slab digest, checkpoint identity,
+threshold 0.85, MTP off, chunk 2, 16 workers, and Metal path
+asserted identical in every arm. All token and route digests
+identical (`fe8ae20d5a5f982a`), so routing and arithmetic are
+proven unchanged. No I/O profiling in throughput arms.
+
+Primary runs, photosynthesis prompt, 72 greedy tokens per arm,
+orders [32,8,8,32] then [8,32,32,8] in fresh processes:
+
+| Arm | Gen tok/s | Tail tok/s | Full MB/tok | Post-pin MB/tok | Locked |
+|---|---:|---:|---:|---:|---:|
+| 32 | 1.96, 2.07 | 2.00, 2.03 | 403.0, 363.6 | 388.8, 383.2 | 4.53 GB |
+| 8 | 2.13, 2.16 | 2.08, 2.12 | 323.9, 327.3 | 350.6, 346.2 | 1.24 GB |
+| 8 | 2.11, 2.15 | 2.10, 2.09 | — | 350.4, 346.8 | 1.24 GB |
+| 32 | 2.07, 2.10 | 2.04, 2.05 | — | 379.7, 376.9 | 4.53 GB |
+
+Medians: 32 at 2.07 gen / 2.04 tail / ~378 post-pin MB/tok;
+8 at 2.14 gen / 2.10 tail / ~350 post-pin MB/tok. Eight wins all
+six paired comparisons on rate and tail reads. Pin install cost
+0.66/0.16 s at 32 versus 0.05/0.06 s at 8. The 32 arms evicted
+about 2.9 GB of file-backed page cache per run against about
+1 GB for 8-pin arms. Mechanism agrees: the released ~3.3 GB
+lets macOS retain a larger useful working set than the removed
+pins provided.
+
+Pin utility from the 32-arm route trace: warmup-candidate ranks
+1-8 drew 9,032 routed requests (27.7 GB logical), 9-16 drew
+4,124 (12.7 GB), 17-24 drew 2,202 (6.8 GB), 25-32 drew 1,242
+(3.8 GB), and non-candidate experts drew 17,480 (53.7 GB).
+Access coverage alone does not predict residency, per standing
+research, but the tail-read result shows the file cache absorbs
+ranks 9-32 traffic once memory is returned.
+
+Slab/pin overlap: all 60 slab-packed experts are also
+dynamically mlocked, 184.3 MB, 4.3% of dynamic-pin memory.
+Secondary effect, not optimized.
+
+Follow-up localization, [8,0,0,8] with zero pins via
+`pin_budget_gb=0`: 8 at gen 2.15/2.09, tail 2.10/2.07; 0 at gen
+2.13/2.11, tail 2.08/2.08, tail reads within 1-3 MB/tok.
+Identical digests. Eight pins and zero pins are equivalent, so
+the remaining pin set contributes nothing measurable and the
+32-pin harm is pure mlock pressure.
+
+Verdict: 8 beats 32 materially with identical tokens and
+routes; 8 ties 0. The global `resident_experts=32` default is
+left unchanged because this evidence is Vontra-only and the
+setting applies to all checkpoints; changing it needs REAP-side
+measurement. Vontra operators can set the equivalent of 8 pins
+explicitly. Do not retry broad pin sweeps on Vontra. Next: either
+measure REAP pin depth before touching the default, or treat
+QSA long-context work as the next checkpoint.
+
+Procedural note: Phase-0/census scripts in this sequence used the
+default pin-profile path and rewrote `~/.cache/flashnext/pins.json`
+at 14:12 with equivalent fresh Vontra history (identity
+unchanged, still compatible). Later benchmark arms used private
+copies and left the user profile untouched.
