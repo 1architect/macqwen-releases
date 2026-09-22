@@ -4487,3 +4487,38 @@ the GPU at its top clock for the whole decode, which raises sustained power.
 stays off until a long run shows no thermal throttling and a paired run
 resolves the effect. Evidence: `results/flashnext/*-hump-*` and
 `results/flashnext/*-production-gpu-keepwarm*`.
+
+## Normal-chat slab allocation drift, 2026-09-22
+
+We measured whether the changing pin history moves the default 60-slot skew
+slab across fresh launches on the installed Vontra Q4/G32 checkpoint. Three
+reversed pairs used 32 greedy tokens per arm, three predeclared prompts, the
+normal 8 resident experts, Frontier 8A, Up-QMV/SwiGLU, and keep-warm off. Each
+pair used the same prompt and a fresh process per arm. The rolling condition
+advanced a private copy of `pins.json` after each launch; the frozen condition
+started each launch from one snapshot. The user's live `pins.json` was not
+changed. Evidence: `results/flashnext/20260922-194807-slab-drift/`, including
+the append-only `slab-drift-arms.jsonl`, per-arm JSON, and `output.log`.
+
+| Pair | Rolling allocation | Frozen allocation | Rolling / frozen hits | Rolling / frozen physical MB/token | Rolling / frozen tok/s |
+|---:|---|---|---:|---:|---:|
+| 1 | `bd85ded8b69b2cd0` | `bd85ded8b69b2cd0` | 1.5% / 1.5% | 466.9 / 409.8 | 2.064 / 2.392 |
+| 2 | `cac6c167163847f0` | `bd85ded8b69b2cd0` | 11.4% / 7.9% | 459.0 / 474.8 | 2.063 / 2.028 |
+| 3 | `53279da7c0abbadf` | `bd85ded8b69b2cd0` | 21.2% / 1.2% | 478.4 / 437.3 | 2.015 / 2.143 |
+
+All six arms locked 60 slots and used 8 pins. The three pairs had identical
+token digests within each pair. The rolling history chose three allocations;
+the frozen history kept one. Two rolling packs already existed, and the third
+allocation created one new 175.8 MiB pack. Reading the pack directories shows
+0 of 60 layer/expert entries shared between rolling allocations 1 and 2, and
+14 of 60 shared between 2 and 3. The user's live pin profile still matched the
+initial snapshot after the run.
+
+The paired frozen-versus-rolling generation effects were +15.9%, -1.7%, and
++6.4%. Their mean of +6.8% falls inside the measured two-SE band of ±10.2%.
+Physical-read differences also changed sign. The first rolling arm began with
+791 MB free versus 3,261 MB for its frozen pair, and system-wide compressor
+movement varied substantially across arms. Logical hit rate did not predict
+physical MB/token in this run. This diagnostic establishes allocation and
+pack drift; it does not resolve a speed or I/O benefit from freezing the
+normal-chat slab profile. We leave the default selection policy unchanged.

@@ -53,9 +53,6 @@ CAPACITY_PINS = Path("~/.cache/flashnext/capacity-sweep-pins.json").expanduser()
 # Each arm gets a fresh copy of a frozen pin profile here, so no arm can move
 # the slab allocation of the next one through its own pin writes.
 FROZEN_ARM_PINS = Path("~/.cache/flashnext/capacity-sweep-arm-pins.json").expanduser()
-CAPACITY_OBSERVED_PINS = Path(
-    "~/.cache/flashnext/capacity-sweep-observed.json"
-).expanduser()
 
 
 def aggregate_boundary_profiles(
@@ -176,8 +173,8 @@ def allocation_directory_digest(allocation: dict) -> str:
     return digest.hexdigest()[:16]
 
 
-def require_prepared_capacity_packs() -> None:
-    """Refuse generation unless every prepared capacity pack is valid."""
+def require_prepared_capacity_packs() -> Path:
+    """Return the verified profile only when every prepared pack is valid."""
     if not CAPACITY_MANIFEST.is_file():
         raise RuntimeError(
             "Capacity manifest is missing. Run --capacity-sweep --prepare-only, "
@@ -225,7 +222,7 @@ def require_prepared_capacity_packs() -> None:
                 f"Allocation changed for {name}: got {digest}, "
                 f"expected {info['allocation_digest']}"
             )
-    os.environ["FLASHNEXT_PIN_CACHE"] = str(CAPACITY_OBSERVED_PINS)
+    return pin_path
 
 
 def install_frozen_pins(profile: Path) -> None:
@@ -342,11 +339,14 @@ def run_arm(
     boundary_profile: str | None = None,
     fuse_up_swiglu: bool = False,
     profile_io: bool = False,
+    resident_experts: int | None = None,
+    require_existing_pack: bool = True,
+    prompt: str = PROMPT,
 ) -> dict:
     configure_arm(
         slab, layers, global_budget, slab_pack, policy, fuse_shared,
         fuse_shared_parts, stream_pack,
-        require_existing_pack=True,
+        require_existing_pack=require_existing_pack,
         boundary_profile=boundary_profile,
         fuse_up_swiglu=fuse_up_swiglu,
         profile_io=profile_io,
@@ -365,7 +365,11 @@ def run_arm(
 
     free_before = free_memory_mb()
     meter = ReadMeter()
-    backend = FlashNextBackend()
+    load_began = time.perf_counter()
+    backend = (
+        FlashNextBackend() if resident_experts is None
+        else FlashNextBackend(resident_experts=resident_experts)
+    )
 
     if slab_pack:
         try:
@@ -381,11 +385,13 @@ def run_arm(
             "allocated_slots": 0,
             "pack_bytes": 0,
             "pack_mib": 0.0,
+            "path": "",
             "mlock_ok": False,
         }
+    load_s = time.perf_counter() - load_began
 
     backend.reset()
-    backend.append_text(PROMPT)
+    backend.append_text(prompt)
     meter.reset()
     reset_profile()
     vm_before = vm_counters()
@@ -488,7 +494,9 @@ def run_arm(
         "allocated_slots": pack_info["allocated_slots"],
         "pack_bytes": pack_info["pack_bytes"],
         "pack_mib": round(pack_info["pack_mib"], 2),
+        "pack_path": pack_info["path"],
         "mlock_ok": pack_info["mlock_ok"],
+        "load_s": round(load_s, 2),
         "io_wait_s": round(io_wait_s, 6),
         "io_wait_ms_tok": round(io_wait_s / stats.tokens * 1000, 3) if stats.tokens else 0.0,
         "io_breakdown_ms_tok": profile_ms_tok,
@@ -798,6 +806,9 @@ def main():
     if rounds < 1:
         parser.error("--pairs must be at least 1")
 
+    if args.capacity_sweep and (args.calibrate_pins or args.pin_profile):
+        parser.error("--capacity-sweep has its own calibrated profile")
+
     if args.prepare_only:
         if args.capacity_sweep:
             calibrate_routing_profile()
@@ -827,26 +838,24 @@ def main():
         )
         return
 
-    if args.capacity_sweep and (args.calibrate_pins or args.pin_profile):
-        parser.error("--capacity-sweep has its own calibrated profile")
     frozen_pins = args.pin_profile
     if args.calibrate_pins:
         calibrate_routing_profile()
         frozen_pins = CAPACITY_PINS
+    if args.capacity_sweep:
+        frozen_pins = require_prepared_capacity_packs()
     if frozen_pins is not None:
         frozen_pins = frozen_pins.expanduser().resolve()
         digest = hashlib.sha256(frozen_pins.read_bytes()).hexdigest()[:16]
         print(f"Frozen pin profile: {frozen_pins} ({digest})", flush=True)
-        # Build every pack before the timed schedule, from the same profile
-        # the arms will read.
-        for name in arm_names:
-            if cond_defs[name][3]:
-                install_frozen_pins(frozen_pins)
-                info = prepare_pack(name, cond_defs[name])
-                print(f"  prepared {name}: alloc {info['allocation_digest']}", flush=True)
-
-    if args.capacity_sweep:
-        require_prepared_capacity_packs()
+        # Other frozen-profile runs build packs here; capacity sweeps require
+        # the previously prepared packs checked above.
+        if not args.capacity_sweep:
+            for name in arm_names:
+                if cond_defs[name][3]:
+                    install_frozen_pins(frozen_pins)
+                    info = prepare_pack(name, cond_defs[name])
+                    print(f"  prepared {name}: alloc {info['allocation_digest']}", flush=True)
     if args.purge_file_cache:
         print("Purging the macOS file cache once before measurement...", flush=True)
         purge_file_cache()

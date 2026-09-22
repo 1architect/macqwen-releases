@@ -8,7 +8,7 @@ period; keep them as history and trust this section where they disagree.
 ### Where things stand
 
 - Branch `flashnext-research-vontra`, pushed to `origin`
-  (`github.com/1architect/macqwen-releases`, public). Last commit `f5ecbbb`.
+  (`github.com/1architect/macqwen-releases`, public).
 - Installed checkpoint: `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP` at
   `~/models/Qwen3.8-Flash-Next-MLX-4bit-MTP` (alias `vontra-mtp`): 48 layers,
   512 routed experts, top-10, Q4/G32, indexed MTP (off). oQ4 and REAP-288 are
@@ -86,19 +86,37 @@ production harness, both inside bands near 15%. Full record: the last
   create a `-manual` folder). `macqwen/tests/test_results_policy.py` rejects
   other destinations.
 - Unit suites: `python -m unittest discover -s models/flashnext/tests/unit -t .
-  -p 'test_*.py'` (404 tests) and `-s macqwen/tests` (423 tests). Use
+  -p 'test_*.py'` and `-s macqwen/tests`. Use
   `~/models/.venv-qwen4exp/bin/python`.
 
-### Known open issues
+### Slab profiles and remaining caveat
 
-- `bench_slab_production --capacity-sweep` redirects arms to
-  `~/.cache/flashnext/capacity-sweep-observed.json`, which nothing creates;
-  use `--calibrate-pins` or `--pin-profile` for trusted slab runs.
-- The live `~/.cache/flashnext/pins.json` changes every turn, so the default
-  slab allocation and its pack drift between launches (packs unused for 14
-  days are deleted).
-- The generic `resident-experts` default stays 32; only the Vontra identity
-  gets 8 through `models/flashnext/checkpoint_policy.py`.
+`bench_slab_production --capacity-sweep --prepare-only` calibrates
+`capacity-sweep-pins.json`, prepares the 56/60/64-slot packs, and records their
+digests in `capacity-sweep-manifest.json`. The later `--capacity-sweep` run
+checks the profile and packs against that manifest, then copies the verified
+profile to a private file before each arm. An arm's pin writes cannot move the
+next arm's allocation. For other trusted slab comparisons, use
+`--calibrate-pins` or `--pin-profile`. This harness constructs the backend
+directly and uses 32 resident experts, including on Vontra; it does not measure
+the normal Vontra chat policy of 8. Run model benchmarks only with the user's
+approval under the rules above.
+
+The live `~/.cache/flashnext/pins.json` still changes every turn. Normal chat
+therefore selects a new slab allocation and pack between launches; packs
+unused for 14 days are deleted. This is separate from the frozen benchmark
+profile. The generic `resident-experts` default remains 32; only the Vontra
+content identity gets 8 through `models/flashnext/checkpoint_policy.py`.
+
+Our 2026-09-22 diagnostic ran three reversed pairs of fresh 32-token Vontra
+launches with 8 pins. A private rolling pin history selected three different
+60-slot allocations; a frozen snapshot selected one, and the rolling arm
+created one new 175.8 MiB pack. The first rolling transition retained none of
+its 60 layer/expert entries. Paired output digests matched. Frozen-versus-
+rolling generation averaged +6.8% within a ±10.2% two-SE band, so we do not
+change the normal-chat slab policy. The first pair also had very different
+free memory. Evidence and per-pair reads, hits and rates are in the last
+`research.md` section and `results/flashnext/20260922-194807-slab-drift/`.
 
 Read this file, [`research.md`](research.md), and
 [`AGENT_INVARIANTS.md`](AGENT_INVARIANTS.md) before changing code or starting
