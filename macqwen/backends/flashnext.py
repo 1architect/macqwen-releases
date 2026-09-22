@@ -106,11 +106,26 @@ class FlashNextBackend(Conversation):
                  fusion_min_margin: float = FLASHNEXT_DEFAULTS["fusion_min_margin"],
                  fusion_min_block: int = FLASHNEXT_DEFAULTS["fusion_min_block"],
                  fusion_margin_tokens: int = FLASHNEXT_DEFAULTS["fusion_margin_tokens"],
-                 fusion_max_prompt: int = FLASHNEXT_DEFAULTS["fusion_max_prompt"],
-                 fusion_model: str = DEFAULT_FUSION_MODEL,
-                 session_dir: str = "~/.cache/flashnext/sessions"):
+                  fusion_max_prompt: int = FLASHNEXT_DEFAULTS["fusion_max_prompt"],
+                  fusion_model: str = DEFAULT_FUSION_MODEL,
+                  native_mtp: str = "off",
+                  mtp_depth: int = 3,
+                  session_dir: str = "~/.cache/flashnext/sessions"):
         AutoTokenizer = _load_transformers_tokenizer()
         from models.flashnext.loader import load_streaming
+
+        if native_mtp == "auto":
+            native_mtp = os.environ.get("FLASHNEXT_NATIVE_MTP", "off")
+        native_mtp = str(native_mtp).lower()
+        if native_mtp not in ("off", "on"):
+            raise ValueError("native-mtp must be off or on")
+        try:
+            mtp_depth = int(os.environ.get("FLASHNEXT_MTP_DEPTH", mtp_depth))
+        except (TypeError, ValueError):
+            mtp_depth = 3
+        mtp_depth = max(1, min(8, int(mtp_depth)))
+        if routing_profile == "fused-quality" and native_mtp == "on":
+            raise ValueError("native MTP and fused-quality are mutually exclusive")
         from models.flashnext.qsa_chunk import apply as apply_qsa
 
         load_threshold = 0.20 if routing_profile == "fast" else threshold
@@ -121,7 +136,7 @@ class FlashNextBackend(Conversation):
             raise SystemExit(str(exc)) from exc
         model, _, self.store = load_streaming(
             path, expert_capacity=0, verbose=False, keep_vision=False,
-            use_mtp=False)
+            use_mtp=(native_mtp == "on"))
         apply_qsa()
         super().__init__(AutoTokenizer.from_pretrained(path))
         self.language = model.language_model
@@ -139,6 +154,11 @@ class FlashNextBackend(Conversation):
         self.fusion_margin_tokens = fusion_margin_tokens
         self.fusion_max_prompt = fusion_max_prompt
         self.fusion_model = os.path.expanduser(fusion_model)
+        self.native_mtp = native_mtp
+        self.mtp_depth = mtp_depth
+        self._mtp_active = bool(
+            native_mtp == "on" and hasattr(model.language_model, "mtp")
+        )
         self._setting_sources = {}
         self.session_dir = session_dir
         self.thinking_enabled = False
@@ -291,7 +311,8 @@ class FlashNextBackend(Conversation):
         )
         return (f"loaded {name}  {len(self.tape)} tokens, "
                 f"thinking={'on' if loaded.thinking else 'off'}{mode_note}, "
-                "no old prefill")
+                "no old prefill"
+                + (", MTP resumes next greedy turn" if self._mtp_active else ""))
 
     def list_sessions(self) -> str:
         from models.flashnext.sessions import SessionError
@@ -343,6 +364,29 @@ class FlashNextBackend(Conversation):
         self.turn_closed = False
         self.language._position_ids = None
         self.language._rope_deltas = None
+
+    def _native_mtp_eligible(self) -> bool:
+        """Whether this turn may use the native MTP decoder."""
+        if not self._mtp_active:
+            return False
+        if self.routing_profile == "fused-quality":
+            return False
+        if not hasattr(self.language, "mtp"):
+            return False
+        sampling = getattr(self, "sampling", None)
+        greedy = getattr(sampling, "greedy", True)
+        return bool(greedy)
+
+    def _start_native_mtp_decoder(self):
+        """Attach MTPGreedy for exact greedy turns. Fall back otherwise."""
+        if not self._native_mtp_eligible():
+            return None
+        from models.flashnext.speculative import MTPGreedy
+
+        decoder = MTPGreedy(self.language, depth=self.mtp_depth)
+        decoder.target_cache = self.cache
+        self._decoder = decoder
+        return decoder
 
     def _start_fused_decoder(self):
         if (
@@ -449,6 +493,10 @@ class FlashNextBackend(Conversation):
             and not separate_budgets
         ):
             decoder = self._start_fused_decoder()
+        if decoder is None and not separate_budgets:
+            # Native MTP is opt-in and greedy-only. Anything else falls
+            # back to the normal target decoder without changing sampling.
+            decoder = self._start_native_mtp_decoder()
         prompt = list(self.tape) + self.pending if self._replay_needed else list(self.pending)
         ids = mx.array(prompt)[None]
         prompt_tokens = int(ids.shape[1])

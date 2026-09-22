@@ -35,6 +35,14 @@ from .ngram import (
     StreamingShardedEmbedding,
 )
 from .store import SafeTensorStore
+from .checkpoint_compat import (
+    MTP_INDEXED,
+    MTP_NONE,
+    MTP_SIDECAR,
+    detect_mtp_source,
+    is_mtp_key,
+    validate_mtp_structure,
+)
 
 STREAMED = (".switch_mlp.", ".ngram_embedding.")
 _REAP_NORM_KEY = "language_model.model.hyper_connection_mixer.hc_norm.weight"
@@ -94,6 +102,14 @@ def apply_wired_limit() -> None:
     print(f"wired limit: {float(want):.2f} GB", flush=True)
 
 
+def _weight_map_for_detector(path: Path, store: SafeTensorStore) -> dict:
+    """Rebuild an index-style weight map from loaded store refs.
+
+    The detector needs key -> shard without reading the index twice.
+    """
+    return {name: ref.shard for name, ref in store.refs.items()}
+
+
 def load_streaming(
     model_dir: str,
     expert_capacity: int = 32,
@@ -109,9 +125,28 @@ def load_streaming(
     path = Path(os.path.expanduser(model_dir))
     store = SafeTensorStore(str(path))
     mtp_path = path / "model-mtp.safetensors"
-    use_mtp = bool(use_mtp and mtp_path.is_file())
-    if use_mtp:
+    # Capability detection reads config/index/tensor layout, never the
+    # directory name. Both sidecar and indexed MTP present fails closed.
+    index_map = _weight_map_for_detector(path, store)
+    mtp_source, indexed_mtp_keys, _indexed_mtp_shards = detect_mtp_source(
+        str(path), index_map
+    )
+    if use_mtp and mtp_source == MTP_SIDECAR:
         store.add_shard(mtp_path.name)
+    elif use_mtp and mtp_source == MTP_NONE:
+        use_mtp = False
+    elif use_mtp and mtp_source == MTP_INDEXED:
+        # Indexed MTP tensors already live in store.refs. Register nothing.
+        missing = validate_mtp_structure(store.refs)
+        if missing:
+            raise ValueError(
+                "indexed MTP checkpoint is structurally incomplete; missing: "
+                + ", ".join(missing)
+            )
+    elif not use_mtp:
+        # Target-only mode. Keep detector source for reporting, but exclude
+        # indexed MTP tensors from the resident set below.
+        pass
 
     config = load_config(path)
     config.setdefault("text_config", config.pop("llm_config", {}))
@@ -179,7 +214,11 @@ def load_streaming(
 
         swap_streaming(model.language_model, store, mode, expert_capacity)
 
-    resident = {k: v for k, v in weights.items() if not _is_streamed(k)}
+    resident = {
+        k: v
+        for k, v in weights.items()
+        if not _is_streamed(k) and (use_mtp or not is_mtp_key(k))
+    }
     if not keep_vision:
         # Decode speed tracks how much of the expert pool the page cache can
         # hold, so RAM given to the vision tower is RAM taken from that cache.
@@ -192,7 +231,9 @@ def load_streaming(
 
     if verbose:
         streamed_bytes = sum(
-            store.refs[k].shape and _nbytes(store, k) for k in weights if _is_streamed(k)
+            store.refs[k].shape and _nbytes(store, k)
+            for k in weights
+            if _is_streamed(k) and (use_mtp or not is_mtp_key(k))
         )
         print(
             f"  resident  : {len(resident)} tensors, "
@@ -200,7 +241,10 @@ def load_streaming(
         )
         print(f"  streaming : {streamed_bytes/1e9:.2f} GB")
         print(f"  streamed  : {swapped_experts} MoE blocks, {swapped_ngram} n-gram shards")
-        print(f"  MTP       : {'on, experts on the drive' if use_mtp else 'off'}")
+        if use_mtp:
+            print(f"  MTP       : on ({mtp_source}), experts on the drive")
+        else:
+            print(f"  MTP       : off (source: {mtp_source})")
 
     return model, config, store
 
