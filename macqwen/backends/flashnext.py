@@ -50,6 +50,26 @@ def _load_transformers_tokenizer():
     return AutoTokenizer
 
 
+def _resolve_startup_mtp(native_mtp=None, mtp_depth=None):
+    """Resolve native MTP startup state with explicit > env > default.
+
+    `build_backend()` passes no explicit value (no CLI flag), so the
+    environment controls normal startup.
+    """
+    if native_mtp is None or str(native_mtp).lower() == "auto":
+        native_mtp = os.environ.get("FLASHNEXT_NATIVE_MTP", "off")
+    native_mtp = str(native_mtp).lower()
+    if native_mtp not in ("off", "on"):
+        raise ValueError("native-mtp must be off or on")
+    if mtp_depth is None:
+        mtp_depth = os.environ.get("FLASHNEXT_MTP_DEPTH", 3)
+    try:
+        mtp_depth = int(mtp_depth)
+    except (TypeError, ValueError):
+        mtp_depth = 3
+    return native_mtp, max(1, min(8, int(mtp_depth)))
+
+
 @dataclass
 class Stats:
     """What the agent loop reads back from a turn.
@@ -108,22 +128,16 @@ class FlashNextBackend(Conversation):
                  fusion_margin_tokens: int = FLASHNEXT_DEFAULTS["fusion_margin_tokens"],
                   fusion_max_prompt: int = FLASHNEXT_DEFAULTS["fusion_max_prompt"],
                   fusion_model: str = DEFAULT_FUSION_MODEL,
-                  native_mtp: str = "off",
-                  mtp_depth: int = 3,
+                  native_mtp: str | None = None,
+                  mtp_depth: int | None = None,
                   session_dir: str = "~/.cache/flashnext/sessions"):
         AutoTokenizer = _load_transformers_tokenizer()
         from models.flashnext.loader import load_streaming
 
-        if native_mtp == "auto":
-            native_mtp = os.environ.get("FLASHNEXT_NATIVE_MTP", "off")
-        native_mtp = str(native_mtp).lower()
-        if native_mtp not in ("off", "on"):
-            raise ValueError("native-mtp must be off or on")
-        try:
-            mtp_depth = int(os.environ.get("FLASHNEXT_MTP_DEPTH", mtp_depth))
-        except (TypeError, ValueError):
-            mtp_depth = 3
-        mtp_depth = max(1, min(8, int(mtp_depth)))
+        # Startup precedence: explicit constructor value, then the
+        # environment, then off. build_backend() passes no explicit value
+        # (no CLI flag), so the environment controls normal startup.
+        native_mtp, mtp_depth = _resolve_startup_mtp(native_mtp, mtp_depth)
         if routing_profile == "fused-quality" and native_mtp == "on":
             raise ValueError("native MTP and fused-quality are mutually exclusive")
         from models.flashnext.qsa_chunk import apply as apply_qsa
@@ -211,9 +225,21 @@ class FlashNextBackend(Conversation):
     def _rebuild_routing(self) -> None:
         from models.flashnext.routing import RoutingProfile, prewarm_enabled
 
-        if self._decoder is not None:
-            self.cache = self._decoder.target_cache
-        self._decoder = None
+        decoder = self._decoder
+        if decoder is not None and self._is_native_mtp_decoder(decoder):
+            if self._turn_allows_mtp():
+                # Changing draft depth does not invalidate MTP cache
+                # history, so keep the synchronized decoder and sync depth.
+                decoder.depth = max(1, min(8, int(self.mtp_depth)))
+            else:
+                # The new state cannot advance MTP history. Adopt the
+                # target cache and block MTP until reset.
+                self.cache = decoder.target_cache
+                self._decoder = None
+                self._mtp_blocked = True
+        elif decoder is not None:
+            self.cache = decoder.target_cache
+            self._decoder = None
         self._fused_pending = self.routing_profile == "fused-quality" and not self.tape
         self.routing = RoutingProfile(
             self.routing_profile,
@@ -531,6 +557,17 @@ class FlashNextBackend(Conversation):
             # Native MTP is opt-in and greedy-only. Anything else falls
             # back to the normal target decoder without changing sampling.
             decoder = self._start_native_mtp_decoder()
+        if (
+            decoder is None
+            and self._mtp_active
+            and not self._mtp_blocked
+            and (self.pending or self._replay_needed)
+        ):
+            # This turn advances target history through the target path
+            # without MTP history, even with max_tokens=0. An eligible
+            # full replay cannot reach here: it constructed a decoder
+            # above. Block native MTP until reset.
+            self._mtp_blocked = True
         prompt = list(self.tape) + self.pending if self._replay_needed else list(self.pending)
         ids = mx.array(prompt)[None]
         prompt_tokens = int(ids.shape[1])
