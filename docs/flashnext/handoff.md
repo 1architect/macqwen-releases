@@ -142,8 +142,8 @@ experiments belong in `research.md`, not in this operational summary.
 ## Required benchmark protocol
 
 Start retained runs with `./tests/run.sh`; the Flash-Next cases call
-`models/flashnext/bench_production.py` for published decode numbers and
-`models/flashnext/bench_slab_production.py` for selective slab comparisons.
+`models/flashnext/tests/bench/bench_production.py` for published decode numbers and
+`models/flashnext/tests/bench/bench_slab_production.py` for selective slab comparisons.
 Before any run, we must record:
 
 - checkpoint identity and complete source/configuration fingerprints;
@@ -210,8 +210,8 @@ Interrupted generations are incomplete gates, not quality failures.
 | `models/flashnext/slab_pack.py` | File-backed compatible slab storage |
 | `models/flashnext/settings/` | Settings registry and safe launch defaults |
 | `models/flashnext/tests/` | Flash-Next live-test cases |
-| `models/flashnext/bench_production.py` | Standard production benchmark |
-| `models/flashnext/bench_slab_production.py` | Paired slab benchmark |
+| `models/flashnext/tests/bench/bench_production.py` | Standard production benchmark |
+| `models/flashnext/tests/bench/bench_slab_production.py` | Paired slab benchmark |
 | `models/flashnext/diskio.py` | Physical-read accounting |
 
 Set up the local environment with:

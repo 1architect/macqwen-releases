@@ -1,1 +1,1 @@
-"""Project test-terminal providers for Qwen27B."""
+"""qwen27b tests: unit/, bench/ and cases/. Results go to results/qwen27b/."""

@@ -18,7 +18,7 @@ HELP = """  /help                         show commands
   /list [CATEGORY]              list tests for the selected model
   /show TEST                    explain one test
   /run TEST                     run one test after confirmation
-  /results                      show the canonical measurement directory
+  /results                      show this model's results folder
   /status                       show selected model and test count
   /quit                         leave the test terminal"""
 

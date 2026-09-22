@@ -1,1 +1,1 @@
-"""Project test-terminal providers for K2-Horizon."""
+"""k2_horizon tests: unit/, bench/ and cases/. Results go to results/k2_horizon/."""

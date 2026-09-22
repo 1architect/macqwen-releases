@@ -3,7 +3,7 @@
 This is our active record of Bonsai-2 measurements, rejected ideas, and
 design decisions. Current operation belongs in [`handoff.md`](handoff.md).
 Exact commands, the compact results table, and retained JSONL arms are indexed
-in [`measurements/`](measurements/).
+in [`results/bonsai2/`](../../results/bonsai2/).
 
 ## 2026-09-18 — Branch setup
 
@@ -81,7 +81,7 @@ passthrough across split-marker chunkings.
 
 All runs use `.venv` on the reference M4/16GB machine, greedy decoding with
 exact digests, fresh child process per arm, forward/reverse/forward rounds.
-Raw arms live in [`measurements/`](measurements/). Digests match within
+Raw arms live in [`results/bonsai2/`](../../results/bonsai2/). Digests match within
 every comparison.
 
 ### Baselines
@@ -110,7 +110,7 @@ This is a current diagnostic rate, not a sustained product baseline. System
 swap activity occurred, and schema-1 physical-read accounting spans prefill
 plus decode. We therefore promoted only
 the decode-rate observation from this run. Raw evidence is retained at
-[`20260919-low-context-short-check.jsonl`](measurements/20260919-low-context-short-check.jsonl).
+[`20260919-low-context-short-check.jsonl`](../../results/bonsai2/20260919-low-context-short-check.jsonl).
 
 The historical artifacts show decode falling from 5.5 tok/s at 2k to 4.0
 tok/s at 19.5k context. Their prefill runs about 26 tok/s at 2k and 16 tok/s
@@ -645,9 +645,9 @@ counters: their empty `attention_events` arrays prove only that tracing was
 off, not that the fused kernel ran. We do not reconstruct that provenance.
 New runs record per-backend selection and fallback counters and reject arms
 that do not meet the explicit fused-coverage gate. The retained records are
-[`20260920-015510-q4-attention-fused-2k.jsonl`](measurements/20260920-015510-q4-attention-fused-2k.jsonl)
+[`20260920-015510-q4-attention-fused-2k.jsonl`](../../results/bonsai2/20260920-015510-q4-attention-fused-2k.jsonl)
 and the raw arm log
-[`20260920-015510-q4-attention-fused-2k-arms.jsonl`](measurements/20260920-015510-q4-attention-fused-2k-arms.jsonl).
+[`20260920-015510-q4-attention-fused-2k-arms.jsonl`](../../results/bonsai2/20260920-015510-q4-attention-fused-2k-arms.jsonl).
 
 Neither experimental kernel has established general numerical equivalence.
 Small FP32 Q4 checks differed from stock by up to about 1.7e-6. A nonzero
@@ -659,9 +659,9 @@ An 8k run was relevant to the long-context question and explicitly
 authorized, but was interrupted after its first stock arm while the fused
 arm was running, so it has no completed comparison. Its started and partial
 arm records are retained at
-[`20260920-021144-q4-attention-fused-8k.jsonl`](measurements/20260920-021144-q4-attention-fused-8k.jsonl)
+[`20260920-021144-q4-attention-fused-8k.jsonl`](../../results/bonsai2/20260920-021144-q4-attention-fused-8k.jsonl)
 and
-[`20260920-021144-q4-attention-fused-8k-arms.jsonl`](measurements/20260920-021144-q4-attention-fused-8k-arms.jsonl).
+[`20260920-021144-q4-attention-fused-8k-arms.jsonl`](../../results/bonsai2/20260920-021144-q4-attention-fused-8k-arms.jsonl).
 They do not establish an 8k performance result, and we do not restart that
 or any other long-context arm without explicit user authorization.
 
@@ -686,9 +686,9 @@ completed and matched the greedy digest. Each arm made 544 stock attention
 calls, with zero fused attempts or selections. This is a short-workload
 diagnostic, not a replacement for the 3,283-token retained baseline and not
 a promotion claim. The append-only records are
-[`20260920-102501-baseline-question-short.jsonl`](measurements/20260920-102501-baseline-question-short.jsonl)
+[`20260920-102501-baseline-question-short.jsonl`](../../results/bonsai2/20260920-102501-baseline-question-short.jsonl)
 and its raw arms
-[`20260920-102501-baseline-question-short-arms.jsonl`](measurements/20260920-102501-baseline-question-short-arms.jsonl).
+[`20260920-102501-baseline-question-short-arms.jsonl`](../../results/bonsai2/20260920-102501-baseline-question-short-arms.jsonl).
 
 ## 2026-09-20 — One-time QMM metadata preparation probe
 
@@ -720,11 +720,11 @@ second candidate arm was interrupted during decode after partial evidence was
 written. The run therefore has no complete three-arm comparison. We keep the
 candidate opt-in for diagnosis, do not promote it, and stop this branch rather
 than hammering the fanless machine with repeats. Records are
-[`20260920-121033-prepared-qmm-metadata-question.jsonl`](measurements/20260920-121033-prepared-qmm-metadata-question.jsonl),
-[`20260920-121033-prepared-qmm-metadata-question-arms.jsonl`](measurements/20260920-121033-prepared-qmm-metadata-question-arms.jsonl),
-[`20260920-121312-prepared-qmm-metadata-2k.jsonl`](measurements/20260920-121312-prepared-qmm-metadata-2k.jsonl),
+[`20260920-121033-prepared-qmm-metadata-question.jsonl`](../../results/bonsai2/20260920-121033-prepared-qmm-metadata-question.jsonl),
+[`20260920-121033-prepared-qmm-metadata-question-arms.jsonl`](../../results/bonsai2/20260920-121033-prepared-qmm-metadata-question-arms.jsonl),
+[`20260920-121312-prepared-qmm-metadata-2k.jsonl`](../../results/bonsai2/20260920-121312-prepared-qmm-metadata-2k.jsonl),
 and
-[`20260920-121312-prepared-qmm-metadata-2k-arms.jsonl`](measurements/20260920-121312-prepared-qmm-metadata-2k-arms.jsonl).
+[`20260920-121312-prepared-qmm-metadata-2k-arms.jsonl`](../../results/bonsai2/20260920-121312-prepared-qmm-metadata-2k-arms.jsonl).
 
 The benchmark harness now streams bounded arm progress, writes raw and
 partial evidence before validation, records candidate-path counters, rejects
@@ -792,7 +792,7 @@ with 23 prompt tokens and 32 greedy output tokens. Our seed is 7.
 Our defaults hold, including prepared QMM metadata on. All arms
 complete with digest `cdb7ac707f12`. Decode rates are 9.178, 9.388,
 and 9.302 tok/s. Our record is
-[`20260920-decode-outside-split.jsonl`](measurements/20260920-decode-outside-split.jsonl).
+[`20260920-decode-outside-split.jsonl`](../../results/bonsai2/20260920-decode-outside-split.jsonl).
 
 We reported steady tokens only, excluding token 1. Token 1 carries the
 prefill boundary and measures 1,141 to 2,353 ms.
@@ -863,7 +863,7 @@ measures 8.3 GB on disk, matching the expected single-token size.
 Capture stop perturbs token 5 by 2,932 ms host, so the captured
 window is diagnostic only and never a production timing. Our derived
 record is
-[`20260920-decode-gpu-split.jsonl`](measurements/20260920-decode-gpu-split.jsonl),
+[`20260920-decode-gpu-split.jsonl`](../../results/bonsai2/20260920-decode-gpu-split.jsonl),
 holding both attempts, token walls, counters, and the size note.
 The 8 GB bundle itself stays out of our repo. Sum versus union
 inspection needs Xcode GPU tools and stays open. Even if our full
@@ -877,7 +877,7 @@ the roofline probe, the retained split arms, and one gated capture.
 We recaptured one single-token bundle for Xcode analysis. It
 lives at `~/Downloads/bonsai-decode-1tok.gputrace` with 8.3 GB on
 disk. Our derived record is
-[`20260920-decode-gpu-xcode.jsonl`](measurements/20260920-decode-gpu-xcode.jsonl)
+[`20260920-decode-gpu-xcode.jsonl`](../../results/bonsai2/20260920-decode-gpu-xcode.jsonl)
 with the same 6 greedy tokens, token walls, counters, and size note.
 Token 5 carries the capture stop cost and stays diagnostic only.
 
@@ -918,7 +918,7 @@ Control rates are 9.440 and 8.957 tok/s against shared 9.448 and
 9.479 tok/s. All digests match `cdb7ac707f12`. Paired effect is
 +2.96% with a ±5.75 band, so our result is unresolved and we do not
 promote it. Our record is
-[`20260920-share-fwht-question.jsonl`](measurements/20260920-share-fwht-question.jsonl).
+[`20260920-share-fwht-question.jsonl`](../../results/bonsai2/20260920-share-fwht-question.jsonl).
 
 We implemented nothing further. No candidate shows a resolved positive
 result, and every remaining ceiling sits at or below 4% against
@@ -992,7 +992,7 @@ maxabs 0.0096 for fused F32 and 0.0054 for fp16 cast, so the digest
 gate would likely reject as well. Our 8.16 ms figure measured
 surrounding GDN bookkeeping or sync floors, not the conv kernel,
 which costs about 1.1 ms in-graph. Our record is
-[`20260920-gdn-conv-probe.jsonl`](measurements/20260920-gdn-conv-probe.jsonl).
+[`20260920-gdn-conv-probe.jsonl`](../../results/bonsai2/20260920-gdn-conv-probe.jsonl).
 
 ## 2026-09-20 — GDN bookkeeping census and reconciliation
 
@@ -1005,7 +1005,7 @@ fp32 costs 2.87 ms, with a similar reread next token, so the
 round-trip is about 5.7 ms and is recurrence-mandated. Residual adds
 cost 0.426 ms per 48, or about 1.1 ms for our 128 production adds.
 Gated norm costs 0.451 ms. Our record is
-[`20260920-gdn-bookkeeping.jsonl`](measurements/20260920-gdn-bookkeeping.jsonl).
+[`20260920-gdn-bookkeeping.jsonl`](../../results/bonsai2/20260920-gdn-bookkeeping.jsonl).
 
 We reconciled our token as QMM ~88, FWHT 7.2, conv 1.1, bookkeeping
 traffic ~2.4, state round-trip ~5.7, attention ~2, sampler ~1,
@@ -1017,7 +1017,7 @@ The reported table held 27 unique kernels by SIMD groups over our token 4 to 5
 window, about 34,609 groups for 1.2 tokens. Cost percent is
 unavailable, so groups ranked work, not time. Our record holds the reported
 full table in
-[`20260920-decode-gpu-xcode-r2.jsonl`](measurements/20260920-decode-gpu-xcode-r2.jsonl).
+[`20260920-decode-gpu-xcode-r2.jsonl`](../../results/bonsai2/20260920-decode-gpu-xcode-r2.jsonl).
 
 We corrected our first claim: `affine_qmv_fast_float_gs_128_b_2`
 exists with 15,078 groups, so our prepared path already runs a
@@ -1046,7 +1046,7 @@ mapping is `gg1_copy` from scatter-style in-place strided writes,
 `gather_axis` 8.25% from `take_along_axis`, Greater plus Select
 from `where`, and `rmsfloat16` 2.63% from strided norm. Our record
 is
-[`20260920-copy-attr.jsonl`](measurements/20260920-copy-attr.jsonl).
+[`20260920-copy-attr.jsonl`](../../results/bonsai2/20260920-copy-attr.jsonl).
 
 ## 2026-09-20 — Q2 weights are ternary, packing audit passes
 
@@ -1055,7 +1055,7 @@ We streamed every packed tensor once and count codes per class. Code
 00, 01, and 10 near 33.6, 32.7, and 33.6%. Entropy 1.585 equals
 log2(3). Only non-decode tensors outside our classes use code 11.
 Our record is
-[`20260920-ternary-audit.jsonl`](measurements/20260920-ternary-audit.jsonl).
+[`20260920-ternary-audit.jsonl`](../../results/bonsai2/20260920-ternary-audit.jsonl).
 
 Five trits per byte (3^5 = 243) encodes 1.6 bits per weight against
 2.0 now. Packed traffic drops 6.40 to 5.12 GB per token, saving
@@ -1080,7 +1080,7 @@ ALU division here. We ran no full-token arms and expanded to no
 further shapes. Our 1.28 GB hypothesis is falsified as a kernel win:
 traffic saved, execution lost. Code stays default-off. Our record
 is
-[`20260920-ternary-decoder.jsonl`](measurements/20260920-ternary-decoder.jsonl).
+[`20260920-ternary-decoder.jsonl`](../../results/bonsai2/20260920-ternary-decoder.jsonl).
 
 ## 2026-09-20 — Ternary qmv-structured attempt closed permanently
 
@@ -1094,7 +1094,7 @@ against ternary 908.41 ms over 128 real calls. Divmod chains plus
 selects expand ALU about 15 times, and no table variant closes a
 900 ms gap, so we attempt no second redesign. Lossless ternary
 compression is closed. Code stays default-off. Our record is
-[`20260920-ternary-qmv.jsonl`](measurements/20260920-ternary-qmv.jsonl).
+[`20260920-ternary-qmv.jsonl`](../../results/bonsai2/20260920-ternary-qmv.jsonl).
 
 ## 2026-09-20 — Exact decode saturated for this checkpoint
 
@@ -1170,7 +1170,7 @@ for the highest-value shape. A fused kernel keeps the arithmetic and
 removes only intermediate traffic near 2.5 MB plus launch overhead,
 projecting under 0.5 ms against our 2 ms gate. We built no kernel
 and wire nothing into decode. Our record is
-[`20260920-fwht-qmm-gate.jsonl`](measurements/20260920-fwht-qmm-gate.jsonl).
+[`20260920-fwht-qmm-gate.jsonl`](../../results/bonsai2/20260920-fwht-qmm-gate.jsonl).
 
 We stopped this optimization family. Our exact runtime sits near its
 mathematical bandwidth floor near 87.5 GB/s against a 90.7 GB/s
@@ -1203,7 +1203,7 @@ we ignore it.
 | Prepared-path removal | 8.01 GB | 7.21 GB | 0.80 GB | yes | negative | n/a | n/a | reject |
 
 Our record is
-[`20260920-qmm-bytes-census.jsonl`](measurements/20260920-qmm-bytes-census.jsonl).
+[`20260920-qmm-bytes-census.jsonl`](../../results/bonsai2/20260920-qmm-bytes-census.jsonl).
 We built no kernel this round. The narrow-metadata prototype clears
 our 2 ms gate on paper and stands as our high-priority experiment.
 
@@ -1215,7 +1215,7 @@ FWHT plus QMM per token runs gate 20.54, up 21.04, down 20.83,
 in_qkv 10.42, in_z 10.45, out 8.40, q 6.79, k 0.97, v 1.11, o 5.52,
 and head 6.36 ms, totaling 111.5 ms against our 106.9 ms wall. Less
 about 7.2 ms of FWHT, QMM runs about 85 ms. Our record is
-[`20260920-qmm-shape-profile.jsonl`](measurements/20260920-qmm-shape-profile.jsonl).
+[`20260920-qmm-shape-profile.jsonl`](../../results/bonsai2/20260920-qmm-shape-profile.jsonl).
 
 We refined our bound verdict per shape. Large shapes run near 80
 GB/s and are bandwidth-bound with nothing removable. Small shapes
@@ -1245,7 +1245,7 @@ remaining 273 projections. A float-capable tail would reopen this,
 but that is a new kernel, not a reuse. Our routing, exclusion, and
 counter machinery stays behind its default-off flag with passing
 unit tests. Our record is
-[`20260920-narrow-f16-gateup.jsonl`](measurements/20260920-narrow-f16-gateup.jsonl).
+[`20260920-narrow-f16-gateup.jsonl`](../../results/bonsai2/20260920-narrow-f16-gateup.jsonl).
 
 ## 2026-09-20 — Narrow-F16 custom kernel loses on gate/up
 
@@ -1267,5 +1267,5 @@ mean with a ±0.20 band: a resolved slight regression. Saving
 0.32 GB of metadata traffic buys nothing because gate/up QMM is
 dequant-ALU-bound, not bandwidth-bound. We expanded to no further
 shapes. Our code stays default-off. Records are
-[`20260920-narrow-f16-gateup-r3.jsonl`](measurements/20260920-narrow-f16-gateup-r3.jsonl)
+[`20260920-narrow-f16-gateup-r3.jsonl`](../../results/bonsai2/20260920-narrow-f16-gateup-r3.jsonl)
 with the valid comparison plus earlier attempt files.

@@ -14,13 +14,17 @@ Start the terminal from the repository root:
 
 It discovers compatible checkpoints using the same rules as `chat.sh`, asks
 which runtime and checkpoint to use when necessary, and loads cases from
-`models/<runtime>/tests/`.
+`models/<runtime>/tests/cases/`.
 
-Retained records belong under:
+Every run writes to its own folder:
 
 ```text
-docs/<runtime>/measurements/YYYYMMDD[-HHMMSS]-<experiment>.jsonl
+results/<runtime>/YYYYMMDD-HHMMSS-<experiment>/record.jsonl
+results/<runtime>/YYYYMMDD-HHMMSS-<experiment>/output.log
 ```
+
+[docs/testing.md](testing.md) describes the folder, the `macqwen.results` API
+and the policy test that enforces it.
 
 Scratch logs and output directories do not support published claims. Existing
 records with older names remain valid historical evidence when their metadata

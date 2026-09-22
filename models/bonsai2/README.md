@@ -15,7 +15,7 @@ tower that stays unloaded.
 | [`docs/bonsai2/brief.md`](../../docs/bonsai2/brief.md) | Scope, support status, and main results |
 | [`docs/bonsai2/research.md`](../../docs/bonsai2/research.md) | Measurements, rejected ideas, and decisions |
 | [`docs/bonsai2/handoff.md`](../../docs/bonsai2/handoff.md) | Operation, validation, constraints, and next work |
-| [`docs/bonsai2/measurements/`](../../docs/bonsai2/measurements/) | Exact commands, results table, and raw records |
+| [`results/bonsai2/`](../../results/bonsai2/) | Exact commands, results table, and raw records |
 
 Read the handoff and research record before changing or measuring this runtime.
 

@@ -843,7 +843,7 @@ def main() -> int:
           f"{prefs['model']} / {prefs['profile']}  "
           f"use /help for commands{C['0']}\n", file=display)
     if args.benchmark_chat_parity:
-        from models.flashnext.bench_chat_parity import run_chat_child
+        from models.flashnext.tests.bench.bench_chat_parity import run_chat_child
 
         run_chat_child(session, args.benchmark_chat_parity, args.benchmark_prompt)
         return 0

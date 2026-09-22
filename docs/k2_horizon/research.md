@@ -3,7 +3,7 @@
 This is our active record of K2-Horizon measurements, rejected ideas, and
 design decisions. Current operation belongs in [`handoff.md`](handoff.md).
 Exact commands, the compact results table, and retained JSONL arms are in
-[`measurements/`](measurements/).
+[`results/k2_horizon/`](../../results/k2_horizon/).
 
 ## 2026-09-16 — Baseline and memory study
 
@@ -148,7 +148,7 @@ We added an opt-in `profile` comparison without changing runtime defaults.
 We ran six fresh-process arms in AB/BA/AB order with 2,731 prompt tokens
 and 256 greedy output tokens. All six arms retain digest
 `e7031fcb1943d25d3269e8e384c40577d9f0dfda24b3f247afe7668137f65048`.
-The raw record is `measurements/k2-profile-product.jsonl`.
+The raw record is `results/k2_horizon/k2-profile-product.jsonl`.
 
 Our control median is 11.314 tok/s. This is not an improvement over the
 historical 9.680 tok/s baseline: environment and run conditions differ.
@@ -174,7 +174,7 @@ We must identify that cause before claiming removable prefill work.
 Snapshot correlation uses the trace wall-clock origin; it is not a kernel marker.
 Lookahead submission crosses the prefill boundary, and decode includes cleanup.
 
-We retain the Metal child record in `measurements/k2-metal-diagnostic.jsonl`.
+We retain the Metal child record in `results/k2_horizon/k2-metal-diagnostic.jsonl`.
 The full trace and interval export remain temporary local artifacts, as detailed
 in the measurement index. This single diagnostic does not establish a speed gain.
 
@@ -187,5 +187,5 @@ from these measurements.
 
 No candidate produced a promotable gain. We retain prefill 512, native BF16 KV
 growth, allocator cap and post-generation clear off, and `wired_limit` off.
-The [measurement index](measurements/README.md) is authoritative for exact
+The [measurement index](../../results/k2_horizon/LEGACY.md) is authoritative for exact
 commands, byte counters, timings, digests, and raw artifacts.

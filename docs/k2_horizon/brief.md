@@ -27,7 +27,7 @@ source we trust.
 - Greedy comparison arms retained identical token digests.
 
 The complete table, commands, and raw records are in
-[`measurements/`](measurements/).
+[`results/k2_horizon/`](../../results/k2_horizon/).
 
 ## Current status
 

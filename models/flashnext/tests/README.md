@@ -1,15 +1,17 @@
-# Flash-Next live-test cases
+# Flash-Next tests
 
-Start the project-owned terminal from the repository root:
+```text
+unit/     checkpoint-free unit tests; CI runs them
+bench/    harness scripts that load a checkpoint, and their helpers
+cases/    test-terminal cards, one runnable test per file
+inputs/   operator-supplied inputs, such as chat-workload.txt
+```
+
+Start the project test terminal from the repository root:
 
 ```bash
 ./tests/run.sh --model flashnext --checkpoint PATH
 ```
-
-This directory supplies Flash-Next `case_*.py` providers. The shared terminal
-owns discovery, prompts, confirmation, execution, display, interruptions, and
-JSONL result storage. The compatibility launcher
-`./models/flashnext/tests/run.sh` forwards to the same terminal.
 
 The interactive commands are:
 
@@ -23,13 +25,14 @@ The interactive commands are:
 /quit
 ```
 
-Do not add a second result directory or a runtime-owned terminal. Follow the
-[measurement standard](../../../docs/measurement-standard.md) for retained
-evidence.
+Every run writes to `results/flashnext/<YYYYMMDD-HHMMSS>-<test-id>/`. Do not add
+another results directory or a runtime-owned terminal. The general rules are
+in [docs/testing.md](../../../docs/testing.md); retained evidence follows the
+[measurement standard](../../../docs/measurement-standard.md).
 
 ## Case contract
 
-The catalog discovers every `case_*.py` file; no central registry change is
+The shared catalog discovers every `cases/case_*.py` file; no central registry change is
 needed. A case file must provide `TEST`, `TESTS`, or `get_tests()`. Each
 returned `TestSpec` needs:
 

@@ -36,9 +36,9 @@ collect runtime-specific correctness and experiment constraints.
 | Path | Purpose |
 |---|---|
 | [`measurement-standard.md`](measurement-standard.md) | Shared live-test and JSONL evidence rules |
-| [`flashnext/measurements/`](flashnext/measurements/) | Retained Flash-Next records |
-| [`k2_horizon/measurements/`](k2_horizon/measurements/) | Retained K2-Horizon records and diagnostics |
-| [`bonsai2/measurements/`](bonsai2/measurements/) | Retained Bonsai-2 records and diagnostics |
+| [`results/flashnext/`](../results/flashnext/) | Retained Flash-Next records |
+| [`results/k2_horizon/`](../results/k2_horizon/) | Retained K2-Horizon records and diagnostics |
+| [`results/bonsai2/`](../results/bonsai2/) | Retained Bonsai-2 records and diagnostics |
 | [`flashnext/graphics/`](flashnext/graphics/) | Flash-Next trace graphics and plots |
 | [`MLX/`](MLX/) | MLX Metal backend source notes; reference material, not workflow instructions |
 

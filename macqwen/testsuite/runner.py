@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from macqwen.measurement import MeasurementRun, canonical_measurement_path, validate_path
+from macqwen.results import ENVIRONMENT_KEY, LOG_NAME
 from .api import ROOT, TestContext
 
 
@@ -80,6 +81,9 @@ class Runner:
 
     def run(self, spec) -> dict[str, Any]:
         path = self._path(spec.id)
+        # Every artifact of this run goes in the record's folder. The case
+        # sees it as context.run_dir, the child as MACQWEN_RESULTS_DIR.
+        self.context.run_dir = path.parent
         command = spec.script(self.context, path)
         if not isinstance(command, list) or not all(isinstance(x, str) for x in command):
             raise TypeError(f"{spec.id} returned an invalid command")
@@ -100,6 +104,10 @@ class Runner:
         environment.update(self.context.canonical_environment)
         if self.context.checkpoint:
             environment["MACQWEN_FLASHNEXT_MODEL"] = self.context.checkpoint
+        if getattr(spec, "environment", None) is not None:
+            environment.update(spec.environment(self.context))
+        environment[ENVIRONMENT_KEY] = str(path.parent)
+        log = (path.parent / LOG_NAME).open("a", encoding="utf-8")
         started = time.perf_counter()
         lines: list[str] = []
         live: list[dict[str, Any]] = []
@@ -113,6 +121,8 @@ class Runner:
             for raw in process.stdout:
                 line = raw.rstrip("\n")
                 lines.append(line)
+                log.write(raw)
+                log.flush()
                 if hasattr(spec, "live_parser") and spec.live_parser is not None:
                     parsed = spec.live_parser(line)
                     if parsed:
@@ -144,6 +154,9 @@ class Runner:
         finally:
             if process.stdout is not None:
                 process.stdout.close()
+            if interrupted:
+                log.write("interrupted by user\n")
+            log.close()
         interrupted = interrupted or _is_cancellation_returncode(returncode)
         text = "\n".join(lines)
         digest = None

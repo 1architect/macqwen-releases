@@ -44,10 +44,10 @@ default on our English, code, Portuguese, and tag probes.
 | `models/bonsai2/checkpoint.py` | Compatible checkpoint discovery and aliases |
 | `models/bonsai2/protocol.py` | Reasoning and tool-call protocol translation |
 | `models/bonsai2/settings.py` | Model-owned environment and session defaults |
-| `models/bonsai2/bench.py` | Fresh-process paired benchmark harness |
+| `models/bonsai2/tests/bench/bench.py` | Fresh-process paired benchmark harness |
 | `models/bonsai2/cache.py` | Testable instance-level KV growth selection |
 | `docs/bonsai2/research.md` | Measurements, decisions, and rejected work |
-| `docs/bonsai2/measurements/` | Commands, table, and retained raw records |
+| `results/bonsai2/` | Commands, table, and retained raw records |
 
 ## Validation
 
@@ -141,7 +141,7 @@ pass in the managed Python 3.12 MLX runtime with the declared
 We also completed a low-context check with three fresh
 control children: 3,283 prompt tokens, 32 output tokens, and 7.33, 7.34,
 and 7.38 tok/s with matching greedy digests. The raw record is
-[`20260919-low-context-short-check.jsonl`](measurements/20260919-low-context-short-check.jsonl).
+[`20260919-low-context-short-check.jsonl`](../../results/bonsai2/20260919-low-context-short-check.jsonl).
 This is diagnostic evidence only: VM swap activity occurred, and the current
 physical-read field includes prefill and decode. Revalidate the sustained and
 long-context baselines before making a promotion claim.
@@ -153,9 +153,9 @@ fresh greedy 32-token control arms measured 7.226, 7.196, and 7.173 tok/s
 (median 7.196), with identical complete digests and no validation failures.
 This is a minimum-context workload check only; it does not replace the
 3,283-token baseline or promote either experimental kernel. Evidence is in
-[`20260920-102501-baseline-question-short.jsonl`](measurements/20260920-102501-baseline-question-short.jsonl)
+[`20260920-102501-baseline-question-short.jsonl`](../../results/bonsai2/20260920-102501-baseline-question-short.jsonl)
 and
-[`20260920-102501-baseline-question-short-arms.jsonl`](measurements/20260920-102501-baseline-question-short-arms.jsonl).
+[`20260920-102501-baseline-question-short-arms.jsonl`](../../results/bonsai2/20260920-102501-baseline-question-short-arms.jsonl).
 
 We do not launch or wait for long-context arms unless they are relevant to the
 active question and explicit authorization covers them.
@@ -170,7 +170,7 @@ comparison, stop-retention continuation checks, and 8-bit KV quality
 validation as conditional research: launch a long-context arm only when it
 is relevant to the current question and carries explicit authorization.
 Do not wait on deferred long-context work. Record new evidence in
-[`research.md`](research.md) and raw arms under [`measurements/`](measurements/).
+[`research.md`](research.md) and raw arms under [`results/bonsai2/`](../../results/bonsai2/).
 
 ## Current handoff — 2026-09-20 QMM preparation result
 

@@ -38,9 +38,9 @@ checkpoint-local `bf16-ends/` assets required by the default loader.
 | `models/qwen27b/frankenstein_engine.py` | Stateful model engine |
 | `models/qwen27b/paged_kv.py` | Paged attention cache and SSD spill |
 | `models/qwen27b/bf16_ends.py` | External embedding and shortlist head |
-| `models/qwen27b/quantize_v4.py` | Score, plan, and build V4 checkpoints |
-| `models/qwen27b/bit_allocator.py` | Activation calibration |
-| `models/qwen27b/repo_context_image.py` | Exact repository context images |
+| `models/qwen27b/tools/quantize_v4.py` | Score, plan, and build V4 checkpoints |
+| `models/qwen27b/tools/bit_allocator.py` | Activation calibration |
+| `models/qwen27b/tools/repo_context_image.py` | Exact repository context images |
 
 ## Memory rules
 
@@ -55,7 +55,7 @@ Run backend and parser tests in the managed environment:
 
 ```bash
 .venv/bin/python -m unittest \
-  macqwen.test_qwen27b_backend macqwen.test_tools
+  macqwen.tests.test_qwen27b_backend macqwen.tests.test_tools
 ```
 
 Run the lightweight import check:

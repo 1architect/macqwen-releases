@@ -41,10 +41,10 @@ K2 maps the shared `xhigh` reasoning request to the checkpoint's native
 | `models/k2_horizon/checkpoint.py` | Compatible checkpoint discovery and aliases |
 | `models/k2_horizon/protocol.py` | Reasoning and tool-call protocol translation |
 | `models/k2_horizon/settings.py` | Model-owned environment and session defaults |
-| `models/k2_horizon/bench.py` | Fresh-process paired benchmark harness |
+| `models/k2_horizon/tests/bench/bench.py` | Fresh-process paired benchmark harness |
 | `models/k2_horizon/cache.py` | Testable instance-level KV growth selection |
 | `docs/k2_horizon/research.md` | Measurements, decisions, and rejected work |
-| `docs/k2_horizon/measurements/` | Commands, table, and retained raw records |
+| `results/k2_horizon/` | Commands, table, and retained raw records |
 
 ## Validation
 
@@ -106,4 +106,4 @@ Next, attribute kernel costs and the unexplained prefill interval gap before
 selecting an optimization. These profiles exclude terminal UI. Reopen one
 bounded candidate at a time and record the evidence with its raw arms; you
 decide what promotes. Record evidence in [`research.md`](research.md) and
-raw arms under [`measurements/`](measurements/).
+raw arms under [`results/k2_horizon/`](../../results/k2_horizon/).

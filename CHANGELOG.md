@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Move every model's tests into `models/<model>/tests/`: checkpoint-free
+  tests in `unit/`, benchmark scripts and their helpers in `bench/`, and
+  test-terminal cards in `cases/`. Shared unit tests move to `macqwen/tests/`,
+  and Qwen3.8-27B offline scripts move to `models/qwen27b/tools/`.
+- Discover cases for every model with one loader in `macqwen/testsuite`, and
+  remove the four per-model catalogs and the old Flash-Next terminal copy.
+- Write every test and benchmark run to `results/<model>/<stamp>-<test-id>/`
+  with `record.jsonl` and `output.log`. `macqwen.results` refuses other
+  destinations, and a policy test enforces the layout. Existing records move
+  from `docs/<model>/measurements/` to `results/<model>/`.
+- Start benchmarks as modules, so commands no longer depend on the working
+  directory.
+
+### Fixed
+
+- Apply a case's `environment()` hook in the shared terminal. Cases such as
+  `chunk-after-workers` lost their selected worker count after the terminal
+  migration.
+- Stop writing benchmark output to `/tmp`, to the working directory, or to
+  fixed paths.
+
 ## MACQWEN 0.4.6 - 2026-09-20
 
 ### Added

@@ -24,15 +24,16 @@ def run_id() -> str:
 
 
 def canonical_measurement_path(root: Path, runtime: str, experiment: str) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    slug = "-".join(part for part in experiment.strip().lower().replace("_", "-").split() if part)
-    slug = slug or "run"
-    return root / "docs" / runtime / "measurements" / f"{stamp}-{slug}.jsonl"
+    """Record path inside a new run folder under ``results/<runtime>/``."""
+    from .results import RECORD_NAME, new_run_directory
+
+    folder = new_run_directory(runtime, experiment, root / "results")
+    return folder / RECORD_NAME
 
 
 def validate_path(path: Path, root: Path, runtime: str) -> Path:
     path = path.expanduser().resolve()
-    expected = (root / "docs" / runtime / "measurements").resolve()
+    expected = (root / "results" / runtime).resolve()
     try:
         path.relative_to(expected)
     except ValueError as exc:

@@ -102,7 +102,7 @@ The final statistics aggregate every generation segment. This includes generatio
 
 The `gen` rate covers the complete decode and `tail` starts after the routing
 warmup. Runtime-specific rates and routing comparisons belong in the
-[Flash-Next measurement records](../flashnext/measurements/), not in this
+[Flash-Next measurement records](../../results/flashnext/), not in this
 shared-chat reference. Cache-aware routing can change expert choices and may
 change the answer.
 

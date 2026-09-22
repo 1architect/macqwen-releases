@@ -29,7 +29,7 @@ records. It does not contain model weights.
 These reference observations come from the M4 test system and cover
 Flash-Next only. The REAP row is a short terminal sanity check, the Q4/G32
 row is historical control data, and the 62.19 tok/s figure is not production
-throughput. See the [Flash-Next measurement evidence](docs/flashnext/measurements/)
+throughput. See the [Flash-Next measurement evidence](results/flashnext/)
 for conditions and provenance.
 
 Flash-Next REAP-288 currently uses the G64 Metal executor by default. Its
@@ -77,8 +77,8 @@ Run the project live-test terminal:
 ```
 
 It asks which installed runtime and checkpoint to test, discovers that
-runtime's cases, and writes retained JSONL records under
-`docs/<runtime>/measurements/`.
+runtime's cases, and writes each run to its own folder under
+`results/<runtime>/`. See [docs/testing.md](docs/testing.md).
 
 ## Flash-Next
 
@@ -252,16 +252,17 @@ override with `MACQWEN_PYTHON` or a model-specific `MACQWEN_*_PYTHON` variable.
 Run the shared unit tests:
 
 ```bash
-.venv/bin/python -m unittest discover -s macqwen -p 'test_*.py'
+.venv/bin/python -m unittest discover -s macqwen/tests -t . -p 'test_*.py'
 ```
 
 Run a runtime's unit tests with the same pattern, replacing `RUNTIME`:
 
 ```bash
-.venv/bin/python -m unittest discover -s models/RUNTIME -p 'test_*.py' -q
+.venv/bin/python -m unittest discover -s models/RUNTIME/tests/unit -t . -p 'test_*.py' -q
 ```
 
-Use `./tests/run.sh` for retained live-model evidence. Read
+Use `./tests/run.sh` for live-model evidence. Every run writes to
+`results/<runtime>/`. Read [docs/testing.md](docs/testing.md),
 [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [measurement standard](docs/measurement-standard.md) before changing code or
 running experiments.

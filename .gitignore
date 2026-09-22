@@ -1,9 +1,17 @@
 # logs and run output. `logs/` is scratch: nothing there backs a published
-# number. Evidence for a published claim goes in docs/flashnext/measurements/.
+# number. Every test and benchmark run writes to results/<model>/<run>/.
 *.log
 *.stdout
 logs/
-models/flashnext/tests/results/
+# Run folders are evidence: keep their records and logs. Large binary
+# artifacts (GPU captures, tensors, traces) stay local.
+!results/**/*.log
+results/**/*.gputrace
+results/**/*.trace
+results/**/*.npz
+results/**/*.npy
+results/**/*.bin
+results/**/*.pstats
 # saved sessions, spilled KV pages, context images
 sessions/
 *.safetensors

@@ -601,18 +601,18 @@ The remaining evaluation changes include direct n-gram dispatch and exact block-
 |---|---|
 | `models/flashnext/ngram.py` | adds `StreamingShardedEmbedding`; direct mode defaults on |
 | `models/flashnext/loader.py` | installs one dispatcher around all 128 streamed shards |
-| `models/flashnext/bench_ngram_direct.py` | reproduces legacy/direct A/B tests |
-| `models/flashnext/test_ngram.py` | checks exact output and unused-shard avoidance |
+| `models/flashnext/tests/bench/bench_ngram_direct.py` | reproduces legacy/direct A/B tests |
+| `models/flashnext/tests/unit/test_ngram.py` | checks exact output and unused-shard avoidance |
 | `models/flashnext/expert_cache.py` | permits unsorted full blocks only for verification |
 | `models/flashnext/qwen4_verifier.py` | verifies full streamed MoE blocks without sorting |
 
 The speculative verifier and rollback files remain modified as research and correctness support. They do not make speculative mode the default:
 
 ```text
-models/flashnext/bench_oracle_spec.py
+models/flashnext/tests/bench/bench_oracle_spec.py
 models/flashnext/qwen4_verifier.py
 models/flashnext/speculative.py
-models/flashnext/test_speculative_tiny.py
+models/flashnext/tests/unit/test_speculative_tiny.py
 ```
 
 Validation command and result:
@@ -796,7 +796,7 @@ Byte reduction is now the *weakest* of the three open levers, not the only one. 
 
 ### Retained diagnostic
 
-The cost-split probe lives at `models/flashnext/bench_decode_split.py`. It reports time and physical bytes per decode token and asserts identical token IDs.
+The cost-split probe lives at `models/flashnext/tests/bench/bench_decode_split.py`. It reports time and physical bytes per decode token and asserts identical token IDs.
 
 ## Route 1 closed by hardware on 2026-08-30
 
@@ -933,7 +933,7 @@ RAM bandwidth is not the constraint and never was. This machine reaches its rate
 
 ### Two instances reach 1.52x aggregate
 
-`models/flashnext/bench_parallel.py` runs N chat instances at once and asserts they all produce the solo run's token IDs. Two instances, 40 tokens, no pinning so both fit in RAM:
+`models/flashnext/tests/bench/bench_parallel.py` runs N chat instances at once and asserts they all produce the solo run's token IDs. Two instances, 40 tokens, no pinning so both fit in RAM:
 
 | | decode | tail |
 |---|---:|---:|
@@ -1952,7 +1952,7 @@ The low-bandwidth bookkeeping totals 4.16 ms/token. It cannot recover the 15 to 
 
 ### Path 4 closed: routed `gather_qmm` is not the missing block
 
-`models/flashnext/bench_gather_qmm.py` uses resident arrays, real checkpoint shapes, chained repetitions, and one evaluation per chain. It verifies output identity with `mx.array_equal`.
+`models/flashnext/tests/bench/bench_gather_qmm.py` uses resident arrays, real checkpoint shapes, chained repetitions, and one evaluation per chain. It verifies output identity with `mx.array_equal`.
 
 | Slots | Gate | Up | Down | Three projections | Time/token |
 |---:|---:|---:|---:|---:|---:|
@@ -2225,7 +2225,7 @@ xcrun xctrace record --template "Metal System Trace" \
   --output metal.trace --time-limit 75s \
   --target-stdout run.log --env FLASHNEXT_PROFILE_IO=1 \
   --launch -- ~/models/.venv-qwen4exp/bin/python \
-    models/flashnext/bench_eval_cost.py --tokens 60
+    models/flashnext/tests/bench/bench_eval_cost.py --tokens 60
 ```
 
 `--attach <pid>` failed with `Cannot find process for provided pid`. `--launch` works. The trace was 256 MB for 46 seconds.
@@ -2462,9 +2462,9 @@ The branch contains three research instruments. They change no runtime path, def
 
 | File | Purpose |
 |---|---|
-| `models/flashnext/metal_trace.py` | Export and union Metal GPU spans. Report per-token GPU busy, command-buffer count, mean interval, CPU-to-GPU latency, and duration histogram. `--last-ms` isolates decode. |
-| `models/flashnext/bench_context_decay.py` | Measure decode rate by context in windows and count kept experts per layer. |
-| `models/flashnext/bench_read_ceiling.py` | Add `--pool` and `--route-fixed` to separate resident working-set size from drive traffic at zero drive. |
+| `models/flashnext/tests/bench/metal_trace.py` | Export and union Metal GPU spans. Report per-token GPU busy, command-buffer count, mean interval, CPU-to-GPU latency, and duration histogram. `--last-ms` isolates decode. |
+| `models/flashnext/tests/bench/bench_context_decay.py` | Measure decode rate by context in windows and count kept experts per layer. |
+| `models/flashnext/tests/bench/bench_read_ceiling.py` | Add `--pool` and `--route-fixed` to separate resident working-set size from drive traffic at zero drive. |
 
 `--pool 0` preserves the original fixed-route behavior. The focused test suite passes all 98 tests.
 
@@ -2595,10 +2595,10 @@ The session adds five diagnostics. They do not change the shipped runtime path, 
 | File | Change |
 |---|---|
 | `models/flashnext/expert_cache.py` | Add the `FLASHNEXT_BUFFER_ARENA` ring with `buffer_arena` and `set_buffer_arena`, default off. |
-| `models/flashnext/bench_read_ceiling.py` | Add `--miss`, token digest, physical MB/token, VM deltas, and read-ahead readback. |
+| `models/flashnext/tests/bench/bench_read_ceiling.py` | Add `--miss`, token digest, physical MB/token, VM deltas, and read-ahead readback. |
 | `models/flashnext/diskio.py` | Add `vm_counters` and `vm_delta`. |
 | `models/flashnext/store.py` | Add `FLASHNEXT_RDAHEAD`, raising if `fcntl` fails. |
-| `models/flashnext/bench_production.py` | Add the `buffer-arena` comparison and live-settings entry. |
+| `models/flashnext/tests/bench/bench_production.py` | Add the `buffer-arena` comparison and live-settings entry. |
 
 ### Session position
 
@@ -2905,7 +2905,7 @@ Current development includes:
 
 1. **Mixed-dtype Metal kernels (`models/flashnext/metal_runtime.py`)**: Specialized Q4 helpers (`qmv_fast_mixed_impl`, `qmv_mixed_impl`) decouple float32 activations from bfloat16 scales and biases. With the relaxation of strict bit-identity, the fully fused down-projection plus router combine kernel will be re-enabled for all activation types and slot widths.
 2. **MoE layer dispatch integration (`models/flashnext/expert_cache.py`, `adaptive_topk.py`)**: `StreamingSwitchGLU` provides an opt-in path via `FLASHNEXT_METAL_RUNTIME=1` for decode batch sizes $\le 8$, with Layer 0 remaining on the reference path. The inline verification probe (`FLASHNEXT_METAL_VERIFY=1`) tracks component errors on live tokens.
-3. **Native command-buffer integration (Issue #45)**: Port the SIMD mixed-precision Q4 kernel into the native Objective-C++ scheduler (`models/flashnext/metal_runtime_native.mm` and `metal_native.py`) to measure barrier and fence costs while concurrent SSD DMA streaming is active.
+3. **Native command-buffer integration (Issue #45)**: Port the SIMD mixed-precision Q4 kernel into the native Objective-C++ scheduler (`models/flashnext/tests/bench/metal_runtime_native.mm` and `metal_native.py`) to measure barrier and fence costs while concurrent SSD DMA streaming is active.
 4. **Pre-load wired limit comparison (Issue #43)**: Validate the standalone 2 GB memory-lock gain under controlled clean-boot conditions with the limit configured prior to model load.
 5. **Physical working-set evaluation (Issues #24 and #25)**: Prepare group-size changes (Q4/G64/G128) and REAP pruning to move production working sets below 400 MB/token.
 
@@ -2914,7 +2914,7 @@ Current development includes:
 Issue #45 investigated whether Metal buffer-scope barriers (`MTLBarrierScopeBuffers`) or encoder-level fences (`MTLFence`) stall the Apple Silicon GPU memory controller when concurrent SSD DMA traffic is active, explaining the "GPU-busy hump" (where GPU time per token climbed from 86 ms to 171–182 ms during SSD streaming).
 
 ### 1. Implementation
-The native Objective-C++ Metal scheduler in `models/flashnext/metal_runtime_native.mm` and `metal_native.py` was unified with the SIMD mixed-precision Q4/G32 kernel:
+The native Objective-C++ Metal scheduler in `models/flashnext/tests/bench/metal_runtime_native.mm` and `metal_native.py` was unified with the SIMD mixed-precision Q4/G32 kernel:
 - Direct support for float32 activations, uint32 Q4 weights, and bfloat16 scales and biases (`qmv_fast_mixed_impl<float, 32, 4, bfloat>`, `qmv_mixed_impl<float, 32, 4, bfloat>`).
 - Direct execution on native `MTLCommandBuffer` with three synchronization strategies:
 1. `serial`: single non-concurrent compute encoder (implicit hardware serialization); 2. `barrier`: single concurrent compute encoder with `[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers]`; 3. `fence`: three separate compute encoders with explicit `MTLFence` wait/update calls.
@@ -4081,7 +4081,7 @@ exact-quality at threshold 0.85, `SLAB_GLOBAL=60`, `SLAB_PACK=1`,
 skew policy, chunk 2, 16 workers, pread. Slab pack active on 12
 layers (`15, 25, 38-47`) with 60 slots, digest `eeb7b54b6f2a1f27`,
 no disabled reasons. A new diagnostic reports exactly this from a
-load: `python -m models.flashnext.slab_status --model PATH`.
+load: `python -m models.flashnext.tests.bench.slab_status --model PATH`.
 
 Because slab residency is already active in the present runtime,
 the slab-lifecycle hypothesis (virgin/first-launch/second-process
@@ -4346,5 +4346,37 @@ All three stay off until a controlled run promotes them.
   needs a paired hit-rate and physical-read comparison before it becomes the
   default.
 
-Regression tests are in `models/flashnext/test_runtime_fixes.py` and
-`models/flashnext/test_checkpoint_policy.py`.
+Regression tests are in `models/flashnext/tests/unit/test_runtime_fixes.py` and
+`models/flashnext/tests/unit/test_checkpoint_policy.py`.
+
+## Test layout and results folder, 2026-09-22
+
+The repository had three test forms with no common home: unit tests in the
+package root beside the runtime, benchmark scripts in the same root, and
+terminal cases in `tests/`. Discovery was copied per model, Flash-Next cases
+used their own API, a second terminal remained in `models/flashnext/tests/`,
+and benchmarks wrote to `~/.cache/flashnext/`, `/tmp`, the working directory
+and `docs/<model>/measurements/`.
+
+Every model now keeps its tests in `models/<model>/tests/`: `unit/` for
+checkpoint-free tests, `bench/` for harness scripts and their helpers, and
+`cases/` for terminal cards. The Flash-Next runtime folder holds runtime code
+only. `macqwen/testsuite` discovers cases for every model with one loader,
+and every run writes to `results/<model>/<stamp>-<test-id>/` with
+`record.jsonl` and `output.log`. `docs/testing.md` describes the layout and the
+`macqwen.results` API, and `macqwen/tests/test_results_policy.py` enforces both.
+
+Moving the benchmark helpers (`gpustat`, `metal_trace`, `system_state`,
+`draft_worker`, `capture_dispatches`, `session_roundtrip_real`,
+`swiglu_contract`, `slab_topology`, `slab_status`, `metal_native`) out of the
+runtime folder changes the chat-parity runtime source fingerprint once, because
+that fingerprint excludes `tests/`. Harness fingerprints in older artifacts
+refer to the old file locations. The session engine fingerprint does not
+change, because no runtime file moved. Paths in this document point to the new
+locations; the records themselves are unchanged.
+
+The migration kept every unit test (399 Flash-Next tests) and every terminal
+test ID (1,253 Flash-Next IDs). No model ran. The shared terminal had
+also stopped applying a case's `environment()` hook after the earlier terminal
+migration, so `chunk-after-workers` ran without its selected worker count. The
+runner applies the hook again.

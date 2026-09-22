@@ -20,15 +20,15 @@ jobs:
       - name: Install pinned runtime
         run: python -m pip install .
       - name: Test shared runtime
-        run: python -m unittest discover -s macqwen -p 'test_*.py' -q
+        run: python -m unittest discover -s macqwen/tests -t . -p 'test_*.py' -q
       - name: Test Flash-Next runtime
-        run: python -m unittest discover -s models/flashnext -p 'test_*.py' -q
+        run: python -m unittest discover -s models/flashnext/tests/unit -t . -p 'test_*.py' -q
       - name: Test Qwen3.8-27B runtime
-        run: python -m unittest discover -s models/qwen27b -p 'test_*.py' -q
+        run: python -m unittest discover -s models/qwen27b/tests/unit -t . -p 'test_*.py' -q
       - name: Test K2-Horizon runtime
-        run: python -m unittest discover -s models/k2_horizon -p 'test_*.py' -q
+        run: python -m unittest discover -s models/k2_horizon/tests/unit -t . -p 'test_*.py' -q
       - name: Test Bonsai-2 runtime
-        run: python -m unittest discover -s models/bonsai2 -p 'test_*.py' -q
+        run: python -m unittest discover -s models/bonsai2/tests/unit -t . -p 'test_*.py' -q
 
   release:
     needs: test

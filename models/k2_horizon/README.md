@@ -12,7 +12,7 @@ contract; we translate K2's native protocol at this boundary.
 | [`docs/k2_horizon/brief.md`](../../docs/k2_horizon/brief.md) | Scope, support status, and main results |
 | [`docs/k2_horizon/research.md`](../../docs/k2_horizon/research.md) | Measurements, rejected ideas, and decisions |
 | [`docs/k2_horizon/handoff.md`](../../docs/k2_horizon/handoff.md) | Operation, validation, constraints, and next work |
-| [`docs/k2_horizon/measurements/`](../../docs/k2_horizon/measurements/) | Exact commands, results table, and raw records |
+| [`results/k2_horizon/`](../../results/k2_horizon/) | Exact commands, results table, and raw records |
 
 Read the handoff and research record before changing or measuring this runtime.
 
