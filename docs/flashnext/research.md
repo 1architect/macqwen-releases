@@ -4222,3 +4222,13 @@ default pin-profile path and rewrote `~/.cache/flashnext/pins.json`
 at 14:12 with equivalent fresh Vontra history (identity
 unchanged, still compatible). Later benchmark arms used private
 copies and left the user profile untouched.
+
+## Unsupported-checkpoint diagnostic removed, 2026-09-22
+
+A stock-vs-reference parity diagnostic for an unsupported checkpoint
+was accidentally introduced after the Vontra pin-depth work. It was
+outside the supported Vontra scope. The diagnostic code was removed
+by reverting that commit; no production compatibility change was
+retained. No benchmark or download was performed as part of cleanup.
+Vontra remains the active supported target. The project returns to
+closure, not to another investigation.
