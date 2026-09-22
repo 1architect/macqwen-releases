@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -300,13 +301,58 @@ class Qwen4ExactSpeculativeVerifier(Qwen3_5ExactSpeculativeVerifier):
             selected_mass - topk_mass
         )
         scores = scores / normalizer
-        if hasattr(moe.switch_mlp, "_one_pass"):
-            switched = moe.switch_mlp(hidden, indices, allow_sort=False)
+        shared = self._feed_forward(moe.shared_expert, hidden)
+        shared_gate = mx.sigmoid(self._linear(moe.shared_expert_gate, hidden))
+        switch = moe.switch_mlp
+        # Mirror the production combine rule in adaptive_topk._moe_call.
+        # The verifier must reproduce the singleton target path exactly,
+        # including the custom Metal score combination and shared fusion.
+        # Layer 0 and the MTP draft layer report metal_combines_scores
+        # False and stay on the generic path.
+        metal_capable = getattr(switch, "metal_combines_scores", False)
+        tokens = hidden.size // hidden.shape[-1]
+        custom_combines = (
+            bool(metal_capable)
+            and tokens <= 8
+            and routing._TAIL_MODE[0] == "off"
+        )
+        fuse_shared = (
+            custom_combines
+            and os.environ.get("FLASHNEXT_FUSED_SHARED", "1") == "1"
+        )
+        fuse_shared_parts = (
+            fuse_shared
+            and os.environ.get("FLASHNEXT_FUSED_SHARED_PARTS", "0") == "1"
+        )
+        if fuse_shared_parts:
+            combined = switch(
+                hidden,
+                indices,
+                scores=scores,
+                shared=shared,
+                shared_gate=shared_gate,
+            )
+            if not getattr(switch, "_last_fused_shared", False):
+                combined = combined + shared_gate * shared
+            return combined
+        if fuse_shared:
+            shared_y = shared_gate * shared
+            combined = switch(
+                hidden, indices, scores=scores, shared_y=shared_y
+            )
+            if not getattr(switch, "_last_fused_shared", False):
+                combined = combined + shared_y
+            return combined
+        if custom_combines:
+            shared_y = shared_gate * shared
+            return switch(hidden, indices, scores=scores) + shared_y
+        if hasattr(switch, "_one_pass"):
+            switched = switch(hidden, indices, allow_sort=False)
         elif indices.size >= 64:
             rows = max(1, 63 // int(indices.shape[-1]))
             switched = mx.concatenate(
                 [
-                    moe.switch_mlp(
+                    switch(
                         hidden[:, start : start + rows],
                         indices[:, start : start + rows],
                     )
@@ -315,10 +361,8 @@ class Qwen4ExactSpeculativeVerifier(Qwen3_5ExactSpeculativeVerifier):
                 axis=1,
             )
         else:
-            switched = moe.switch_mlp(hidden, indices)
+            switched = switch(hidden, indices)
         switched = (switched * scores[..., None]).sum(axis=-2)
-        shared = self._feed_forward(moe.shared_expert, hidden)
-        shared_gate = mx.sigmoid(self._linear(moe.shared_expert_gate, hidden))
         return switched + shared_gate * shared
 
     def _layer(self, layer, hidden, input_ids, mask, cache, position_ids, gdn_sink):
