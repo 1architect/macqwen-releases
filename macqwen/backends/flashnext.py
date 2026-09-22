@@ -24,6 +24,13 @@ from models.flashnext.settings import get_registry
 DEFAULT_FUSION_MODEL = FLASHNEXT_DEFAULTS["fusion_model"]
 _TRANSFORMERS_ADVISORY_ENV = "TRANSFORMERS_NO_ADVISORY_WARNINGS"
 
+# Public convention is -1 = unlimited. Internal machinery needs a
+# positive integer (range(), decoder loops, room math), so normalize
+# to this effectively-unbounded horizon at the generate() boundary.
+# Nothing is allocated proportional to it; range() is lazy and
+# stop tokens/cancellation still terminate generation.
+UNLIMITED_GENERATION_HORIZON = (1 << 31) - 1
+
 
 @contextmanager
 def _transformers_import_environment():
@@ -503,14 +510,26 @@ class FlashNextBackend(Conversation):
 
         if not self.pending:
             return "", Stats(finish="stop")
+        requested_max_tokens = int(max_tokens)
+        generation_horizon = (
+            UNLIMITED_GENERATION_HORIZON
+            if requested_max_tokens < 0
+            else requested_max_tokens
+        )
         interactive_budgets = getattr(self, "_interactive_budgets", None)
         budget_answer = budget_think = 0
         close_token = None
         if interactive_budgets is not None:
-            budget_answer, budget_think = interactive_budgets
-            budget_answer = max(0, int(budget_answer))
+            raw_answer, raw_think = interactive_budgets
+            # Negative means unlimited; keep it as None so limits below
+            # never trigger. max(0, ...) would turn unlimited into zero.
+            budget_answer = (
+                None if raw_answer is None or int(raw_answer) < 0
+                else max(0, int(raw_answer))
+            )
             budget_think = (
-                None if budget_think is None else max(0, int(budget_think))
+                None if raw_think is None or int(raw_think) < 0
+                else max(0, int(raw_think))
             )
             if self.thinking_enabled and budget_think is not None:
                 close_ids = self.encode("</think>")
@@ -653,7 +672,7 @@ class FlashNextBackend(Conversation):
 
         def standard_tokens():
             nonlocal token
-            for _index in range(max_tokens):
+            for _index in range(generation_horizon):
                 value = int(token.item())
                 force_close = (
                     budget_state is not None
@@ -671,7 +690,11 @@ class FlashNextBackend(Conversation):
                     token = mx.array([value], dtype=mx.uint32)
                 if budget_state is not None:
                     phase = budget_state["phase"]
-                    if phase == "answer" and budget_state["answer"] >= budget_answer:
+                    if (
+                        phase == "answer"
+                        and budget_answer is not None
+                        and budget_state["answer"] >= budget_answer
+                    ):
                         budget_state["answer_limited"] = True
                         return
                 if budget_state is not None:
@@ -685,7 +708,7 @@ class FlashNextBackend(Conversation):
         tokens = (
             standard_tokens()
             if decoder is None
-            else decoder.generate(max_tokens, self.stops)
+            else decoder.generate(generation_horizon, self.stops)
         )
         decode_interrupted = False
         try:
@@ -693,7 +716,7 @@ class FlashNextBackend(Conversation):
                 check_cancel()
                 produced.append(value)
                 self.tape.append(value)
-                if self.routing.after_token(index + 1, max_tokens):
+                if self.routing.after_token(index + 1, generation_horizon):
                     tail_began = timer.mark()
                     # Token warmup+1 was generated before pinning. The next
                     # model call produces the first pinned-tail output.
@@ -727,7 +750,7 @@ class FlashNextBackend(Conversation):
                 # tape and close the turn synthetically on the next append.
                 finish = "stop"
                 self.turn_closed = False
-            elif len(produced) < max_tokens:
+            elif len(produced) < generation_horizon:
                 finish = "stop"
                 self.turn_closed = False
             else:
