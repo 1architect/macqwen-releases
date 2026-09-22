@@ -749,11 +749,19 @@ class MTPGreedy:
         return target_ids, hc_hidden
 
     def _target_replay(self, snapshot, ids) -> None:
+        # Replay token-by-token through the ordinary singleton path.
+        # A batched forward predicts the same tokens but leaves
+        # singleton-different recurrent states (proven up to 1.77 abs
+        # on Vontra layer 17), which compounds across cycles until
+        # argmax flips. The singleton loop is exactly production decode.
         restore_cache(self.target_cache, snapshot)
-        if ids.shape[1]:
-            out = self.language(ids, cache=self.target_cache)
+        width = int(ids.shape[1])
+        for position in range(width):
+            out = self.language(
+                ids[:, position : position + 1], cache=self.target_cache
+            )
             mx.eval(out.logits)
-            self.stats.replayed += int(ids.shape[1])
+            self.stats.replayed += 1
 
     def _fold(self, hidden_rows, tokens):
         logits, head_hidden = mtp.forward(
