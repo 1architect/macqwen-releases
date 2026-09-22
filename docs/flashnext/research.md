@@ -4063,3 +4063,77 @@ MTP effect is -33.6% and -42.4% on the paired comparisons. Native
 MTP is functionally exact but currently slower on the SSD-streamed
 runtime, so it remains opt-in with default off. We claim nothing
 beyond this checkpoint, prompt, and horizon.
+
+## Vontra 1.9 tok/s diagnosis: slab already active, 2026-09-22
+
+Starting commit `9117fd4`. The ~1.9 tok/s Vontra target-only state
+was investigated without changing model quality or reopening closed
+experiments (one-sync, cache-aware swap, prefetch, overlap, worker
+sweeps, compile, speculative paths, and the other listed items
+stayed closed).
+
+Phase 0 proved from loaded objects that the mature G32 residency
+configuration is already running: compatible pin profile
+`b59d036b02d6425a` matching the Vontra checkpoint identity, 48/48
+Metal-capable layers with 47 executing (layer 0 excluded by the
+documented historical guard, not a correctness requirement),
+exact-quality at threshold 0.85, `SLAB_GLOBAL=60`, `SLAB_PACK=1`,
+skew policy, chunk 2, 16 workers, pread. Slab pack active on 12
+layers (`15, 25, 38-47`) with 60 slots, digest `eeb7b54b6f2a1f27`,
+no disabled reasons. A new diagnostic reports exactly this from a
+load: `python -m models.flashnext.slab_status --model PATH`.
+
+Because slab residency is already active in the present runtime,
+the slab-lifecycle hypothesis (virgin/first-launch/second-process
+comparison and in-process hot activation) was stopped at its
+decision gate: residency cannot explain a state that already
+includes it. No restart-requirement change was implemented.
+
+Speed run (photosynthesis prompt, closed thinking, greedy, 64
+tokens, production defaults): 1.73 tok/s generation, 1.99 tok/s
+tail, 489 MB/token physical, digest `1ea80270588d1997`, 578 ms
+per token. Dynamic pins hold 4.53 GB (mlock) beside the 3.18 GB
+resident model.
+
+Steady-tail census (separate instrumented run, 64 tokens):
+average 7.97 kept experts per layer (top-10 routing, distribution
+peaked at 8), consecutive-token expert overlap 0.325, logical
+expert demand about 1.47 GB/token against about 0.43 GB/token
+physical (roughly 71% served from pins/slab/page cache), slab hit
+rate 38.8%, misses concentrated on layers 20, 36, 40, 35, 45, 23,
+41, 39. Decode evicted about 1.9 GB of file-backed page cache and
+grew swap about 0.7 GB in one run (Swapouts up about 1.1 GB):
+anonymous pinned/resident memory directly competes with the page
+cache the 107 GB stream depends on. No pin-budget interventional
+comparison was run: resident experts are force-kept in selection,
+so changing pin counts changes arithmetic and trajectory and
+would need quality gates, not just a speed comparison.
+
+Output-head census: untied Q4/G32 `lm_head`, 248320x2560, about
+397 MB resident. Bounded microbenchmark on decode-shaped input:
+projection 4.28 ms/token, argmax 0.23 ms/token, under 1% of token
+time. Head closed as an optimization target.
+
+Layer-0 Metal exclusion stays: historical implementation guard
+(first eligible custom-kernel layer is layer 1). Recoverable cost
+is negligible: physical reads dominate token time (about 470 ms
+of 578 ms at measured SSD rates), leaving roughly 2 ms per layer
+of compute, of which a few percent kernel gain rounds to noise.
+
+Code review: the suspected missing `ExpertLRU.fetch` exists
+(`expert_cache.py`, synchronous read fallback) and is reached by
+verifier paths by design, not production decode. Per-layer route
+`tolist` syncs are the already-measured documented cost. No
+reachable correctness bug found; no setting leaks into chat beyond
+the intended slab/pin configuration; MTP-off target isolation
+holds (zero MTP tensors resident).
+
+Accepted: slab-state diagnostic plus tests. Rejected: slab
+lifecycle work, pin-count sweep, head optimization, layer-0
+enablement. Do not retry: virgin-profile slab A/B on this
+checkpoint (pack already active), broad resident-expert sweeps
+without trajectory gates, microbenchmark promotion. Next
+recommended experiment: only if memory pressure is relieved,
+test whether a smaller force-kept pin set preserves trajectory
+quality while returning gigabytes to the file cache; otherwise
+treat QSA long-context work as the next checkpoint.
