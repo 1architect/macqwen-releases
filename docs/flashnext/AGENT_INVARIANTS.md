@@ -22,6 +22,9 @@ The shared measurement rules are in [`../measurement-standard.md`](../measuremen
 - Keep G64 packed residency, Frontier 8B, and streamed expert-major records
   disabled by default. G64 slabs and stream-pack stay off with
   `FLASHNEXT_SLAB_G64=0` and `FLASHNEXT_STREAM_PACK=0`.
+- For normal Vontra Q4/G32 chat, keep a frozen per-checkpoint slab profile as
+  the requested default. Live pin history still updates for routing; use
+  `FLASHNEXT_SLAB_PROFILE=rolling` for the previous slab behavior.
 - Keep QSA optimization flags off: `FLASHNEXT_QSA_CACHE_POOLED_KEYS=0` and
   `FLASHNEXT_QSA_SCATTER_DECODE=0`. The existing allocation guard remains active.
 - Preserve the exact token digest. Any digest change rejects the optimization.

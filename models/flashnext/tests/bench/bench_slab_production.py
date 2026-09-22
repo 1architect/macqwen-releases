@@ -244,6 +244,7 @@ def configure_arm(
 ) -> None:
     """Apply one complete slab configuration before importing the backend."""
     os.environ["FLASHNEXT_METAL_RUNTIME"] = "1"
+    os.environ["FLASHNEXT_SLAB_PROFILE"] = "rolling"
     os.environ["FLASHNEXT_SLAB"] = str(slab)
     os.environ["FLASHNEXT_SLAB_LAYERS"] = str(layers)
     os.environ["FLASHNEXT_SLAB_GLOBAL"] = str(global_budget)

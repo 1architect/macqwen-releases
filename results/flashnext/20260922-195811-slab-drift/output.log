@@ -1,0 +1,19 @@
+Arm  1/6: Running rolling (prompt 1)...
+  -> rolling: 2.22 tok/s, 422.1 MB/tok, 1.5% hits, alloc bd85ded8b69b2cd0, digest ceff6fd656310be6
+mx.metal.get_active_memory is deprecated and will be removed in a future version. Use mx.get_active_memory instead.
+Arm  2/6: Running frozen (prompt 1)...
+  -> frozen: 2.49 tok/s, 380.3 MB/tok, 1.5% hits, alloc bd85ded8b69b2cd0, digest ceff6fd656310be6
+mx.metal.get_active_memory is deprecated and will be removed in a future version. Use mx.get_active_memory instead.
+Arm  3/6: Running frozen (prompt 2)...
+  -> frozen: 2.29 tok/s, 431.3 MB/tok, 7.9% hits, alloc bd85ded8b69b2cd0, digest ccbfd4ca9e4e95b6
+mx.metal.get_active_memory is deprecated and will be removed in a future version. Use mx.get_active_memory instead.
+Arm  4/6: Running rolling (prompt 2)...
+  -> rolling: 2.25 tok/s, 416.2 MB/tok, 11.4% hits, alloc cac6c167163847f0, digest ccbfd4ca9e4e95b6
+mx.metal.get_active_memory is deprecated and will be removed in a future version. Use mx.get_active_memory instead.
+Arm  5/6: Running rolling (prompt 3)...
+  -> rolling: 1.89 tok/s, 520.8 MB/tok, 21.2% hits, alloc 53279da7c0abbadf, digest 52f977b318db2abc
+mx.metal.get_active_memory is deprecated and will be removed in a future version. Use mx.get_active_memory instead.
+Arm  6/6: Running frozen (prompt 3)...
+  -> frozen: 2.38 tok/s, 411.9 MB/tok, 1.2% hits, alloc bd85ded8b69b2cd0, digest 52f977b318db2abc
+mx.metal.get_active_memory is deprecated and will be removed in a future version. Use mx.get_active_memory instead.
+Frozen vs rolling: +13.4% mean (two-SE band ±13.9%). Wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260922-195811-slab-drift/slab-drift.json

@@ -62,7 +62,8 @@ production harness, both inside bands near 15%. Full record: the last
 4. Opt-in candidates that still need their gates:
    `FLASHNEXT_PREFILL_LAST_ROW=1` (exact final-logit check),
    `FLASHNEXT_NORM_WEIGHT_CACHE=1` (digest run),
-   `FLASHNEXT_SLAB_COUNTS=cumulative` (paired hit-rate run).
+   `FLASHNEXT_SLAB_COUNTS=cumulative` with
+   `FLASHNEXT_SLAB_PROFILE=rolling` (paired hit-rate run).
 
 ### Rules the user set this session
 
@@ -102,21 +103,31 @@ directly and uses 32 resident experts, including on Vontra; it does not measure
 the normal Vontra chat policy of 8. Run model benchmarks only with the user's
 approval under the rules above.
 
-The live `~/.cache/flashnext/pins.json` still changes every turn. Normal chat
-therefore selects a new slab allocation and pack between launches; packs
-unused for 14 days are deleted. This is separate from the frozen benchmark
-profile. The generic `resident-experts` default remains 32; only the Vontra
-content identity gets 8 through `models/flashnext/checkpoint_policy.py`.
+Normal chat now sets `FLASHNEXT_SLAB_PROFILE=frozen`. The first compatible
+`~/.cache/flashnext/pins.json` is copied once to
+`~/.cache/flashnext/slab-frozen-<checkpoint-identity>.json`. Slab allocation
+reads that snapshot on later launches, while routing keeps updating the live
+pin file. Set `FLASHNEXT_SLAB_PROFILE=rolling` to restore allocation from the
+live profile. On the reference host, the snapshot is seeded from the measured
+`20260922-195811-slab-drift/frozen-pins.json` (SHA-256 prefix `4ff227007a0f2eb8`,
+allocation `bd85ded8b69b2cd0`). A new host with no compatible live history
+uses streaming until a turn saves one, then snapshots it on the next launch.
+Packs unused for 14 days are deleted. The generic
+`resident-experts` default remains 32; only the Vontra content identity gets
+8 through `models/flashnext/checkpoint_policy.py`.
 
 Our 2026-09-22 diagnostic ran three reversed pairs of fresh 32-token Vontra
 launches with 8 pins. A private rolling pin history selected three different
 60-slot allocations; a frozen snapshot selected one, and the rolling arm
 created one new 175.8 MiB pack. The first rolling transition retained none of
-its 60 layer/expert entries. Paired output digests matched. Frozen-versus-
-rolling generation averaged +6.8% within a ±10.2% two-SE band, so we do not
-change the normal-chat slab policy. The first pair also had very different
-free memory. Evidence and per-pair reads, hits and rates are in the last
-`research.md` section and `results/flashnext/20260922-194807-slab-drift/`.
+its 60 layer/expert entries. A second six-arm run repeated those allocations.
+All paired output digests matched. Frozen-versus-rolling generation averaged
++6.8% ±10.2% and +13.4% ±13.9% in the two runs (two-SE bands); large free-RAM
+differences confound the speed comparison. We chose frozen as the normal
+chat default for stable allocation and pack reuse, without a causal speed
+claim. Evidence and per-pair reads, hits and rates are in the last
+`research.md` section and both `results/flashnext/20260922-*-slab-drift/`
+folders.
 
 Read this file, [`research.md`](research.md), and
 [`AGENT_INVARIANTS.md`](AGENT_INVARIANTS.md) before changing code or starting

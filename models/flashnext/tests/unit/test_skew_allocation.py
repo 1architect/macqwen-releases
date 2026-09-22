@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -41,6 +42,41 @@ class TestSkewAllocation(unittest.TestCase):
         with patch.dict(os.environ, {"FLASHNEXT_PIN_CACHE": "/nonexistent/path/pins.json"}):
             alloc = get_skew_slab_allocation(56)
             self.assertEqual(alloc, {})
+
+    def test_frozen_profile_keeps_slab_allocation_while_live_pins_change(self):
+        store = object()
+        with tempfile.TemporaryDirectory() as root:
+            live = Path(root) / "pins.json"
+            profile = {
+                "layers": {}, "ranked_scores": {},
+                "ranked_counts": {"4": [[1, 9], [2, 8], [3, 7], [4, 6]]},
+            }
+            live.write_text(json.dumps(profile))
+            with patch.dict(os.environ, {
+                "FLASHNEXT_PIN_CACHE": str(live),
+                "FLASHNEXT_SLAB_PROFILE": "frozen",
+            }), patch(
+                "models.flashnext.expert_cache._pin_profile_cache_identity",
+                return_value="checkpoint",
+            ), patch(
+                "models.flashnext.routing.pin_profile_compatible",
+                return_value=(True, None),
+            ):
+                def allocation():
+                    _GLOBAL_SLAB_CACHE.clear()
+                    return get_skew_slab_allocation(
+                        4, min_slots=4, max_slots=4, num_layers=1,
+                        store=store, expected_group_size=32,
+                    )
+
+                self.assertEqual(allocation(), {4: [1, 2, 3, 4]})
+                frozen = Path(root) / "slab-frozen-checkpoint.json"
+                self.assertTrue(frozen.is_file())
+                profile["ranked_counts"]["4"] = [[5, 9], [6, 8], [7, 7], [8, 6]]
+                live.write_text(json.dumps(profile))
+                self.assertEqual(allocation(), {4: [1, 2, 3, 4]})
+                with patch.dict(os.environ, {"FLASHNEXT_SLAB_PROFILE": "rolling"}):
+                    self.assertEqual(allocation(), {4: [5, 6, 7, 8]})
 
     def test_slab_pack_56_slots_build(self):
         store = MockStore()

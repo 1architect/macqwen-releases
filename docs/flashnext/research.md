@@ -4521,4 +4521,23 @@ Physical-read differences also changed sign. The first rolling arm began with
 movement varied substantially across arms. Logical hit rate did not predict
 physical MB/token in this run. This diagnostic establishes allocation and
 pack drift; it does not resolve a speed or I/O benefit from freezing the
-normal-chat slab profile. We leave the default selection policy unchanged.
+normal-chat slab profile. At this point we leave the default selection policy
+unchanged.
+
+A second three-pair, six-arm run used the same prompts and initial profile:
+`results/flashnext/20260922-195811-slab-drift/`. Rolling again selected three
+allocations and frozen selected one; all paired output digests matched. The
+paired frozen-versus-rolling generation effects were +12.3%, +1.9%, and
++25.9%, averaging +13.4% within a ±13.9% two-SE band. The first rolling arm
+began with 948 MB free versus 3,873 MB for its frozen pair, and the third
+rolling arm recorded 823 system-wide swap-ins. These conditions limit a causal
+speed interpretation. Across both runs, frozen is faster in five of six pairs,
+while the exact-output and allocation-stability observations reproduce.
+
+On 2026-09-22, we explicitly promote a frozen slab pin profile for normal
+Flash-Next chat on Vontra. The live pin profile still updates each turn
+for routing; the slab reads a compatible snapshot made once per checkpoint.
+This holds the selected pack stable across launches. Rolling remains available
+through `FLASHNEXT_SLAB_PROFILE=rolling`. We do not attribute the measured
+speed difference solely to profile choice because memory pressure differs
+between arms.

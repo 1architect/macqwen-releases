@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -985,7 +986,7 @@ class StreamingSwitchLinear(nn.Module):
 
 def _compatible_pin_profile(store=None, expected_group_size=None, layer_ids=None):
     """Return pin history only when it belongs to this store's layout."""
-    data = _load_pin_profile()
+    data = _load_pin_profile(_slab_profile_path(store, expected_group_size))
     if data is None or store is None:
         return data
     from .routing import pin_profile_compatible
@@ -1040,9 +1041,9 @@ def _pin_profile_path() -> str:
     )
 
 
-def _load_pin_profile() -> dict | None:
+def _load_pin_profile(pin_file: str | None = None) -> dict | None:
     """Load the pin profile, distinguishing absence from corruption."""
-    pin_file = _pin_profile_path()
+    pin_file = pin_file or _pin_profile_path()
     if not os.path.isfile(pin_file):
         return None
     try:
@@ -1113,6 +1114,40 @@ def _load_pin_profile() -> dict | None:
     return normalized
 
 
+def _slab_profile_path(store=None, expected_group_size=None) -> str:
+    """Snapshot compatible live history once for a checkpoint's slab."""
+    live = _pin_profile_path()
+    if os.environ.get("FLASHNEXT_SLAB_PROFILE") != "frozen" or store is None:
+        return live
+    identity = _pin_profile_cache_identity(store)
+    if not identity:
+        return live
+    directory = os.path.dirname(live) or "."
+    frozen = os.path.join(directory, f"slab-frozen-{identity}.json")
+    if os.path.exists(frozen):
+        return frozen
+    profile = _load_pin_profile(live)
+    if profile is None:
+        return frozen
+    from .routing import pin_profile_compatible
+
+    compatible, _reason = pin_profile_compatible(
+        store, profile, expected_group_size=expected_group_size,
+    )
+    if not compatible:
+        return frozen
+    with tempfile.NamedTemporaryFile(
+        mode="w", dir=directory, prefix=".slab-frozen-",
+    ) as handle:
+        json.dump(profile, handle)
+        handle.flush()
+        try:
+            os.link(handle.name, frozen)
+        except FileExistsError:
+            pass
+    return frozen
+
+
 def _g64_pin_profile_compatible(store, profile: dict | None) -> tuple[bool, str | None]:
     """Require checkpoint-specific, Q4/G64 history before packed selection.
 
@@ -1154,9 +1189,9 @@ def _g64_pin_profile_compatible(store, profile: dict | None) -> tuple[bool, str 
     return True, None
 
 
-def _pin_profile_signature() -> tuple:
+def _pin_profile_signature(store=None, expected_group_size=None) -> tuple:
     """Return a cheap cache key that changes when the pin profile changes."""
-    path = _pin_profile_path()
+    path = _slab_profile_path(store, expected_group_size)
     try:
         stat = os.stat(path)
     except OSError:
@@ -1229,7 +1264,7 @@ def get_global_slab_allocation(
         return {}
     min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", str(min_slots)))
     cache_key = (
-        "global", _pin_profile_signature(), total_slots, min_slots,
+        "global", _pin_profile_signature(store, expected_group_size), total_slots, min_slots,
         expected_group_size, _pin_profile_cache_identity(store),
     )
     if cache_key in _GLOBAL_SLAB_CACHE:
@@ -1323,7 +1358,7 @@ def get_skew_slab_allocation(
     max_slots = int(os.environ.get("FLASHNEXT_SLAB_MAX_SLOTS", str(max_slots)))
     num_layers = int(os.environ.get("FLASHNEXT_SLAB_NUM_LAYERS", str(num_layers)))
     cache_key = (
-        "skew", _pin_profile_signature(), total_slots, min_slots, max_slots,
+        "skew", _pin_profile_signature(store, expected_group_size), total_slots, min_slots, max_slots,
         num_layers, expected_group_size, _pin_profile_cache_identity(store),
         os.environ.get("FLASHNEXT_SLAB_COUNTS", "turn"),
     )
@@ -1497,7 +1532,7 @@ class StreamingSwitchGLU(nn.Module):
             self._slab_pack_disabled_reason = "Q4/G64 slab pack requires FLASHNEXT_SLAB_G64=1"
         if pack_requested and g64 and slab_g64:
             history_ok, reason = _g64_pin_profile_compatible(
-                store, _load_pin_profile()
+                store, _load_pin_profile(_slab_profile_path(store, 64))
             )
             if not history_ok:
                 requested_slab_pack = False
