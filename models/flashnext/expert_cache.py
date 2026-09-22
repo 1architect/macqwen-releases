@@ -17,6 +17,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import wait as _wait_futures
 from typing import Any, Dict, List
 
 import mlx.core as mx
@@ -826,8 +827,91 @@ def _await_read(pending, timings=None):
     ]
 
 
+# GPU keep-warm. The GPU governor drops to its lowest performance states when
+# decode leaves the GPU idle during expert reads: at two or more cold experts
+# per layer the miss sweep measured 96% of active time in P15 fall to 0%, and
+# every command buffer ran about twice as long. With this on, the main thread
+# keeps short ALU-only spin kernels queued on a separate GPU stream while it
+# waits for reads, so the GPU never looks idle to the governor. The spins touch
+# no memory and change no model value. Off by default.
+_KEEPWARM = [os.environ.get("FLASHNEXT_GPU_KEEPWARM", "0") == "1"]
+_KEEPWARM_ITERS = [int(os.environ.get("FLASHNEXT_GPU_KEEPWARM_ITERS", "60000"))]
+_KEEPWARM_PERIOD = [float(os.environ.get("FLASHNEXT_GPU_KEEPWARM_PERIOD_MS", "0.5")) / 1000]
+_KEEPWARM_STATE: dict = {}
+_KEEPWARM_SOURCE = """
+    uint lane = thread_position_in_grid.x;
+    float value = float(lane);
+    int loops = iterations[0];
+    for (int i = 0; i < loops; ++i) {
+        value = fma(value, 0.5f, 0.25f);
+    }
+    out[lane] = value;
+"""
+
+
+def set_gpu_keepwarm(enabled: bool) -> None:
+    _KEEPWARM[0] = bool(enabled)
+
+
+def gpu_keepwarm() -> bool:
+    return _KEEPWARM[0]
+
+
+def _keepwarm_spin():
+    state = _KEEPWARM_STATE
+    if not state:
+        state["kernel"] = mx.fast.metal_kernel(
+            name="flashnext_gpu_keepwarm",
+            input_names=["iterations"],
+            output_names=["out"],
+            source=_KEEPWARM_SOURCE,
+        )
+        state["stream"] = mx.new_stream(mx.gpu)
+        state["iterations"] = mx.array([_KEEPWARM_ITERS[0]], dtype=mx.int32)
+    result = state["kernel"](
+        inputs=[state["iterations"]],
+        grid=(32, 1, 1), threadgroup=(32, 1, 1),
+        output_shapes=[(32,)], output_dtypes=[mx.float32],
+        stream=state["stream"],
+    )[0]
+    mx.async_eval(result)
+    return result
+
+
+def _pending_futures(pending) -> list:
+    if isinstance(pending, _ExpertGroupRead):
+        return list(pending.futures)
+    futures = []
+    for projection in pending:
+        for item in projection:
+            if isinstance(item, _SharedRead):
+                futures.extend(item.futures)
+            elif isinstance(item, list):
+                futures.extend(item)
+            else:
+                futures.append(item)
+    return futures
+
+
+def _keep_gpu_warm_until_done(pending) -> None:
+    """Submit one short spin per period until every read of this layer is done.
+
+    A spin lasts about one period at the top clock, longer at a low clock, so
+    only a few spins can queue past the end of a wait. They run on their own
+    stream, one threadgroup wide, beside the layer's real work.
+    """
+    futures = [future for future in _pending_futures(pending) if not future.done()]
+    period = _KEEPWARM_PERIOD[0]
+    while futures:
+        _keepwarm_spin()
+        _done, remaining = _wait_futures(futures, timeout=period)
+        futures = list(remaining)
+
+
 def _await_projection_tasks(pending, timings=None):
     """Resolve either projection-major or expert-grouped read tasks."""
+    if _KEEPWARM[0]:
+        _keep_gpu_warm_until_done(pending)
     if isinstance(pending, _ExpertGroupRead):
         return pending.wait(timings)
     return [_await_read(futures, timings) for futures in pending]

@@ -1,0 +1,9 @@
+== groups 4
+spin iterations for ~6.0 ms: 240463
+gap+spin    burst 7.81 ms (p90 9.07) | mean state 7.64 | {'P1': 0.012, 'P3': 0.065, 'P5': 0.277, 'P7': 0.094, 'P9': 0.341, 'P11': 0.211}
+== groups 16
+spin iterations for ~6.0 ms: 115135
+gap+spin    burst 11.52 ms (p90 14.04) | mean state 2.39 | {'P1': 0.058, 'P2': 0.495, 'P3': 0.445}
+== groups 64
+spin iterations for ~6.0 ms: 237455
+gap+spin    burst 9.12 ms (p90 9.84) | mean state 5.49 | {'P5': 0.713, 'P7': 0.271}

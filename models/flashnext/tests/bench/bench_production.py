@@ -281,6 +281,10 @@ COMPARISONS = {
         "fresh": {"FLASHNEXT_BUFFER_ARENA": "0"},
         "ring3": {"FLASHNEXT_BUFFER_ARENA": "3"},
     },
+    "gpu-keepwarm": {
+        "baseline": {"FLASHNEXT_GPU_KEEPWARM": "0"},
+        "keepwarm": {"FLASHNEXT_GPU_KEEPWARM": "1"},
+    },
     "ngram-nocache": {
         "baseline": {"FLASHNEXT_NGRAM_NOCACHE": "0"},
         "nocache": {"FLASHNEXT_NGRAM_NOCACHE": "1"},
@@ -507,6 +511,16 @@ LIVE_SETTINGS = {
             backend.store, "_ngram_nocache", value == "1"
         ),
         lambda backend: backend.store._ngram_nocache,
+        lambda value: value == "1",
+    ),
+    "FLASHNEXT_GPU_KEEPWARM": (
+        # Read at call time from a list; spins change no model value.
+        lambda backend, value: __import__(
+            "models.flashnext.expert_cache", fromlist=["set_gpu_keepwarm"]
+        ).set_gpu_keepwarm(value == "1"),
+        lambda backend: __import__(
+            "models.flashnext.expert_cache", fromlist=["gpu_keepwarm"]
+        ).gpu_keepwarm(),
         lambda value: value == "1",
     ),
     "FLASHNEXT_BUFFER_ARENA": (

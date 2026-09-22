@@ -4420,3 +4420,70 @@ checkpoint is no longer installed.
 
 The README now lists the installed-checkpoint results first and labels the oQ4
 and REAP rows as historical checkpoints that cannot be reproduced here.
+
+## The GPU hump is clock collapse; GPU keep-warm, 2026-09-22
+
+The drive-loaded GPU hump (command buffers about 1.9 times longer at 25 to
+50 percent misses, with the same dispatches) had no measured cause. The GPU and
+SSD windows are disjoint in the serial decode pipeline, so memory-controller
+contention during the GPU span did not fit. We measured GPU performance-state
+residency with IOReport (`models/flashnext/tests/bench/gpu_pstates.py`, no
+sudo) over the decode window of `bench_read_ceiling`, 30 tokens per arm, on
+Vontra 4-bit MTP.
+
+| Cold experts per layer | ms/token | MB/token | Active time in P15 | Mean active state |
+|---:|---:|---:|---:|---:|
+| 0 of 8 | 211 | 1.5 | 96% | 14.5 |
+| 1 of 8 | 233 | 151 | 78% | 12.8 |
+| 2 of 8 | 404 | 295 | 0% | 1.4 |
+| 4 of 8 | 569 | 593 | 0% | 2.0 |
+| 8 of 8 | 855 | 1,199 | 0% | 1.6 |
+
+Between one and two cold experts per layer the GPU falls from its top state to
+P1 and P2. This is where GPU busy time jumped from 94 to 172 ms/token in the
+earlier sweep. Production reads about 2.5 to 3 cold experts per layer, so its
+GPU work runs at the lowest clocks. The GPU idles while each layer waits for
+its reads, and the performance controller lowers the clock. A checkpoint-free
+probe (`bench_gpu_keepwarm.py`) reproduces it: a 5.6 ms burst of matmuls takes
+11 to 14 ms when 6 ms sleeps separate the bursts.
+
+`FLASHNEXT_GPU_KEEPWARM=1` keeps the GPU busy during those waits. While the
+main thread waits for a layer's reads, it submits one short ALU-only spin
+kernel (one threadgroup, no memory traffic) per 0.5 ms on a separate GPU
+stream. The spins change no model value. A GPU-polled stop flag was tested and
+rejected: the GPU saw the CPU write 0.5 to 10 seconds late.
+
+Spin length at miss 0.25, one arm per setting unless stated:
+
+| Setting | ms/token | Mean active state |
+|---|---:|---:|
+| off (4 arms) | 381.8, 389.4, 391.6, 362.2 | 1.8 to 2.8 |
+| 20,000 iterations | 328.1 | 2.5 |
+| 40,000 | 314.6 | 6.7 |
+| 60,000 (3 arms) | 294.3, 308.6, 290.4 | 14.9 to 15.0 |
+| 80,000 | 290.4 | 15.0 |
+| 150,000 | 343.6 | 15.0 |
+| 400,000 | 489.7 | 15.0 |
+
+At 60,000 iterations the GPU holds P15 and the token is about 22% shorter.
+Longer spins outlive the waits and compete with the layer's real work. Every
+arm kept digest `ac4f7a009f74c09f`. The default length is 60,000.
+
+Production comparison with real routing (`bench_production --compare
+gpu-keepwarm`, live flips in one process, chat defaults, 32 pins):
+
+| Horizon | Baseline gen | Keep-warm gen | Paired mean / median | Wins | Band |
+|---:|---:|---:|---:|---:|---:|
+| 32 tokens, 6 pairs | 2.62 | 2.80 | +12.5% / +6.0% | 6 of 6, p = 0.031 | 15.2% |
+| 96 tokens, 4 pairs | 2.19 | 2.55 | +13.6% / +18.1% | 3 of 4, p = 0.625 | 14.4% |
+
+Both keep identical digests (`ceff6fd656310be6`, `0b1535419b6ab5c3`). The
+direction is consistent; both bands are wide. The 96-token keep-warm arms
+slowed over the run (r = -0.80) while the load average rose.
+
+The reference machine is a fanless MacBook Air (Mac16,12). Keep-warm holds
+the GPU at its top clock for the whole decode, which raises sustained power.
+`pmset` reported no thermal warning, but long answers are untested. The flag
+stays off until a long run shows no thermal throttling and a paired run
+resolves the effect. Evidence: `results/flashnext/*-hump-*` and
+`results/flashnext/*-production-gpu-keepwarm*`.

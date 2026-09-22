@@ -191,6 +191,12 @@ def main() -> None:
     # The buffer ring reuses destinations the GPU may still be reading, so the
     # token digest is the acceptance test, not a nicety.
     produced = []
+    # GPU performance-state residency over the whole decode window. Two
+    # samples outside the loop; nothing runs per token.
+    from models.flashnext.tests.bench.gpu_pstates import GpuStates, summarize
+
+    gpu_states = GpuStates()
+    gpu_before = gpu_states.sample()
     began = time.perf_counter()
     for _ in range(args.tokens):
         logits = language(token[None], cache=cache).logits
@@ -198,6 +204,7 @@ def main() -> None:
         mx.eval(token)
         produced.append(int(token.item()))
     elapsed = time.perf_counter() - began
+    gpu_after = gpu_states.sample()
     physical = disk_bytes_read() - before
     vm_after = vm_counters()
     from models.flashnext.diskio import free_memory_mb
@@ -224,6 +231,18 @@ def main() -> None:
     print(f"MB/token: {physical / args.tokens / 1e6:.1f}", flush=True)
     print(f"rdahead: {int(store._rdahead)}", flush=True)
     print(vm_delta(vm_before, vm_after, args.tokens), flush=True)
+    residency = gpu_states.delta(gpu_before, gpu_after).get("GPUPH", {})
+    gpu_states.release(gpu_before)
+    gpu_states.release(gpu_after)
+    if residency:
+        summary = summarize(residency)
+        shares = " ".join(
+            f"{name}={share:.2f}"
+            for name, share in summary["active_residency"].items() if share >= 0.01
+        )
+        print(f"gpu active share: {summary['active_share']:.3f}", flush=True)
+        print(f"gpu mean active state: {summary['mean_active_state']:.2f} of 15", flush=True)
+        print(f"gpu state residency: {shares}", flush=True)
     totals = profile_totals()
     if totals.get("io_calls"):
         for key in sorted(totals):

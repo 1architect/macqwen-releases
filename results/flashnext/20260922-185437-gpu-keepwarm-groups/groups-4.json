@@ -1,0 +1,29 @@
+{
+ "args": {
+  "bursts": 60,
+  "gap_ms": 6.0,
+  "burst_ops": 6,
+  "size": 1024,
+  "rounds": 1,
+  "spin_groups": 4,
+  "modes": "gap+spin"
+ },
+ "spin_iterations": 240463,
+ "rows": [
+  {
+   "mode": "gap+spin",
+   "burst_ms_median": 7.8112080082064494,
+   "burst_ms_p90": 9.068832994671538,
+   "mean_active_state": 7.639703290082398,
+   "active_residency": {
+    "P1": 0.012,
+    "P3": 0.065,
+    "P5": 0.277,
+    "P7": 0.094,
+    "P9": 0.341,
+    "P11": 0.211
+   },
+   "round": 0
+  }
+ ]
+}

@@ -1,0 +1,109 @@
+=== keepwarm 0 iters 0
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+patched layers: 48
+arena: 0
+digest: ac4f7a009f74c09f
+free memory: 129.21875 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.55 tok/s
+ms/token: 391.6
+miss: 0.25
+MB/token: 298.4
+rdahead: 1
+vm/token compress=11038 decompress=7552 pagein=10170 pageout=1 reactivated=5347 swapin=0 swapout=0
+gpu active share: 0.688
+gpu mean active state: 2.76 of 15
+gpu state residency: P1=0.60 P2=0.14 P3=0.04 P5=0.05 P7=0.06 P9=0.07 P11=0.04
+=== keepwarm 1 iters 40000
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+patched layers: 48
+arena: 0
+digest: ac4f7a009f74c09f
+free memory: 123.921875 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 3.18 tok/s
+ms/token: 314.6
+miss: 0.25
+MB/token: 296.7
+rdahead: 1
+vm/token compress=4060 decompress=3184 pagein=10128 pageout=2 reactivated=907 swapin=16 swapout=0
+gpu active share: 0.997
+gpu mean active state: 6.65 of 15
+gpu state residency: P3=0.03 P5=0.35 P7=0.51 P9=0.07 P13=0.01 P15=0.03
+=== keepwarm 1 iters 60000
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+patched layers: 48
+arena: 0
+digest: ac4f7a009f74c09f
+free memory: 122.296875 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 3.24 tok/s
+ms/token: 308.6
+miss: 0.25
+MB/token: 296.9
+rdahead: 1
+vm/token compress=4287 decompress=3839 pagein=9780 pageout=0 reactivated=1551 swapin=0 swapout=0
+gpu active share: 0.996
+gpu mean active state: 14.88 of 15
+gpu state residency: P13=0.06 P15=0.94
+=== keepwarm 1 iters 80000
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+patched layers: 48
+arena: 0
+digest: ac4f7a009f74c09f
+free memory: 122.09375 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 3.44 tok/s
+ms/token: 290.4
+miss: 0.25
+MB/token: 295.2
+rdahead: 1
+vm/token compress=913 decompress=432 pagein=9665 pageout=1 reactivated=106 swapin=0 swapout=0
+gpu active share: 0.998
+gpu mean active state: 14.99 of 15
+gpu state residency: P15=1.00
+=== keepwarm 1 iters 60000
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+patched layers: 48
+arena: 0
+digest: ac4f7a009f74c09f
+free memory: 131.296875 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 3.44 tok/s
+ms/token: 290.4
+miss: 0.25
+MB/token: 295.2
+rdahead: 1
+vm/token compress=895 decompress=526 pagein=9719 pageout=0 reactivated=161 swapin=4 swapout=0
+gpu active share: 0.997
+gpu mean active state: 14.88 of 15
+gpu state residency: P13=0.06 P15=0.94
+=== keepwarm 0 iters 0
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+patched layers: 48
+arena: 0
+digest: ac4f7a009f74c09f
+free memory: 124.421875 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.76 tok/s
+ms/token: 362.2
+miss: 0.25
+MB/token: 295.9
+rdahead: 1
+vm/token compress=3917 decompress=3259 pagein=9758 pageout=3 reactivated=1216 swapin=0 swapout=0
+gpu active share: 0.694
+gpu mean active state: 2.82 of 15
+gpu state residency: P1=0.29 P2=0.16 P3=0.30 P5=0.22 P7=0.03
+=== sweep done

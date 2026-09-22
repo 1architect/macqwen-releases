@@ -1,0 +1,18 @@
+  system load average before: (2.27490234375, 2.7177734375, 2.61474609375)
+  every median settled after 6 rounds
+
+  baseline     gen median  2.62  range 1.65-2.73  sd 0.416  tail  2.59   344.1 MB/tok  n=6
+    token digest (baseline): ceff6fd656310be6
+  keepwarm     gen median  2.80  range 2.48-2.88  sd 0.156  tail  2.74   351.8 MB/tok  n=6
+    token digest (keepwarm): ceff6fd656310be6
+  system load average after: (3.87060546875, 3.39599609375, 2.931640625)
+
+  paired over 6 arms: mean +12.5 percent, median +6.0
+  keepwarm improved in 6 of 6 non-tied pairs and regressed in 0; ties: 0
+  two-sided sign test p = 0.031
+  fewer bytes in 2 of 6 pairs
+
+  keepwarm vs baseline: +6.6% gen median
+  matched paired two-SE band is 15.2%, too wide for a small-effect decision (mean +12.5%).
+
+  wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260922-190616-production-gpu-keepwarm/production.json
