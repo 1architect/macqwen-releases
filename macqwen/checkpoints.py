@@ -10,6 +10,7 @@ FLASHNEXT_ALIASES = {
     "oq3": "Qwen3.8-Flash-Next-MLX-oQ3-MTP",
     "oq3-mtp": "Qwen3.8-Flash-Next-MLX-oQ3-MTP",
     "oq4": "Qwen3.8-Flash-Next-MLX-oQ4",
+    "vontra-mtp": "Qwen3.8-Flash-Next-MLX-4bit-MTP",
 }
 _TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json")
 

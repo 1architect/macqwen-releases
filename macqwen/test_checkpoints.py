@@ -139,6 +139,14 @@ class CheckpointTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "incomplete or incompatible"):
                     resolve_flashnext()
 
+    def test_vontra_mtp_alias_resolves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            expected = flashnext(root, "Qwen3.8-Flash-Next-MLX-4bit-MTP")
+            with patch.dict(os.environ, {"MACQWEN_MODEL_ROOT": str(root)}, clear=False):
+                self.assertEqual(
+                    resolve_flashnext("vontra-mtp"), expected.resolve())
+
     def test_qwen27b_discovery_uses_config_instead_of_a_local_name(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

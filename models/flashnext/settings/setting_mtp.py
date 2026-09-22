@@ -57,6 +57,13 @@ def _native_mtp_active(backend) -> bool:
     ) == "on"
 
 
+def _native_mtp_warning(backend) -> str | None:
+    if _native_mtp_active(backend):
+        return ("experimental, exact greedy only, currently slower on "
+                "the streamed Vontra runtime")
+    return None
+
+
 SETTINGS = (
     Setting(
         "native-mtp",
@@ -70,7 +77,7 @@ SETTINGS = (
         _native_mtp_reader,
         None,
         _native_mtp_active,
-        None,
+        _native_mtp_warning,
         "FLASHNEXT_NATIVE_MTP",
         __file__,
     ),

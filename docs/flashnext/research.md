@@ -4012,3 +4012,54 @@ The existing QSA allocation guard remains active. We promote neither packed
 residency nor QSA optimizations. The sampled, completed-output quality
 comparison with seeds 7, 19, and 73 remains pending and requires our permission.
 We run no new inference or benchmark for this documentation update.
+
+## Vontra indexed-MTP integration, 2026-09-22
+
+`Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP` is a supported FlashNext
+checkpoint. It has 48 layers, hidden 2560, 512 routed experts at top-10,
+Q4 affine G32, and native MTP tensors inside the indexed checkpoint
+(all 76 `language_model.mtp.*` tensors in shard 22 of 22, no sidecar).
+
+The loader detects MTP storage as none, sidecar, or indexed from
+config/index/tensor layout, never from directory names. Both sidecar
+and indexed present fails closed. Target-only Vontra loads 2,522
+tensors at 3.18 GB resident with `keep_vision=False`; MTP-on loads
+2,589 tensors at 3.24 GB. The 1.573 GB MTP expert bank stays streamed
+through `StreamingSwitchGLU`; only 58.5 MB of non-expert MTP tensors
+become resident. With MTP off, all 76 MTP tensors are excluded from
+the resident set. Sidecar behavior and REAP Q4/G64 behavior are
+unchanged. A `vontra-mtp` checkpoint alias selects the directory.
+
+The Vontra artifact stores one-centered RMSNorm gains (tensor census
+median near 1.0 across all norm families), unlike the official
+zero-centered offsets, so the loader legacy one-centered fallback is
+correct for it and no new fingerprint was needed. Stock mlx-vlm
+loading would apply `1.0 + weight` and double these gains; its
+strict-loading claim is shape-only.
+
+Two correctness discoveries came out of native MTP exactness work.
+First, speculative block verification must go through
+`Qwen4ExactSpeculativeVerifier`, which the verifier now exposes with
+the pre-final-mixer HC residual for `capture_layer_ids=[]`; the
+verifier streamed-MoE combine mirrors the production Metal
+score-combine and shared-fusion branches. Second and decisive, the
+accepted-prefix target replay must be singleton-token replay:
+ordinary batched replay predicts identical immediate tokens while
+leaving recurrent cache states up to 1.77 abs different (Vontra
+layer 17), which compounds across draft cycles until committed
+tokens flip. Both are covered by focused regression tests.
+
+Controlled 32-token result on the photosynthesis prompt with closed
+thinking, greedy decoding, depth 3, fresh caches per arm, same loaded
+model, all four output digests identical:
+
+| Metric | Target-only | Native MTP |
+|---|---:|---:|
+| Generation | 1.74 / 1.93 tok/s | 1.16 / 1.11 tok/s |
+| Physical reads | ~469 MB/token | ~804 / 944 MB/token |
+| Acceptance | | 20/36 = 55.6% |
+
+MTP effect is -33.6% and -42.4% on the paired comparisons. Native
+MTP is functionally exact but currently slower on the SSD-streamed
+runtime, so it remains opt-in with default off. We claim nothing
+beyond this checkpoint, prompt, and horizon.

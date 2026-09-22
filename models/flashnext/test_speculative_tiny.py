@@ -370,5 +370,93 @@ class SpeculativeTinyTest(unittest.TestCase):
         self.assertGreater(decoder.stats.drafted, 0)
         self.assertGreater(decoder.stats.cycles, 1)
 
+    def test_target_replay_replays_single_tokens(self):
+        # Recurrent replay must be singleton-equivalent: a batched
+        # forward predicts the same tokens but can leave different
+        # recurrent states, which diverges later Vontra runs. Lock the
+        # one-call-per-token shape here, not just predictions.
+        from models.flashnext.speculative import (
+            MTPGreedy,
+            restore_cache,
+            snapshot_cache,
+        )
+
+        calls = []
+
+        class FakeLanguage:
+            def make_cache(self):
+                return [SimpleNamespace(
+                    state=mx.zeros((2, 2)), meta_state=None)]
+
+            def __call__(self, ids, cache=None):
+                calls.append(tuple(int(v) for v in ids.shape))
+                return SimpleNamespace(logits=mx.zeros((1, 1, 4)))
+
+        language = FakeLanguage()
+        decoder = MTPGreedy.__new__(MTPGreedy)
+        decoder.language = language
+        decoder.target_cache = language.make_cache()
+        decoder.stats = SimpleNamespace(replayed=0)
+        snapshot = snapshot_cache(decoder.target_cache)
+        decoder._target_replay(
+            snapshot, mx.array([[9, 10, 11]], dtype=mx.uint32))
+        self.assertEqual(calls, [(1, 1), (1, 1), (1, 1)])
+        self.assertEqual(decoder.stats.replayed, 3)
+
+    def test_target_replay_states_match_singleton(self):
+        from models.flashnext.mtp import attach
+        from models.flashnext.speculative import (
+            MTPGreedy,
+            restore_cache,
+            snapshot_cache,
+        )
+
+        def states(cache):
+            return snapshot_cache(cache)
+
+        def state_max_abs(left, right):
+            peak = 0.0
+
+            def walk(a, b):
+                nonlocal peak
+                if isinstance(a, (list, tuple)):
+                    for x, y in zip(a, b):
+                        walk(x, y)
+                    return
+                if a is None or b is None:
+                    return
+                peak = max(peak, float(
+                    mx.max(mx.abs(a.astype(mx.float32)
+                                  - b.astype(mx.float32))).item()))
+
+            for (a_state, _), (b_state, _) in zip(left, right):
+                walk(a_state, b_state)
+            return peak
+
+        language = tiny_language()
+        attach(language)
+        prompt = mx.array([[3, 7, 11]], dtype=mx.uint32)
+        cache = language.make_cache()
+        mx.eval(language(prompt, cache=cache).logits)
+        block = mx.array([[5, 9, 13]], dtype=mx.uint32)
+        snapshot = snapshot_cache(cache)
+
+        replayed = language.make_cache()
+        restore_cache(replayed, snapshot)
+        decoder = MTPGreedy.__new__(MTPGreedy)
+        decoder.language = language
+        decoder.target_cache = replayed
+        decoder.stats = SimpleNamespace(replayed=0)
+        decoder._target_replay(snapshot_cache(replayed), block)
+
+        sequential = language.make_cache()
+        restore_cache(sequential, snapshot)
+        for position in range(block.shape[1]):
+            mx.eval(language(block[:, position:position + 1],
+                             cache=sequential).logits)
+
+        self.assertEqual(
+            state_max_abs(states(replayed), states(sequential)), 0.0)
+
 if __name__ == "__main__":
     unittest.main()
