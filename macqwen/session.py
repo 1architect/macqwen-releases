@@ -437,6 +437,35 @@ def build_backend(name: str, args, prefs: dict):
         values = get_flashnext_registry().cli_values(args, "flashnext")
         values["model_path"] = args.model_path
         values["session_dir"] = args.session_dir or "~/.cache/flashnext/sessions"
+        # The argparse default always fills values, so explicitness must
+        # come from the actual command line: only a typed flag beats the
+        # checkpoint policy. The checkpoint itself resolves exactly the
+        # way the backend will resolve it (alias, env, auto-select).
+        cli_flags = set(sys.argv[1:])
+        explicit_resident = any(
+            arg == flag or arg.startswith(flag + "=")
+            for arg in cli_flags
+            for flag in ("--resident-experts", "--pinned-experts")
+        )
+        policy_source = None
+        if not explicit_resident:
+            from macqwen.checkpoints import resolve_flashnext
+            from models.flashnext.checkpoint_policy import (
+                resolve_resident_experts,
+            )
+
+            try:
+                resolved_checkpoint = resolve_flashnext(args.model_path)
+            except Exception:
+                resolved_checkpoint = None
+            try:
+                policy_value = resolve_resident_experts(
+                    None, resolved_checkpoint)
+            except Exception:
+                policy_value = None
+            if policy_value is not None:
+                values["resident_experts"] = policy_value
+                policy_source = "checkpoint policy"
         backend = FlashNextBackend(**values)
         cli_args = set(sys.argv[1:])
         backend._setting_sources = {
@@ -445,6 +474,8 @@ def build_backend(name: str, args, prefs: dict):
             if setting.cli_dest
             and any(flag in cli_args for flag in setting.cli_flags)
         }
+        if policy_source is not None and "resident-experts" not in backend._setting_sources:
+            backend._setting_sources["resident-experts"] = policy_source
         mirror_preferences(backend, prefs, prefs["profile"])
         return backend
     if name == "qwen27b":

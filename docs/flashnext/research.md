@@ -4232,3 +4232,36 @@ by reverting that commit; no production compatibility change was
 retained. No benchmark or download was performed as part of cleanup.
 Vontra remains the active supported target. The project returns to
 closure, not to another investigation.
+
+## Vontra 8-pin policy handoff, 2026-09-22
+
+Supported target in this workstream:
+`Vontra/Qwen3.8-Flash-Next-MLX-4bit-mtp`.
+
+Runtime decision: generic `resident_experts` stays 32. The verified
+Vontra checkpoint (identity `b59d036b02d6425a…`) resolves to an
+implicit effective value of 8 through `models/flashnext/
+checkpoint_policy.py`, keyed by checkpoint identity and provenance,
+never by basename or path. An explicit user setting always wins;
+unknown checkpoints keep 32.
+
+REAP: unavailable during this pass (checkpoint not installed, no
+download authorized, zero arms run), therefore no REAP-side
+conclusion. The shared 32 default remains unresolved for REAP.
+
+EigenLabs: an unsupported parity diagnostic accidentally entered
+the branch and was removed; no production compatibility retained.
+
+Work completed: MTP exact but slower with default off; 60-slot
+skew slab pack active with Q4/G32 Metal, chunk 2, and current I/O
+workers; text-only loading; exact-quality pin depth leaves routing
+unchanged; 32-pin mlock measured harmful on Vontra while 8 tied 0;
+Vontra-specific 8-pin policy implemented with override precedence
+and source reporting. Long-context QSA work was not pursued
+because it was not relevant to this pass; the output-head and
+layer-0 probes measured negligible, so no change was made there.
+
+This Vontra investigation/workstream is complete and handed off at
+this commit. No additional benchmark is being started by this
+agent. Future MACQWEN work may continue from this documented
+state.
