@@ -39,6 +39,44 @@ _applied = False
 _COMPILE = [os.environ.get("FLASHNEXT_COMPILE_NORM", "0") != "0"]
 
 
+# Every call casts the gain to float32, and zero-centered checkpoints add 1.0,
+# which is one or two dispatches per norm call on a launch-bound GPU. The cast
+# is deterministic, so caching its result is bit-exact. Off by default until a
+# digest run promotes it. The cache is keyed on the weight object itself,
+# because `configure` runs before `load_weights` replaces the placeholders.
+_WEIGHT_CACHE = [os.environ.get("FLASHNEXT_NORM_WEIGHT_CACHE", "0") == "1"]
+
+
+def set_weight_cache(enabled) -> None:
+    _WEIGHT_CACHE[0] = bool(int(enabled)) if isinstance(enabled, str) else bool(enabled)
+
+
+def _float_gain(self, weight):
+    """The float32 gain, applying the one- or zero-centered convention."""
+    if getattr(self, "_flashnext_one_centered", True):
+        return weight.astype(mx.float32)
+    return 1.0 + weight.astype(mx.float32)
+
+
+def _cached_gain(self, weight):
+    source = self.weight
+    cached = self.__dict__.get("_flashnext_gain_cache")
+    one_centered = getattr(self, "_flashnext_one_centered", True)
+    if (
+        cached is None
+        or cached[0] is not source
+        or cached[1] != one_centered
+        or cached[2] != self.group_size
+    ):
+        # No eval: the first call's graph materializes it, later calls reuse it.
+        gain = _float_gain(self, weight)
+        cached = (source, one_centered, self.group_size, gain)
+        # Plain attribute outside the module's parameter tree, so it is never
+        # saved, loaded or quantized as a model weight.
+        object.__setattr__(self, "_flashnext_gain_cache", cached)
+    return cached[3]
+
+
 def compile_norm() -> bool:
     return _COMPILE[0]
 
@@ -70,10 +108,10 @@ def _rms_norm(self, x: mx.array) -> mx.array:
     # some newer converters store the zero-centered gains expected by
     # mlx-vlm. Keep this decision on each norm instance. This allows callers
     # to load both checkpoint families in one process.
-    if getattr(self, "_flashnext_one_centered", True):
-        weight = weight.astype(mx.float32)
+    if _WEIGHT_CACHE[0]:
+        weight = _cached_gain(self, weight)
     else:
-        weight = 1.0 + weight.astype(mx.float32)
+        weight = _float_gain(self, weight)
     if _COMPILE[0]:
         return _fused(y, weight, self.eps).reshape(x.shape).astype(dtype)
     y = y.astype(mx.float32)

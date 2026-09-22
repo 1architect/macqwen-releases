@@ -196,9 +196,9 @@ def profile_totals() -> dict:
 
 
 def reset_profile() -> None:
-    for key in _TIMERS:
-        _TIMERS[key] = 0.0
-    _TIMERS["io_calls"] = 0
+    # Keep each counter's type: count fields stay int, times stay float.
+    for key, value in _TIMERS.items():
+        _TIMERS[key] = 0 if isinstance(value, int) else 0.0
     with _POOL_STATE_LOCK:
         if _POOL_STATE["queued"] == 0 and _POOL_STATE["running"] == 0:
             _POOL_STATE["completed"] = 0
@@ -969,14 +969,14 @@ def _load_pin_profile() -> dict | None:
     if not isinstance(data, dict):
         raise ValueError(f"invalid FlashNext pin profile {pin_file}: expected an object")
     normalized = dict(data)
-    for field in ("layers", "ranked_scores", "ranked_counts"):
+    for field in ("layers", "ranked_scores", "ranked_counts", "cumulative_counts"):
         value = data.get(field, {})
         if not isinstance(value, dict):
             raise ValueError(
                 f"invalid FlashNext pin profile {pin_file}: {field} must be an object"
             )
         normalized[field] = value
-    for field in ("layers", "ranked_scores", "ranked_counts"):
+    for field in ("layers", "ranked_scores", "ranked_counts", "cumulative_counts"):
         clean = {}
         for layer, values in normalized[field].items():
             try:
@@ -1003,7 +1003,7 @@ def _load_pin_profile() -> dict | None:
                 raise ValueError(
                     f"invalid FlashNext pin profile {pin_file}: layers/{layer}"
                 ) from error
-    for field in ("ranked_scores", "ranked_counts"):
+    for field in ("ranked_scores", "ranked_counts", "cumulative_counts"):
         for layer, values in normalized[field].items():
             if not isinstance(values, list):
                 raise ValueError(f"invalid FlashNext pin profile {pin_file}: {field}/{layer}")
@@ -1241,6 +1241,7 @@ def get_skew_slab_allocation(
     cache_key = (
         "skew", _pin_profile_signature(), total_slots, min_slots, max_slots,
         num_layers, expected_group_size, _pin_profile_cache_identity(store),
+        os.environ.get("FLASHNEXT_SLAB_COUNTS", "turn"),
     )
     if cache_key in _GLOBAL_SLAB_CACHE:
         return _GLOBAL_SLAB_CACHE[cache_key]
@@ -1248,8 +1249,13 @@ def get_skew_slab_allocation(
     data = _compatible_pin_profile(store, expected_group_size)
     if data is None:
         return {}
-    # Prefer ranked_counts if present, fallback to ranked_scores
-    ranked = data["ranked_counts"] or data["ranked_scores"]
+    # Prefer ranked_counts if present, fallback to ranked_scores. The opt-in
+    # cumulative history replaces both when it exists.
+    from .routing import slab_counts_mode
+
+    ranked = (
+        data["cumulative_counts"] if slab_counts_mode() == "cumulative" else {}
+    ) or data["ranked_counts"] or data["ranked_scores"]
     if not ranked:
         return get_global_slab_allocation(
             total_slots,

@@ -85,6 +85,11 @@ SETTINGS = (
     research("physical-miss-profile", "FLASHNEXT_PHYSICAL_MISS_PROFILE", "~/.cache/flashnext/physical-misses.json", "startup"),
     research("physical-miss-min-samples", "FLASHNEXT_PHYSICAL_MISS_MIN_SAMPLES", "1", "startup", integer),
     research("io-task-topology", "FLASHNEXT_IO_TASK_TOPOLOGY", "projection", "startup"),
+    research("prefill-last-row", "FLASHNEXT_PREFILL_LAST_ROW", parser=choice(("0", "1"), "prefill-last-row")),
+    research("norm-weight-cache", "FLASHNEXT_NORM_WEIGHT_CACHE", parser=choice(("0", "1"), "norm-weight-cache")),
+    research("slab-counts", "FLASHNEXT_SLAB_COUNTS", "turn", "startup", choice(("turn", "cumulative"), "slab-counts")),
+    research("slab-counts-decay", "FLASHNEXT_SLAB_COUNTS_DECAY", "0.9", "startup", float),
+    research("slab-pack-max-age-days", "FLASHNEXT_SLAB_PACK_MAX_AGE_DAYS", "14", "startup", float),
     Setting(
         "metal-g64", ("FLASHNEXT_METAL_G64",), "1", choice(("0", "1"), "metal-g64"),
         "startup", "runtime", "public", "flashnext",

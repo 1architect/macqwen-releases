@@ -36,10 +36,16 @@ import os
 from pathlib import Path
 import struct
 import tempfile
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 import numpy as np
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX
+    fcntl = None
 
 HEADER_MAGIC = 0x4D4F4553  # "MOES"
 HEADER_VERSION = 1
@@ -338,15 +344,43 @@ def build_slab_pack(
     return total_size
 
 
+def canonical_path(path: str | Path) -> Path:
+    """Return ``path`` with symlinks resolved and its on-disk letter case.
+
+    APFS is case-insensitive, so ``~/models`` and ``~/Models`` name the same
+    directory while ``Path.resolve`` keeps whichever spelling it was given.
+    Anything hashed from a path string must use the spelling the filesystem
+    reports, or one checkpoint gets two identities.
+    """
+    resolved = Path(path).expanduser().resolve()
+    command = getattr(fcntl, "F_GETPATH", None) if fcntl is not None else None
+    if command is None:
+        return resolved
+    try:
+        fd = os.open(str(resolved), os.O_RDONLY)
+    except OSError:
+        return resolved
+    try:
+        raw = fcntl.fcntl(fd, command, bytes(1024))
+    except OSError:
+        return resolved
+    finally:
+        os.close(fd)
+    text = raw.split(b"\0", 1)[0].decode("utf-8", "surrogateescape")
+    return Path(text) if text else resolved
+
+
 def checkpoint_identity(model_dir: str | Path) -> str:
     """Return a cheap identity for the checkpoint used by a slab pack.
 
     The config and index are hashed by content. Referenced shard metadata uses
-    file identity and size, so this never reads the checkpoint payload.
+    file identity and size, so this never reads the checkpoint payload. The
+    path is included in its on-disk spelling, so cache files never cross
+    checkpoint locations but one location has one identity.
     """
     model_path = Path(model_dir).expanduser()
     digest = hashlib.sha256(_IDENTITY_VERSION)
-    digest.update(str(model_path.resolve()).encode("utf-8"))
+    digest.update(str(canonical_path(model_path)).encode("utf-8"))
     index_path = model_path / "model.safetensors.index.json"
     with index_path.open("rb") as handle:
         index_bytes = handle.read()
@@ -642,7 +676,7 @@ def get_slab_pack_cache_path(
     # Keep the historical G32 key byte-for-byte stable. G64 gets an explicit
     # layout suffix so caches can never cross the two record formats.
     layout_key = "" if slab_layout is Q4G32_LAYOUT else f"|layout={slab_layout.name}"
-    key = f"{str(model_dir)}|{model_identity}|{alloc_str}|v{slab_layout.header_version}{layout_key}".encode(
+    key = f"{str(canonical_path(model_dir))}|{model_identity}|{alloc_str}|v{slab_layout.header_version}{layout_key}".encode(
         "utf-8"
     )
     digest = hashlib.sha256(key).hexdigest()[:16]
@@ -679,7 +713,7 @@ def get_or_create_slab_pack(
     require_existing = os.environ.get("FLASHNEXT_SLAB_PACK_REQUIRE_EXISTING") == "1"
     if cache_path.exists():
         try:
-            return SlabPack(
+            pack = SlabPack(
                 cache_path,
                 lock_memory=lock_memory,
                 expected_model_hash=model_hash,
@@ -690,6 +724,9 @@ def get_or_create_slab_pack(
                 raise RuntimeError(
                     f"Existing slab pack is stale or invalid: {cache_path}: {error}"
                 ) from error
+        else:
+            _mark_used_and_prune(cache_path)
+            return pack
     if require_existing:
         raise FileNotFoundError(
             f"Required prebuilt slab pack is missing: {cache_path}. "
@@ -700,9 +737,49 @@ def get_or_create_slab_pack(
         store, allocation, cache_path, model_hash=model_hash, layout=slab_layout
     )
 
-    return SlabPack(
+    pack = SlabPack(
         cache_path,
         lock_memory=lock_memory,
         expected_model_hash=model_hash,
         expected_layout=slab_layout,
     )
+    _mark_used_and_prune(cache_path)
+    return pack
+
+
+def _mark_used_and_prune(current: Path) -> int:
+    """Record that ``current`` was used and delete long-unused packs.
+
+    The allocation follows the saved route history, which changes between
+    sessions, so every new allocation writes a new pack of about 180 MB and
+    nothing ever removed the old ones. Opening a pack sets its mtime, so
+    mtime means last use. A pack unused for
+    ``FLASHNEXT_SLAB_PACK_MAX_AGE_DAYS`` (default 14, 0 disables) is removed.
+    Age rather than count keeps every pack a benchmark has just prepared.
+    Returns the number of files removed.
+    """
+    try:
+        os.utime(current)
+    except OSError:
+        pass
+    try:
+        days = float(os.environ.get("FLASHNEXT_SLAB_PACK_MAX_AGE_DAYS", "14"))
+    except ValueError:
+        days = 14.0
+    if days <= 0:
+        return 0
+    cutoff = time.time() - days * 86400
+    removed = 0
+    try:
+        candidates = list(current.parent.glob("slab-pack-slots*.bin"))
+    except OSError:
+        return 0
+    for path in candidates:
+        try:
+            if path.samefile(current) or path.stat().st_mtime >= cutoff:
+                continue
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed

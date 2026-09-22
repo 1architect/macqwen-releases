@@ -96,6 +96,18 @@ keys and reusing the scatter-based decode mask are unmeasured, exactness-bound
 opportunities. Manual validation of the cached tool-result prefill path remains
 a follow-up item.
 
+## Checkpoint policy and cache identity, 2026-09-22
+
+The installed checkpoint is `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP`. Its
+checkpoint policy sets 8 resident experts unless `--resident-experts` is given;
+other checkpoints keep 32. The policy is keyed by content identity, so any path
+spelling or copy of the same files receives it. Pin history, slab packs and
+sessions use the location identity in the on-disk path spelling. Slab packs
+unused for 14 days are deleted (`FLASHNEXT_SLAB_PACK_MAX_AGE_DAYS`). The
+opt-in candidates `FLASHNEXT_PREFILL_LAST_ROW`, `FLASHNEXT_NORM_WEIGHT_CACHE`
+and `FLASHNEXT_SLAB_COUNTS=cumulative` stay off. `research.md` records the
+evidence and the gates each one still needs.
+
 ## Legitimate validation on record
 
 The following are the validation records we may use while resuming work:

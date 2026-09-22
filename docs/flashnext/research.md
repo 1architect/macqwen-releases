@@ -4223,6 +4223,19 @@ at 14:12 with equivalent fresh Vontra history (identity
 unchanged, still compatible). Later benchmark arms used private
 copies and left the user profile untouched.
 
+## REAP pin-depth track closed as unavailable, 2026-09-22
+
+The REAP-288 checkpoint is not installed on this machine
+(`~/models`, `/Users/gioma/Models`, the HuggingFace hub cache,
+and other volumes hold only the Vontra checkpoint), and no
+download was authorized. The REAP 32-vs-8 comparison was not
+run. Nothing about REAP pin depth, G64 residency, or the shared
+default is inferred from Vontra results. The shared
+`resident-experts` fallback stays 32. Vontra evidence stands as
+8 beats 32 with 8 tied to 0 on the installed checkpoint only.
+A checkpoint-specific Vontra policy is handled separately below
+without changing the generic default.
+
 ## Unsupported-checkpoint diagnostic removed, 2026-09-22
 
 A stock-vs-reference parity diagnostic for an unsupported checkpoint
@@ -4265,3 +4278,73 @@ This Vontra investigation/workstream is complete and handed off at
 this commit. No additional benchmark is being started by this
 agent. Future MACQWEN work may continue from this documented
 state.
+
+## Runtime review fixes, 2026-09-22
+
+We reviewed the Flash-Next runtime code without loading a model. The review
+found no defect that changes model output. It found three defects in cache and
+policy handling, two minor defects, and three optimization candidates. The
+checkpoint-free suites pass: 399 Flash-Next tests and 413 `macqwen` tests.
+We ran no inference and no benchmark for this work.
+
+### Defects fixed
+
+`slab_pack.checkpoint_identity` hashed the resolved path string. APFS ignores
+letter case, so `~/models/...` and `~/Models/...` name one directory but gave
+two identities (`b59d036b…` and `c05c9ba7…`). With the second spelling the
+Vontra 8-pin policy did not apply, the saved pin history failed its identity
+check, and the slab pack stayed off for that run. Each spelling then rewrote
+`pins.json` for itself. The identity now hashes the path in the spelling the
+filesystem reports (`F_GETPATH`). The on-disk spelling is `models`, so the
+existing identity, `pins.json` and packs remain valid.
+
+The checkpoint policy no longer uses that cache identity. `content_identity`
+hashes the index, the config and each referenced shard's name, size and
+safetensors header. It ignores the path, inode and timestamps, so a copy, a
+re-download or a `chmod` keeps the policy. The Vontra policy key is now
+`0e8c98dd61cf8aef…`.
+
+The slab allocation comes from the last turn's eight warmup tokens, so it
+changes between sessions and each new allocation writes a new 184 MB pack.
+Nothing deleted old packs; three existed after one day of Vontra work. Opening a
+pack now sets its modification time, and packs unused for
+`FLASHNEXT_SLAB_PACK_MAX_AGE_DAYS` days (default 14, 0 disables) are deleted.
+Age, not count, decides, so packs that a benchmark has just prepared survive.
+
+The session engine fingerprint omitted `metal_runtime.py`, although the custom
+executor computes every routed MoE output on the default path. It is now
+included. Sessions saved before this change report "different engine code".
+
+`--resident-experts` defaulted to 32, so the backend could tell an explicit
+value from the default only by scanning `sys.argv` for the full flag name.
+argparse also accepts a unique prefix such as `--pinned 32`, which the scan
+missed, and the policy then replaced the typed 32 with 8. The flag now
+defaults to `None`, and any parsed value counts as explicit.
+
+`reset_profile()` set every profiling counter to `0.0`, so integer counts
+became floats. Each counter now keeps its type.
+
+### Opt-in optimizations
+
+All three stay off until a controlled run promotes them.
+
+- `FLASHNEXT_PREFILL_LAST_ROW=1` sends prompts of up to 2,048 tokens through
+  the existing large-prompt path, which projects only the final hidden row.
+  At 2,048 tokens the full path builds about 1 GB of BF16 logits
+  (2,048 × 248,320 × 2 bytes) that the decoder does not read. This is a
+  time-to-first-token and memory candidate. It is not verified on the model:
+  the gate is identical final logits against the full path, then a digest run.
+- `FLASHNEXT_NORM_WEIGHT_CACHE=1` caches each RMSNorm's float32 gain instead of
+  casting it on every call. This removes one dispatch per norm call, or two on
+  zero-centered checkpoints. A synthetic check is bit-exact for one- and
+  zero-centered gains, with and without groups, and after a weight
+  replacement. The dispatch-reduction record predicts no resolvable decode
+  gain under drive load.
+- `FLASHNEXT_SLAB_COUNTS=cumulative` selects the slab from a decayed route
+  history across turns (`FLASHNEXT_SLAB_COUNTS_DECAY`, default 0.9) instead of
+  the last turn only. It changes slab contents, not routing or arithmetic. It
+  needs a paired hit-rate and physical-read comparison before it becomes the
+  default.
+
+Regression tests are in `models/flashnext/test_runtime_fixes.py` and
+`models/flashnext/test_checkpoint_policy.py`.

@@ -15,6 +15,13 @@ PREFILL_RELEASE_BYTES = int(
     os.environ.get("FLASHNEXT_PREFILL_RELEASE_BYTES", "256000000")
 )
 PREFILL_CLEAR_CACHE = os.environ.get("FLASHNEXT_PREFILL_CLEAR_CACHE", "1") != "0"
+# Short prompts compute vocabulary logits for every position although the
+# decoder reads only the last row: 2,048 tokens x 248,320 entries is about
+# 1 GB of BF16 plus the whole LM-head matmul. With this on, short prompts take
+# the large-prompt path and project only the final hidden row. Off by default:
+# a different matrix shape can select a different kernel, so the acceptance
+# test is identical final logits against the full path, then a digest.
+PREFILL_LAST_ROW = os.environ.get("FLASHNEXT_PREFILL_LAST_ROW", "0") == "1"
 
 
 def prefill_target(
@@ -44,7 +51,7 @@ def prefill_target(
         PREFILL_FULL_LOGITS_MAX_TOKENS,
     )
     short_prompt = int(ids.shape[1]) <= full_logits_limit
-    full_logits = short_prompt or want_logits
+    full_logits = want_logits or (short_prompt and not PREFILL_LAST_ROW)
     call = {
         "cache": cache,
         "return_hidden": want_hidden or not full_logits,
@@ -79,7 +86,9 @@ def prefill_target(
         else:
             token = pick(language.speculative_logits_from_hidden(last_hidden))
         mx.eval(token, [entry.state for entry in cache])
-        if PREFILL_CLEAR_CACHE:
+        # A short prompt leaves no large temporaries. Keep the allocator's
+        # buffer cache, as the full-logit short path always has.
+        if PREFILL_CLEAR_CACHE and not short_prompt:
             mx.clear_cache()
 
     # Drop the model output wrapper while retaining only what the caller

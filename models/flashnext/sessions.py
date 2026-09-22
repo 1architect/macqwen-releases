@@ -37,6 +37,9 @@ _ENGINE_FILES = (
     "adaptive_topk.py",
     "expert_cache.py",
     "loader.py",
+    # The custom executor computes every routed MoE output on the default
+    # path, so its arithmetic is part of the saved cache state.
+    "metal_runtime.py",
     "ngram.py",
     "patch_rmsnorm.py",
     "prefill.py",
@@ -340,7 +343,11 @@ class SessionStore:
         language: Any,
     ):
         self.directory = Path(directory).expanduser()
-        self.model_dir = Path(model_dir).expanduser().resolve()
+        # On-disk spelling: APFS ignores case, and the fingerprint hashes the
+        # path, so ~/Models and ~/models must not look like two checkpoints.
+        from .slab_pack import canonical_path
+
+        self.model_dir = canonical_path(model_dir)
         self.profile = json.loads(json.dumps(profile, sort_keys=True))
         self.language = language
         self._compatibility_cache: dict[str, Any] | None = None

@@ -60,6 +60,52 @@ def swap_max_rows() -> int:
     return int(os.environ.get("FLASHNEXT_SWAP_MAX_ROWS", "4"))
 
 
+def slab_counts_mode() -> str:
+    """Which route history selects the slab pack at the next launch.
+
+    ``turn`` (default) keeps the historical behavior: the counts from the
+    last turn's warmup tokens only, so the allocation and the pack file change
+    almost every launch. ``cumulative`` folds each turn into a decayed running
+    total, so the allocation follows the workload and settles when it is
+    stable. Opt-in: it changes slab contents, not routing or arithmetic, and
+    needs a paired hit-rate comparison before it can become the default.
+    """
+    value = os.environ.get("FLASHNEXT_SLAB_COUNTS", "turn")
+    return value if value in ("turn", "cumulative") else "turn"
+
+
+def slab_counts_decay() -> float:
+    try:
+        value = float(os.environ.get("FLASHNEXT_SLAB_COUNTS_DECAY", "0.9"))
+    except ValueError:
+        return 0.9
+    return min(max(value, 0.0), 1.0)
+
+
+_CUMULATIVE_KEEP = 64
+
+
+def merge_cumulative_counts(previous, route_counts, decay) -> dict:
+    """Decay ``previous`` and add this turn's counts, top experts per layer."""
+    merged = {}
+    layers = set(previous or {}) | {str(layer) for layer in route_counts}
+    for layer in layers:
+        totals = {}
+        for expert, value in (previous or {}).get(layer, []):
+            totals[int(expert)] = float(value) * decay
+        counts = route_counts.get(int(layer), {}) if route_counts else {}
+        for expert, count in counts.items():
+            totals[int(expert)] = totals.get(int(expert), 0.0) + float(count)
+        ranked = sorted(totals.items(), key=lambda item: (-item[1], item[0]))
+        ranked = [
+            (expert, round(value, 4)) for expert, value in ranked[:_CUMULATIVE_KEEP]
+            if value > 0
+        ]
+        if ranked:
+            merged[layer] = ranked
+    return merged
+
+
 def prewarm_enabled() -> bool:
     """Read at call time. A module-level constant cannot be flipped by a
     benchmark, because Python caches the module after the first import."""
@@ -577,7 +623,13 @@ class RoutingProfile:
         so write only when the signature moves, and never spend a disk write
         on the hot path for a file that already says the same thing.
         """
-        if not self.pinned or self.pinned_signature == self._saved_signature:
+        cumulative = slab_counts_mode() == "cumulative"
+        if cumulative:
+            # Every turn adds to the running history, even when the pinned
+            # set itself did not move.
+            if not any(getattr(self, "route_counts", {}).values()):
+                return
+        elif not self.pinned or self.pinned_signature == self._saved_signature:
             return
         cache_file = pin_cache_path()
         try:
@@ -617,6 +669,23 @@ class RoutingProfile:
                 return
             payload["checkpoint_identity"] = self._checkpoint_identity
             payload["quantization"] = quantization
+            if cumulative:
+                previous = None
+                try:
+                    with open(cache_file, "r") as handle:
+                        saved = json.load(handle)
+                    if (
+                        isinstance(saved, dict)
+                        and saved.get("checkpoint_identity")
+                        == self._checkpoint_identity
+                        and isinstance(saved.get("cumulative_counts"), dict)
+                    ):
+                        previous = saved["cumulative_counts"]
+                except (OSError, ValueError):
+                    previous = None
+                payload["cumulative_counts"] = merge_cumulative_counts(
+                    previous, self.route_counts, slab_counts_decay()
+                )
             # Keep the flat key for readers of the existing profile format.
             if "group_size" in quantization:
                 payload["group_size"] = int(quantization["group_size"])

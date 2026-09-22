@@ -437,16 +437,12 @@ def build_backend(name: str, args, prefs: dict):
         values = get_flashnext_registry().cli_values(args, "flashnext")
         values["model_path"] = args.model_path
         values["session_dir"] = args.session_dir or "~/.cache/flashnext/sessions"
-        # The argparse default always fills values, so explicitness must
-        # come from the actual command line: only a typed flag beats the
-        # checkpoint policy. The checkpoint itself resolves exactly the
-        # way the backend will resolve it (alias, env, auto-select).
-        cli_flags = set(sys.argv[1:])
-        explicit_resident = any(
-            arg == flag or arg.startswith(flag + "=")
-            for arg in cli_flags
-            for flag in ("--resident-experts", "--pinned-experts")
-        )
+        # `--resident-experts` defaults to None, so a value here was typed,
+        # including an abbreviation argparse expanded (`--pinned 32`). Only
+        # that beats the checkpoint policy. The checkpoint itself resolves
+        # exactly the way the backend will resolve it (alias, env,
+        # auto-select).
+        explicit_resident = getattr(args, "resident_experts", None) is not None
         policy_source = None
         if not explicit_resident:
             from macqwen.checkpoints import resolve_flashnext
@@ -474,7 +470,9 @@ def build_backend(name: str, args, prefs: dict):
             if setting.cli_dest
             and any(flag in cli_args for flag in setting.cli_flags)
         }
-        if policy_source is not None and "resident-experts" not in backend._setting_sources:
+        if explicit_resident:
+            backend._setting_sources["resident-experts"] = "CLI"
+        elif policy_source is not None:
             backend._setting_sources["resident-experts"] = policy_source
         mirror_preferences(backend, prefs, prefs["profile"])
         return backend
@@ -587,7 +585,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--resident-experts", "--pinned-experts", dest="resident_experts", type=int,
-        default=FLASHNEXT_DEFAULTS["resident_experts"],
+        # None means "not given", so a checkpoint policy can apply. The
+        # backend falls back to FLASHNEXT_DEFAULTS when nothing supplies one.
+        default=None,
     )
     parser.add_argument(
         "--pin-budget-gb", type=float,
@@ -727,7 +727,7 @@ def main() -> int:
     prefs = preferences.load(args.preferences_file)
     if (
         args.tail_experts < 1
-        or args.resident_experts < 1
+        or (args.resident_experts is not None and args.resident_experts < 1)
         or args.tail_warmup < 1
     ):
         parser.error("Flash-Next expert counts and warmup must be positive")
