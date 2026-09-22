@@ -175,6 +175,70 @@ class CheckpointFamilyTests(unittest.TestCase):
         self.assertEqual(caps.mtp_shards, ["model-00022-of-00022.safetensors"])
         self.assertEqual(validate_mtp_structure(caps.mtp_keys), [])
 
+    def test_vontra_norm_convention_is_one_centered(self):
+        """Lock VONTRA_NORM=one-centered from stored tensor values.
+
+        Reads kilobytes via ranged I/O only. No model construction.
+        The Vontra artifact stores direct gains (median near 1.0), unlike
+        the official zero-centered offsets, so the loader must keep the
+        legacy one-centered fallback for it.
+        """
+        for candidate in (
+            os.path.expanduser("~/models/Qwen3.8-Flash-Next-MLX-4bit-MTP"),
+            "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        ):
+            if os.path.isdir(candidate):
+                path = candidate
+                break
+        else:
+            self.skipTest("Vontra checkpoint not present")
+        self.assertEqual(describe_checkpoint(path).norm_convention, "")
+        probes = {
+            "language_model.model.hyper_connection_mixer.hc_norm.weight": (2.0, 6.0),
+            "language_model.model.layers.0.linear_attn.norm.weight": (0.8, 1.2),
+        }
+        for key, (low, high) in probes.items():
+            values = _read_bf16_vector(path, key)
+            ordered = sorted(values)
+            median = ordered[len(ordered) // 2]
+            neg = sum(1 for value in values if value < 0) / len(values)
+            # One-centered gains sit near 1.0 or above; zero-centered
+            # offsets would sit near 0.0 with a wide negative fraction.
+            self.assertGreater(median, low, key)
+            self.assertLess(median, high, key)
+            self.assertLess(neg, 0.10, key)
+        # The small MTP embedding norm is a positive gain too: no negative
+        # values at all, which a zero-centered offset vector would not show.
+        small = _read_bf16_vector(
+            path, "language_model.mtp.pre_fc_norm_embedding.weight"
+        )
+        self.assertTrue(all(value > 0.05 for value in small))
+        self.assertLess(max(small), 1.0)
+
+
+def _read_bf16_vector(model_dir: str, key: str) -> list[float]:
+    """Read one BF16 vector with stdlib only. No MLX, no numpy."""
+    import struct
+
+    path = Path(os.path.expanduser(model_dir))
+    weight_map = json.loads(
+        (path / "model.safetensors.index.json").read_text()
+    )["weight_map"]
+    shard = weight_map[key]
+    with open(path / shard, "rb") as handle:
+        header_len = struct.unpack("<Q", handle.read(8))[0]
+        header = json.loads(handle.read(header_len))
+        meta = header[key]
+        count = 1
+        for dim in meta["shape"]:
+            count *= dim
+        handle.seek(8 + header_len + meta["data_offsets"][0])
+        raw = handle.read(count * 2)
+    out = []
+    for (bits,) in struct.iter_unpack("<H", raw):
+        out.append(struct.unpack(">f", struct.pack(">I", bits << 16))[0])
+    return out
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -159,6 +159,11 @@ class FlashNextBackend(Conversation):
         self._mtp_active = bool(
             native_mtp == "on" and hasattr(model.language_model, "mtp")
         )
+        # A restored target-only session populates target history with no
+        # MTP history, and any target-only turn leaves a live MTP decoder
+        # stale. Both cases block native MTP until reset starts both
+        # histories together.
+        self._mtp_blocked = False
         self._setting_sources = {}
         self.session_dir = session_dir
         self.thinking_enabled = False
@@ -297,9 +302,12 @@ class FlashNextBackend(Conversation):
         self.tape = list(loaded.token_ids)
         self.pending = []
         self.turn_closed = loaded.turn_closed
-        # A loaded snapshot contains only the target cache. Drop any draft
-        # decoder from the previous live turn before the next generation.
+        # A loaded snapshot contains only the target cache. The MTP block
+        # has no history, so native MTP stays off for this conversation
+        # until reset starts both histories together.
         self._decoder = None
+        if self._mtp_active:
+            self._mtp_blocked = True
         self._fused_pending = self.routing_profile == "fused-quality" and not self.tape
         self.thinking_enabled = loaded.thinking
         self.language._position_ids = loaded.position_ids
@@ -312,7 +320,7 @@ class FlashNextBackend(Conversation):
         return (f"loaded {name}  {len(self.tape)} tokens, "
                 f"thinking={'on' if loaded.thinking else 'off'}{mode_note}, "
                 "no old prefill"
-                + (", MTP resumes next greedy turn" if self._mtp_active else ""))
+                + (", MTP disabled until reset" if self._mtp_active else ""))
 
     def list_sessions(self) -> str:
         from models.flashnext.sessions import SessionError
@@ -345,6 +353,9 @@ class FlashNextBackend(Conversation):
         if self._decoder is not None:
             self.cache = self._decoder.target_cache
         self._decoder = None
+        # A reset conversation starts target and MTP histories together,
+        # so a previously blocked MTP decoder may start again.
+        self._mtp_blocked = False
         self._fused_pending = self.routing_profile == "fused-quality"
         self.cache = self.language.make_cache()
         self.tape = []
@@ -365,8 +376,13 @@ class FlashNextBackend(Conversation):
         self.language._position_ids = None
         self.language._rope_deltas = None
 
-    def _native_mtp_eligible(self) -> bool:
-        """Whether this turn may use the native MTP decoder."""
+    def _is_native_mtp_decoder(self, decoder) -> bool:
+        from models.flashnext.speculative import MTPGreedy
+
+        return isinstance(decoder, MTPGreedy)
+
+    def _turn_allows_mtp(self) -> bool:
+        """Whether this turn's settings can advance MTP history."""
         if not self._mtp_active:
             return False
         if self.routing_profile == "fused-quality":
@@ -374,8 +390,11 @@ class FlashNextBackend(Conversation):
         if not hasattr(self.language, "mtp"):
             return False
         sampling = getattr(self, "sampling", None)
-        greedy = getattr(sampling, "greedy", True)
-        return bool(greedy)
+        return bool(getattr(sampling, "greedy", True))
+
+    def _native_mtp_eligible(self) -> bool:
+        """Whether this turn may use the native MTP decoder."""
+        return self._turn_allows_mtp() and not self._mtp_blocked
 
     def _start_native_mtp_decoder(self):
         """Attach MTPGreedy for exact greedy turns. Fall back otherwise."""
@@ -481,6 +500,21 @@ class FlashNextBackend(Conversation):
             and budget_think > 0
         )
         decoder = self._decoder
+        if (
+            decoder is not None
+            and self._is_native_mtp_decoder(decoder)
+            and (
+                separate_budgets or self._mtp_blocked
+                or not self._turn_allows_mtp()
+            )
+        ):
+            # The target history is about to advance without MTP history,
+            # so the draft state is stale. Adopt the target cache, drop the
+            # decoder, and stay on target decoding until reset.
+            self.cache = decoder.target_cache
+            self._decoder = None
+            decoder = None
+            self._mtp_blocked = True
         if separate_budgets and decoder is not None:
             # The fused draft path has no phase callback. Use the standard
             # target decoder for interactive turns with separate quotas.

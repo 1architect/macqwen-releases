@@ -55,6 +55,9 @@ class FlashNextBackendTests(unittest.TestCase):
         backend.thinking_enabled = False
         backend._interactive_budgets = None
         backend.sampling = Sampling.greedy_settings()
+        backend._mtp_active = False
+        backend._mtp_blocked = False
+        backend.mtp_depth = 3
         return backend
 
     def test_manual_cancellation_keeps_cache_and_prefills_only_new_turn(self):
