@@ -672,6 +672,13 @@ class MTPGreedy:
         self.draft_hidden = None
         self.hist_offset = 0
         self.stats = MTPStats()
+        # Backend contract: generate() installs and clears a routing
+        # observer around decoding. Stored only; MTP verification runs
+        # under the ambient exact routing profile.
+        self.route_observer = None
+
+    def set_route_observer(self, observer) -> None:
+        self.route_observer = observer
 
     def reset(self) -> None:
         self.target_cache = self.language.make_cache()
@@ -682,6 +689,7 @@ class MTPGreedy:
         self.draft_hidden = None
         self.hist_offset = 0
         self.stats = MTPStats()
+        self.route_observer = None
 
     def _target_capture(self, ids):
         logits, hidden_states, _token = prefill_target(

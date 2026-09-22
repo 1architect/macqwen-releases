@@ -438,6 +438,19 @@ class MTPHistoryInvariantTests(MTPDecoderLifecycleTests):
         self.assertIs(backend.cache, live_cache)
         self.assertTrue(backend._mtp_blocked)
 
+    def test_mtp_greedy_satisfies_backend_observer_contract(self):
+        from models.flashnext.speculative import MTPGreedy
+
+        language = SimpleNamespace(make_cache=lambda: [],
+                                   mtp=SimpleNamespace(layers=[object()]))
+        decoder = MTPGreedy(language, depth=3)
+        self.assertIsNone(decoder.route_observer)
+        probe = object()
+        decoder.set_route_observer(probe)
+        self.assertIs(decoder.route_observer, probe)
+        decoder.set_route_observer(None)
+        self.assertIsNone(decoder.route_observer)
+
 
 class MTPStartupWiringTests(unittest.TestCase):
     def test_resolution_defaults_off(self):
