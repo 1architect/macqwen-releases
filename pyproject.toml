@@ -20,11 +20,11 @@ classifiers = [
 dependencies = [
   "mlx==0.32.2",
   "mlx-lm==0.31.3",
-  "mlx-vlm==0.6.17",
-  "transformers==5.16.1",
-  "numpy==2.5.2",
+  "mlx-vlm==0.7.1",
+  "transformers==5.17.0",
+  "numpy==2.5.3",
   "requests==2.34.2",
-  "huggingface-hub==1.29.0",
+  "huggingface-hub==1.32.0",
 ]
 
 [project.scripts]
