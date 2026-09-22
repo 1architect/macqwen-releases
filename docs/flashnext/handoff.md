@@ -1,5 +1,105 @@
 # Flash-Next operational handoff
 
+## Resume for the next agent, 2026-09-22
+
+Start here. The sections after this one are older and describe the REAP-288
+period; keep them as history and trust this section where they disagree.
+
+### Where things stand
+
+- Branch `flashnext-research-vontra`, pushed to `origin`
+  (`github.com/1architect/macqwen-releases`, public). Last commit `f5ecbbb`.
+- Installed checkpoint: `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP` at
+  `~/models/Qwen3.8-Flash-Next-MLX-4bit-MTP` (alias `vontra-mtp`): 48 layers,
+  512 routed experts, top-10, Q4/G32, indexed MTP (off). oQ4 and REAP-288 are
+  not installed; their numbers cannot be reproduced here.
+- Machine: fanless MacBook Air (Mac16,12), M4, 16 GB, 256 GB SSD.
+- Goal set by the user: pass 3 tok/s decode without quantizing or pruning.
+  "Smaller checkpoint" is closed on quality.
+
+### Current numbers on Vontra
+
+| Protocol | Result |
+|---|---|
+| Chat, 8 pins (policy), 72 tokens | about 2.14 tok/s, about 350 MB/token |
+| Historical 60-slot protocol, 32 pins, 32 tokens, 4 arms | 2.28 tok/s median, 402 MB/token |
+| `bench_production`, 96 tokens, keep-warm off / on | 2.19 / 2.55 tok/s |
+
+3 tok/s is 333 ms/token. The best measured state (keep-warm, 96 tokens) is
+about 392 ms/token.
+
+### Main finding of this session: the GPU hump is clock collapse
+
+IOReport shows the GPU at P15 with no drive reads and at P1-P2 from two cold
+experts per layer upward. The GPU idles while each layer waits for its reads,
+and the performance controller lowers the clock; every kernel then runs about
+twice as long. Production sits at 2.5-3 cold experts per layer.
+
+`FLASHNEXT_GPU_KEEPWARM=1` (off by default) submits one short ALU-only spin
+kernel per 0.5 ms on a separate GPU stream while a layer waits for reads
+(`expert_cache._keep_gpu_warm_until_done`). Spin length
+`FLASHNEXT_GPU_KEEPWARM_ITERS=60000` holds P15; 40k is too short, 150k and more
+outlives the waits and competes with real work. Digests stay identical.
+Measured: about -22% token time at miss 0.25 (synthetic); +12.5% mean paired
+at 32 tokens (6 of 6 pairs, p = 0.031) and +13.6% at 96 tokens (3 of 4) on the
+production harness, both inside bands near 15%. Full record: the last
+`research.md` section.
+
+### Next steps, in order
+
+1. Thermal check on the fanless machine: one 256-512 token answer with
+   keep-warm off and one on, recording GPU state residency
+   (`tests/bench/gpu_pstates.py`) and `pmset -g therm`. The 96-token keep-warm
+   arms slowed over the run (r = -0.80). Do not promote keep-warm before this.
+2. Paired A/B of keep-warm in the real chat configuration: 8 pins (the Vontra
+   policy), not the harness default of 32. `bench_production` builds
+   `FlashNextBackend()` directly and therefore uses 32 pins.
+3. With the clock fixed, re-measure the byte cost per token and decide the
+   next lever: the per-operation cold-expert split (the 1-of-8 dip), zero-copy
+   streaming from the page cache (map + mlock + no-copy Metal buffers), or an
+   offline cache-policy simulation on recorded routes. See the options
+   discussion in `research.md`.
+4. Opt-in candidates that still need their gates:
+   `FLASHNEXT_PREFILL_LAST_ROW=1` (exact final-logit check),
+   `FLASHNEXT_NORM_WEIGHT_CACHE=1` (digest run),
+   `FLASHNEXT_SLAB_COUNTS=cumulative` (paired hit-rate run).
+
+### Rules the user set this session
+
+- Commits and pushes are allowed; the author is always the user
+  (`1architect`). Add no Claude co-author trailer and no "Generated with"
+  line. Check `git remote -v` first: `origin` is public.
+- Run no benchmark without the user's approval of the plan. Keep runs short
+  and report the resolution band. Open a live status window during model
+  runs; the repo `status.sh` is gone, so recreate it in a scratchpad.
+- Documentation is plain engineering prose. Record evidence in
+  `research.md`; update this section only with operational decisions.
+
+### Test layout and results (enforced)
+
+- Tests live in `models/<model>/tests/`: `unit/` (checkpoint-free, CI),
+  `bench/` (harness scripts, run as `python -m models.flashnext.tests.bench.X`)
+  and `cases/` (terminal cards). Shared unit tests: `macqwen/tests/`.
+  Guide: `docs/testing.md`.
+- Every run writes to `results/<model>/<YYYYMMDD-HHMMSS>-<name>/` through
+  `macqwen.results.output_path` (set `MACQWEN_RESULTS_DIR` or let the script
+  create a `-manual` folder). `macqwen/tests/test_results_policy.py` rejects
+  other destinations.
+- Unit suites: `python -m unittest discover -s models/flashnext/tests/unit -t .
+  -p 'test_*.py'` (404 tests) and `-s macqwen/tests` (423 tests). Use
+  `~/models/.venv-qwen4exp/bin/python`.
+
+### Known open issues
+
+- `bench_slab_production --capacity-sweep` redirects arms to
+  `~/.cache/flashnext/capacity-sweep-observed.json`, which nothing creates;
+  use `--calibrate-pins` or `--pin-profile` for trusted slab runs.
+- The live `~/.cache/flashnext/pins.json` changes every turn, so the default
+  slab allocation and its pack drift between launches (packs unused for 14
+  days are deleted).
+- The generic `resident-experts` default stays 32; only the Vontra identity
+  gets 8 through `models/flashnext/checkpoint_policy.py`.
+
 Read this file, [`research.md`](research.md), and
 [`AGENT_INVARIANTS.md`](AGENT_INVARIANTS.md) before changing code or starting
 an experiment. [`CONTRIBUTING.md`](../../CONTRIBUTING.md) defines the project
