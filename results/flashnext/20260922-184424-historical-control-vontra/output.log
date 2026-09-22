@@ -1,0 +1,33 @@
+Calibrating routing profile from benchmark PROMPT...
+  -> Calibrated with 16 tokens: /Users/gioma/.cache/flashnext/capacity-sweep-pins.json (74b445c70c18bb6b)
+Frozen pin profile: /Users/gioma/.cache/flashnext/capacity-sweep-pins.json (74b445c70c18bb6b)
+  prepared slabpack60_skew_8a_up: alloc cac6c167163847f0
+=== Controlled Production Benchmark: slabpack60_skew_8a_up ===
+Tokens per arm: 32
+Rounds: 4 (Total arms: 4)
+System load average: (2.5712890625, 1.9677734375, 2.16455078125)
+
+Arm  1/4: Running slabpack60_skew_8a_up    (SLAB=0, LAYERS=0, GLOBAL=60, PACK=1, POLICY=skew, FUSE_SHARED_PARTS=0, FUSED_UP_SWIGLU=1)...
+mx.metal.get_active_memory is deprecated and will be removed in a future version. Use mx.get_active_memory instead.
+  !! measured arm exceeded the advisory VM movement limit of 256 pages ({'swapin': 2497})
+  -> Gen: 2.20 t/s | Tail: 2.25 t/s | Phys: 402.0 MB/tok | Active: 3508.6 MB | Hits: 42.5% | IO wait: 0.00 ms/tok | Slots: 60 | Pack: 184324096 B (175.79 MiB) | mlock: ok | Alloc: cac6c167163847f0 | VM: {'compress': 413991, 'decompress': 407738, 'pagein': 461329, 'pageout': 89, 'reactivated': 204622, 'swapin': 2497, 'swapout': 0} | Digest: ceff6fd656310be6
+     Frontier 5: pread=0.00, submit-start=0.00, task-overhead=0.00, completion=0.00 ms/tok | layer-completion=0.00 ms/layer | pread-sum=0.00 ms/tok | calls=0.00/tok | requested=0.0 MB/tok
+Arm  2/4: Running slabpack60_skew_8a_up    (SLAB=0, LAYERS=0, GLOBAL=60, PACK=1, POLICY=skew, FUSE_SHARED_PARTS=0, FUSED_UP_SWIGLU=1)...
+  !! measured arm exceeded the advisory VM movement limit of 256 pages ({'swapin': 702})
+  -> Gen: 2.36 t/s | Tail: 2.47 t/s | Phys: 402.1 MB/tok | Active: 3508.6 MB | Hits: 42.5% | IO wait: 0.00 ms/tok | Slots: 60 | Pack: 184324096 B (175.79 MiB) | mlock: ok | Alloc: cac6c167163847f0 | VM: {'compress': 269903, 'decompress': 264849, 'pagein': 437245, 'pageout': 49, 'reactivated': 112264, 'swapin': 702, 'swapout': 0} | Digest: ceff6fd656310be6
+     Frontier 5: pread=0.00, submit-start=0.00, task-overhead=0.00, completion=0.00 ms/tok | layer-completion=0.00 ms/layer | pread-sum=0.00 ms/tok | calls=0.00/tok | requested=0.0 MB/tok
+Arm  3/4: Running slabpack60_skew_8a_up    (SLAB=0, LAYERS=0, GLOBAL=60, PACK=1, POLICY=skew, FUSE_SHARED_PARTS=0, FUSED_UP_SWIGLU=1)...
+  !! measured arm exceeded the advisory VM movement limit of 256 pages ({'swapin': 4638, 'pageout': 427})
+  -> Gen: 2.02 t/s | Tail: 2.08 t/s | Phys: 409.8 MB/tok | Active: 3508.6 MB | Hits: 42.5% | IO wait: 0.00 ms/tok | Slots: 60 | Pack: 184324096 B (175.79 MiB) | mlock: ok | Alloc: cac6c167163847f0 | VM: {'compress': 791515, 'decompress': 747918, 'pagein': 520360, 'pageout': 427, 'reactivated': 387308, 'swapin': 4638, 'swapout': 0} | Digest: ceff6fd656310be6
+     Frontier 5: pread=0.00, submit-start=0.00, task-overhead=0.00, completion=0.00 ms/tok | layer-completion=0.00 ms/layer | pread-sum=0.00 ms/tok | calls=0.00/tok | requested=0.0 MB/tok
+Arm  4/4: Running slabpack60_skew_8a_up    (SLAB=0, LAYERS=0, GLOBAL=60, PACK=1, POLICY=skew, FUSE_SHARED_PARTS=0, FUSED_UP_SWIGLU=1)...
+  !! measured arm exceeded the advisory VM movement limit of 256 pages ({'swapin': 277, 'pageout': 355})
+  -> Gen: 2.77 t/s | Tail: 2.89 t/s | Phys: 341.3 MB/tok | Active: 3508.6 MB | Hits: 42.5% | IO wait: 0.00 ms/tok | Slots: 60 | Pack: 184324096 B (175.79 MiB) | mlock: ok | Alloc: cac6c167163847f0 | VM: {'compress': 133411, 'decompress': 160358, 'pagein': 377895, 'pageout': 355, 'reactivated': 32746, 'swapin': 277, 'swapout': 0} | Digest: ceff6fd656310be6
+     Frontier 5: pread=0.00, submit-start=0.00, task-overhead=0.00, completion=0.00 ms/tok | layer-completion=0.00 ms/layer | pread-sum=0.00 ms/tok | calls=0.00/tok | requested=0.0 MB/tok
+
+=== Production Comparison Summary ===
+Condition            | Gen med  | Range          | Tail med  | Phys MB/tok  | Active MB  | IO ms/tok  | Hit %   | Slots | Pack MiB  | mlock | Digest          
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+slabpack60_skew_8a_up |     2.28 | 2.02..2.77     |      2.36 |        402.1 |     3508.6 |       0.00 |   42.5% |    60 |    175.79 | ok    | ceff6fd656310be6
+                       Frontier 5 median ms/tok: critical_pread=0.00, submit_start=0.00, critical_task_overhead=0.00, completion_overhead=0.00, layer_completion=0.00
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260922-184424-historical-control-vontra/slab-production.json

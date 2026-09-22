@@ -50,6 +50,9 @@ CAPACITY_ARMS = (
 )
 CAPACITY_MANIFEST = Path("~/.cache/flashnext/capacity-sweep-manifest.json").expanduser()
 CAPACITY_PINS = Path("~/.cache/flashnext/capacity-sweep-pins.json").expanduser()
+# Each arm gets a fresh copy of a frozen pin profile here, so no arm can move
+# the slab allocation of the next one through its own pin writes.
+FROZEN_ARM_PINS = Path("~/.cache/flashnext/capacity-sweep-arm-pins.json").expanduser()
 CAPACITY_OBSERVED_PINS = Path(
     "~/.cache/flashnext/capacity-sweep-observed.json"
 ).expanduser()
@@ -223,6 +226,16 @@ def require_prepared_capacity_packs() -> None:
                 f"expected {info['allocation_digest']}"
             )
     os.environ["FLASHNEXT_PIN_CACHE"] = str(CAPACITY_OBSERVED_PINS)
+
+
+def install_frozen_pins(profile: Path) -> None:
+    """Point this arm at a private copy of ``profile``."""
+    FROZEN_ARM_PINS.parent.mkdir(parents=True, exist_ok=True)
+    FROZEN_ARM_PINS.write_bytes(profile.read_bytes())
+    os.environ["FLASHNEXT_PIN_CACHE"] = str(FROZEN_ARM_PINS)
+    from models.flashnext.expert_cache import _GLOBAL_SLAB_CACHE
+
+    _GLOBAL_SLAB_CACHE.clear()
 
 
 def configure_arm(
@@ -721,6 +734,15 @@ def main():
         default=None,
         help="Comma-separated configurations to compare",
     )
+    parser.add_argument(
+        "--calibrate-pins", action="store_true",
+        help="Build the pin profile from the benchmark prompt before the run "
+             "and freeze it for every arm",
+    )
+    parser.add_argument(
+        "--pin-profile", type=Path, default=None,
+        help="Freeze this pin profile: every arm starts from a private copy",
+    )
     args = parser.parse_args()
     args.json = output_path(
         "flashnext", "bench_slab_production", "slab-production.json", args.json
@@ -805,6 +827,24 @@ def main():
         )
         return
 
+    if args.capacity_sweep and (args.calibrate_pins or args.pin_profile):
+        parser.error("--capacity-sweep has its own calibrated profile")
+    frozen_pins = args.pin_profile
+    if args.calibrate_pins:
+        calibrate_routing_profile()
+        frozen_pins = CAPACITY_PINS
+    if frozen_pins is not None:
+        frozen_pins = frozen_pins.expanduser().resolve()
+        digest = hashlib.sha256(frozen_pins.read_bytes()).hexdigest()[:16]
+        print(f"Frozen pin profile: {frozen_pins} ({digest})", flush=True)
+        # Build every pack before the timed schedule, from the same profile
+        # the arms will read.
+        for name in arm_names:
+            if cond_defs[name][3]:
+                install_frozen_pins(frozen_pins)
+                info = prepare_pack(name, cond_defs[name])
+                print(f"  prepared {name}: alloc {info['allocation_digest']}", flush=True)
+
     if args.capacity_sweep:
         require_prepared_capacity_packs()
     if args.purge_file_cache:
@@ -849,6 +889,8 @@ def main():
         }
         if fuse_up_swiglu:
             fuse_str += ", FUSED_UP_SWIGLU=1"
+        if frozen_pins is not None:
+            install_frozen_pins(frozen_pins)
         print(f"Arm {idx:2d}/{len(schedule)}: Running {name:<24} (SLAB={slab}, LAYERS={layers}, GLOBAL={global_b}{pack_str}{fuse_str})...", flush=True)
         res = run_arm(
             slab, layers, args.tokens, global_b, slab_pack=s_pack,

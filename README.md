@@ -13,7 +13,7 @@ records. It does not contain model weights.
 
 | Runtime | Role | Checkpoint | Launch |
 |---|---|---|---|
-| Flash-Next | Primary SSD-streamed runtime | oQ4 quality baseline; REAP-288 research checkpoint | `./chat.sh --model flashnext --checkpoint oq4` |
+| Flash-Next | Primary SSD-streamed runtime | Vontra 4-bit MTP (installed); oQ4 and REAP-288 are historical | `./chat.sh --model flashnext --checkpoint vontra-mtp` |
 | K2-Horizon 7B | Resident MLX alternative | Official 8-bit MLX checkpoint | `./chat.sh --model k2-horizon --checkpoint k2` |
 | Bonsai-2 27B | Experimental ternary, text-only runtime | Official 2-bit MLX checkpoint | `./chat.sh --model bonsai2 --checkpoint b2` |
 | Qwen3.8-27B | Research runtime | Compatible local V4 build | `./chat.sh BUILD --profile plain` |
@@ -22,13 +22,18 @@ records. It does not contain model weights.
 
 | Runtime | Operation | Result |
 |---|---|---:|
-| Flash-Next | REAP terminal sanity, 32 tokens | 3.74 tok/s median, 3.45 tok/s tail, 193.3 MB/token |
-| Flash-Next | Historical Q4/G32 60-slot control | 3.08 tok/s generation, 3.00 tok/s tail, 279.7 MB/token |
+| Flash-Next | Vontra 4-bit, 60-slot pack, 32 pins, 32 tokens, 4 arms | 2.28 tok/s median (2.02–2.77), 2.36 tok/s tail, 402 MB/token |
+| Flash-Next | Vontra 4-bit, 8 pins, 72 tokens | 2.14 tok/s, 2.10 tok/s tail, about 350 MB/token after pinning |
+| Flash-Next | Historical oQ4 (removed), 60-slot pack, 32 tokens, warm cache | 3.08 tok/s, 3.00 tok/s tail, 279.7 MB/token |
+| Flash-Next | Historical REAP-288 (removed), terminal sanity, 32 tokens | 3.74 tok/s median, 3.45 tok/s tail, 193.3 MB/token |
 | Flash-Next | Long-prompt prefill near 5,000 tokens | About 40–50 tok/s; 62.19 tok/s in a synthetic diagnostic |
 
-These reference observations come from the M4 test system and cover
-Flash-Next only. The REAP row is a short terminal sanity check, the Q4/G32
-row is historical control data, and the 62.19 tok/s figure is not production
+These observations come from the M4 test system and cover Flash-Next only.
+The first two rows describe the installed checkpoint. The oQ4 and REAP rows
+were measured on checkpoints that are no longer installed and cannot be
+reproduced here; they are not a baseline for the current runtime. Short
+32-token arms run inside a warm-up window of about 40 tokens, so they read
+higher than longer answers. The 62.19 tok/s figure is not production
 throughput. See the [Flash-Next measurement evidence](results/flashnext/)
 for conditions and provenance.
 

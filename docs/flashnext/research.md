@@ -4380,3 +4380,43 @@ test ID (1,253 Flash-Next IDs). No model ran. The shared terminal had
 also stopped applying a case's `environment()` hook after the earlier terminal
 migration, so `chunk-after-workers` ran without its selected worker count. The
 runner applies the hook again.
+
+## Historical protocol on the installed checkpoint, 2026-09-22
+
+The README listed the oQ4 60-slot control (3.08 tok/s, 279.7 MB/token) as a
+Flash-Next reference, while current Vontra runs measure about 2.1 tok/s. The
+two differ in checkpoint, horizon, harness, pin count and cache state, so we
+reran the historical protocol on `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP`.
+
+The run used `bench_slab_production` with arm `slabpack60_skew_8a_up`, 32
+greedy tokens on the photosynthesis prompt, 32 exact-quality pins, and a pin
+profile calibrated from the benchmark prompt and frozen for every arm (the new
+`--calibrate-pins` option; each arm starts from a private copy, so no arm moves
+the next arm's allocation). Four arms ran in one process. Evidence:
+`results/flashnext/20260922-184424-historical-control-vontra/`.
+
+| Arm | Gen tok/s | Tail tok/s | Physical MB/token | Compressor pages | Swap-ins |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 2.20 | 2.25 | 402.0 | 413,991 | 2,497 |
+| 2 | 2.36 | 2.47 | 402.1 | 269,903 | 702 |
+| 3 | 2.02 | 2.08 | 409.8 | 791,515 | 4,638 |
+| 4 | 2.77 | 2.89 | 341.3 | 133,411 | 277 |
+
+The median is 2.28 tok/s generation and 2.36 tok/s tail at 402 MB/token. Every
+arm kept digest `ceff6fd656310be6`, allocation `cac6c167163847f0`, a 42.5% slab
+hit rate and a locked 175.8 MiB pack. The system had 1.16 GB of swap in use
+before the run.
+
+Under the historical protocol the installed checkpoint does not reach the oQ4
+figure. It reads about 1.4 times the physical bytes per token (402 against
+280 MB). The arm rate falls as compressor traffic rises, in the same rank order
+in all four arms: 2.02 tok/s at 792,000 pages, 2.77 tok/s at 133,000 pages.
+These counters are system-wide and do not identify the cause, but memory
+pressure is the leading explanation for the spread. The 32 pins lock
+about 4.5 GB beside the 3.5 GB of active MLX memory; the pin-depth record
+already measured 32 pins as harmful on this checkpoint. We cannot separate the
+checkpoint's routing from a runtime change since 2026-09-04, because the oQ4
+checkpoint is no longer installed.
+
+The README now lists the installed-checkpoint results first and labels the oQ4
+and REAP rows as historical checkpoints that cannot be reproduced here.
