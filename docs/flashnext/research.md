@@ -5284,3 +5284,29 @@ observed 1.9 GB/s, or about 180 MB/token at the 3.0 GB/s this pattern reaches
 in isolation, against about 400 MB/token today. The best realizable cache
 policy saves 2.8% and Belady's optimum 41% at 4 GB. No measured software lever
 reaches that byte count on 16 GB.
+
+## Read workers at P15, 2026-09-23
+
+Target now 4 tok/s (250 ms/token). Phase 0 showed the read wait gated by
+queue residence for the eight read workers. The bundle's 8 workers were chosen
+before keep-warm, so we compared 8 and 16 at P15: chat defaults, fresh process
+per arm, 128 greedy tokens, order 8/16/16/8/8/16. Evidence:
+`results/flashnext/20260923-115307-workers-p15/`.
+
+| Pair | 8 workers | 16 workers | Change |
+|---:|---:|---:|---:|
+| 1 | 2.750 | 2.717 | -1.2% |
+| 2 | 2.699 | 2.755 | +2.1% |
+| 3 | 3.025 | 2.806 | -7.2% |
+
+All arms kept digest `e19af44d5268e9d1` and mean GPU state 14.5 to 15.0.
+The mean, -2.1%, is inside the noise; physical reads matched within pairs.
+More workers do not raise the drive rate, so the drive serves this pattern of
+about 90 positioned reads per layer (two thirds of them 100 KB scale and bias
+rows) at about 1.9 GB/s whatever the queue depth between 8 and 16. Eight stays.
+
+A sidecar that stores each expert's six scale and bias rows contiguously would
+turn six small reads into one (isolated reader: +11% for merged scales and
+biases, +18% for one record per expert, 2026-08-31). For this checkpoint it is
+15.1 GB (48 x 512 x 614,400 bytes); the data volume has 15 GB free, so it was
+not built.

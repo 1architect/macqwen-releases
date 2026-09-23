@@ -1,0 +1,37 @@
+=== arm 1: w8
+== defaults: free 83 MB
+  defaults     tok   64  2.82 tok/s   397.0 MB/tok  gpu state 14.98  pcpu state 18.83
+  defaults     tok  128  2.73 tok/s   417.4 MB/tok  gpu state 14.96  pcpu state 18.90
+  defaults: gen 2.75 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-115307-workers-p15/arm-1-w8.json
+=== arm 2: w16
+== defaults: free 88 MB
+  defaults     tok   64  2.79 tok/s   383.6 MB/tok  gpu state 14.96  pcpu state 18.83
+  defaults     tok  128  2.69 tok/s   417.2 MB/tok  gpu state 14.98  pcpu state 18.79
+  defaults: gen 2.717 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-115307-workers-p15/arm-2-w16.json
+=== arm 3: w16
+== defaults: free 76 MB
+  defaults     tok   64  2.83 tok/s   364.1 MB/tok  gpu state 14.95  pcpu state 18.77
+  defaults     tok  128  2.73 tok/s   409.3 MB/tok  gpu state 14.97  pcpu state 18.83
+  defaults: gen 2.755 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-115307-workers-p15/arm-3-w16.json
+=== arm 4: w8
+== defaults: free 50 MB
+  defaults     tok   64  2.75 tok/s   390.2 MB/tok  gpu state 14.97  pcpu state 18.77
+  defaults     tok  128  2.70 tok/s   410.2 MB/tok  gpu state 14.97  pcpu state 18.90
+  defaults: gen 2.699 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-115307-workers-p15/arm-4-w8.json
+=== arm 5: w8
+== defaults: free 99 MB
+  defaults     tok   64  3.12 tok/s   317.3 MB/tok  gpu state 14.98  pcpu state 18.92
+  defaults     tok  128  2.99 tok/s   362.0 MB/tok  gpu state 14.98  pcpu state 18.88
+  defaults: gen 3.025 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-115307-workers-p15/arm-5-w8.json
+=== arm 6: w16
+== defaults: free 78 MB
+  defaults     tok   64  3.04 tok/s   324.4 MB/tok  gpu state 14.96  pcpu state 18.86
+  defaults     tok  128  2.66 tok/s   372.3 MB/tok  gpu state 14.48  pcpu state 19.00
+  defaults: gen 2.806 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-115307-workers-p15/arm-6-w16.json
+=== done
