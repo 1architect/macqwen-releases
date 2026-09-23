@@ -29,9 +29,9 @@ The shared measurement rules are in [`../measurement-standard.md`](../measuremen
 - The exact opt-in bundle is the chat default since 2026-09-23 at our request:
   streamed embedding, compiled injections and norm, cached norm gain, QoS
   user-interactive, parallel n-gram prefill, both QSA flags, overlap off,
-  read-ahead off, 8 I/O workers and stream-pack. It rests on two paired runs
-  (+4.6%, +5.0%, identical digest) (+2.4% inside 1.0% with the slab on); the list is in
-  `settings/launch.py`. Any member rolls back with an explicit environment
+  read-ahead off, 8 I/O workers and stream-pack. With the slab on it measured
+  +2.4% inside a 1.0% two-SE band over three pairs, identical digest; the list
+  is in `settings/launch.py`. Any member rolls back with an explicit environment
   value at launch. The existing QSA allocation guard remains active.
 - Preserve the exact token digest. Any digest change rejects the optimization.
 - Preserve BF16 rounding boundaries. A small numerical difference is not an
