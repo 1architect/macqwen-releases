@@ -9,12 +9,13 @@ import tempfile
 
 
 PROFILES = (
-    "standard", "fast", "fast-quality", "exact-quality", "cache-aware",
+    "standard", "fast-quality", "exact-quality", "cache-aware",
     "fused-quality",
 )
-# The profile picks the read path. `fast` and `fast-quality` were measured on
-# `shared_mmap` and keep it. Every other profile takes the store's default, so
-# FLASHNEXT_READ reaches the chat instead of being overwritten here.
+# The profile picks the read path. `fast-quality` was measured on
+# `shared_mmap` and switches to it once its tail is pinned. Every other profile
+# takes the store's default, so FLASHNEXT_READ reaches the chat instead of
+# being overwritten here.
 DEFAULT_READ_MODE = os.environ.get("FLASHNEXT_READ", "pread")
 READ_MODES = ("pread", "preadv", "shared_mmap")
 # Turn one decodes on a cold page cache and is the slowest turn of a session.
@@ -366,7 +367,7 @@ class RoutingProfile:
         self.mode = mode
         self.store = store
         self.language = language
-        self.threshold = 0.20 if mode == "fast" else float(threshold)
+        self.threshold = float(threshold)
         self.resident_experts = int(resident_experts)
         self.tail_experts = int(tail_experts)
         self.warmup = int(warmup)
@@ -428,7 +429,6 @@ class RoutingProfile:
 
     def reset(self):
         from models.flashnext.adaptive_topk import (
-            set_fast_profile,
             set_layer_thresholds,
             set_min_keep,
             set_renorm_blend,
@@ -447,30 +447,24 @@ class RoutingProfile:
             self.default_renorm if self.mode == "standard" else 1.0
         )
         current_read_mode = self._read_mode()
-        if self.mode != "fast":
-            # Keep benchmark/live writes made directly on the store. A
-            # profile-forced effective mode must not become the next request.
-            if (
-                self._effective_read_mode is None
-                and (
-                    self._read_mode_was_forced != "shared_mmap"
-                    or current_read_mode != "shared_mmap"
-                )
-            ) or (
-                self._effective_read_mode is not None
-                and current_read_mode != self._effective_read_mode
-            ):
-                self._requested_read_mode = current_read_mode
-            self.store._read_mode = self._requested_read_mode
-            self._read_mode_was_forced = None
-        else:
-            self.store._read_mode = "shared_mmap"
-            self._read_mode_was_forced = "shared_mmap"
+        # Keep benchmark/live writes made directly on the store. A
+        # profile-forced effective mode must not become the next request.
+        if (
+            self._effective_read_mode is None
+            and (
+                self._read_mode_was_forced != "shared_mmap"
+                or current_read_mode != "shared_mmap"
+            )
+        ) or (
+            self._effective_read_mode is not None
+            and current_read_mode != self._effective_read_mode
+        ):
+            self._requested_read_mode = current_read_mode
+        self.store._read_mode = self._requested_read_mode
+        self._read_mode_was_forced = None
         self._effective_read_mode = self.store._read_mode
         self.store._flashnext_requested_read_mode = self._requested_read_mode
         self.store._flashnext_read_mode_forced = self._read_mode_was_forced
-        if self.mode == "fast":
-            set_fast_profile()
         layers = range(self._layer_count())
         self.candidates = {layer: Counter() for layer in layers}
         self.route_counts = {layer: Counter() for layer in layers}
@@ -492,8 +486,7 @@ class RoutingProfile:
             "renorm": (
                 {"warmup": 1.0, "tail": 0.1}
                 if self.mode == "fast-quality"
-                else 0.0 if self.mode == "fast" else self.default_renorm
-                if self.mode == "standard" else 1.0
+                else self.default_renorm if self.mode == "standard" else 1.0
             ),
             "tail_warmup": self.warmup if self.quality else None,
             "tail_experts": self.tail_experts if self.mode == "fast-quality" else None,

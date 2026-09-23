@@ -1662,7 +1662,9 @@ class StreamingSwitchGLU(nn.Module):
             slots = indices.shape[-1]
             tokens = flat_input.shape[0]
             hidden_size = flat_input.shape[-1]
-            expert_count = weights[0][0].shape[0]
+            # Adaptive top-k pads dropped slots with the first expert (score
+            # 0), so a row can name fewer distinct experts than it has slots.
+            expert_count = max(weights[0][0].shape[0], slots)
             executor = self._executor(
                 (expert_count, hidden_size, slots), expert_count, hidden_size, slots,
             )

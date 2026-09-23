@@ -328,61 +328,6 @@ def set_min_keep(value: int, layer_values=None) -> None:
         )
 
 
-def set_fast_profile() -> None:
-    base = float(os.environ.get("FLASHNEXT_FAST_THRESHOLD", "0.20"))
-    sensitive = float(os.environ.get("FLASHNEXT_FAST_SENSITIVE", "0.40"))
-    top_count = int(os.environ.get(
-        "FLASHNEXT_FAST_TOP_COUNT",
-        os.environ.get("FLASHNEXT_FAST_PROTECTED", "0"),
-    ))
-    top_threshold = float(os.environ.get(
-        "FLASHNEXT_FAST_TOP_THRESHOLD",
-        os.environ.get("FLASHNEXT_FAST_PROTECTED_THRESHOLD", "0.85"),
-    ))
-    mid_count = int(os.environ.get("FLASHNEXT_FAST_MID_COUNT", "0"))
-    mid_threshold = float(
-        os.environ.get("FLASHNEXT_FAST_MID_THRESHOLD", str(sensitive))
-    )
-    layer_thresholds = {layer: sensitive for layer in FAST_LAYERS}
-    layer_thresholds.update(
-        {layer: top_threshold for layer in FAST_LAYERS[:top_count]}
-    )
-    layer_thresholds.update(
-        {
-            layer: mid_threshold
-            for layer in FAST_LAYERS[top_count:top_count + mid_count]
-        }
-    )
-    minimum = int(os.environ.get("FLASHNEXT_FAST_MIN_KEEP", "1"))
-    sensitive_minimum = int(
-        os.environ.get("FLASHNEXT_FAST_SENSITIVE_MIN_KEEP", str(minimum))
-    )
-    top_minimum = int(os.environ.get(
-        "FLASHNEXT_FAST_TOP_MIN_KEEP",
-        str(sensitive_minimum),
-    ))
-    mid_minimum = int(os.environ.get(
-        "FLASHNEXT_FAST_MID_MIN_KEEP",
-        str(sensitive_minimum),
-    ))
-    layer_minimums = {
-        layer: sensitive_minimum for layer in FAST_LAYERS
-    }
-    layer_minimums.update(
-        {layer: top_minimum for layer in FAST_LAYERS[:top_count]}
-    )
-    layer_minimums.update(
-        {
-            layer: mid_minimum
-            for layer in FAST_LAYERS[top_count:top_count + mid_count]
-        }
-    )
-    set_threshold(base)
-    set_layer_thresholds(layer_thresholds)
-    set_min_keep(minimum, layer_minimums)
-    set_renorm_blend(float(os.environ.get("FLASHNEXT_FAST_RENORM", "0")))
-
-
 def last_keeps():
     return dict(_LAST_KEEPS)
 

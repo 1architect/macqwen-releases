@@ -32,10 +32,9 @@ class SettingsTests(unittest.TestCase):
     def settings_backend(self, profile):
         backend = self.make_backend()
         backend.routing_profile = profile
-        effective = 0.2 if profile == "fast" else backend.threshold
         backend.routing = SimpleNamespace(
             mode=profile,
-            threshold=effective,
+            threshold=backend.threshold,
             quality=profile in (
                 "fast-quality", "exact-quality", "cache-aware", "fused-quality"
             ),
@@ -65,15 +64,6 @@ class SettingsTests(unittest.TestCase):
                 self.assertNotIn("\033[0m", active_line)
                 self.assertTrue(inactive_line.startswith("\033[2m"))
                 self.assertTrue(inactive_line.endswith("\033[0m"))
-
-    def test_fast_displays_effective_and_configured_thresholds(self):
-        backend = self.settings_backend("fast")
-        backend.threshold = 0.85
-        line = self.settings_line(backend._settings_text(), "threshold")
-        self.assertTrue(line.startswith("\033[2m"))
-        self.assertTrue(line.endswith("\033[0m"))
-        self.assertIn("0.2", line)
-        self.assertIn("0.85", line)
 
     def test_fast_quality_displays_threshold_transition(self):
         backend = self.settings_backend("fast-quality")
@@ -145,7 +135,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_restores_defaults(self):
         backend = self.make_backend()
-        backend.routing_profile = "fast"
+        backend.routing_profile = "fast-quality"
         backend.swap_epsilon = 0.5
         backend.threshold = 0.2
         backend.configure("defaults")

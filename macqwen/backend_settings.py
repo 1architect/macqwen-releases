@@ -167,7 +167,7 @@ class SettingRegistry:
         if backend == "flashnext":
             rows.extend([
                 "usage: /config model NAME VALUE | /config model defaults | /config model all",
-                "routing: standard, fast, fast-quality, exact-quality, cache-aware, fused-quality",
+                "routing: standard, fast-quality, exact-quality, cache-aware, fused-quality",
                 "research-only settings are visible with /config model all",
             ])
         if backend == "qwen27b":

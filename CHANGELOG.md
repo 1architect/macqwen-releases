@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Remove the `fast` routing profile and its `--fast` flag. It dropped
+  experts without renormalizing and never passed the quality gate; use
+  `fast-quality` for approximate routing with quality recovery.
 - Move every model's tests into `models/<model>/tests/`: checkpoint-free
   tests in `unit/`, benchmark scripts and their helpers in `bench/`, and
   test-terminal cards in `cases/`. Shared unit tests move to `macqwen/tests/`,
@@ -19,6 +22,8 @@
 
 ### Fixed
 
+- Stop `fast-quality` decode from crashing with "top_k cannot exceed
+  expert_count" when adaptive top-k pads dropped slots with a repeated expert.
 - Apply a case's `environment()` hook in the shared terminal. Cases such as
   `chunk-after-workers` lost their selected worker count after the terminal
   migration.

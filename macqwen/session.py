@@ -616,8 +616,6 @@ def main() -> int:
     routing = parser.add_mutually_exclusive_group()
     routing.add_argument("--standard", dest="routing_profile",
                          action="store_const", const="standard")
-    routing.add_argument("--fast", dest="routing_profile",
-                         action="store_const", const="fast")
     routing.add_argument("--fast-quality", dest="routing_profile",
                          action="store_const", const="fast-quality")
     routing.add_argument("--exact-quality", dest="routing_profile",

@@ -62,7 +62,6 @@ class RoutingTests(unittest.TestCase):
 
     def test_quality_profiles_collect_a_warmup(self):
         self.assertFalse(self.make("standard").quality)
-        self.assertFalse(self.make("fast").quality)
         self.assertTrue(self.make("fast-quality").quality)
         self.assertTrue(self.make("exact-quality").quality)
         self.assertTrue(self.make("cache-aware").quality)
@@ -90,10 +89,9 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(profile["resident_experts"], 32)
         self.assertEqual(profile["swap_epsilon"], 0.02)
 
-    def test_fast_profile_forces_the_measured_threshold(self):
-        profile = self.make("fast").session_profile({1})
-        self.assertEqual(profile["threshold"], 0.20)
-        self.assertEqual(profile["renorm"], 0.0)
+    def test_removed_fast_profile_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.make("fast")
 
     def test_fast_quality_pins_omitted_experts_after_warmup(self):
         store = FakeStore()
@@ -187,13 +185,10 @@ class ReadModePerProfileTests(unittest.TestCase):
     def test_every_profile_selects_a_known_read_mode(self):
         from models.flashnext.routing import DEFAULT_READ_MODE, PROFILES
 
-        forced = {"fast": "shared_mmap"}
         for mode in PROFILES:
             with self.subTest(mode=mode):
                 item = self.profile(mode)
-                self.assertEqual(
-                    item.store._read_mode, forced.get(mode, DEFAULT_READ_MODE)
-                )
+                self.assertEqual(item.store._read_mode, DEFAULT_READ_MODE)
 
     def test_the_read_mode_is_not_hardcoded_past_the_environment(self):
         import importlib

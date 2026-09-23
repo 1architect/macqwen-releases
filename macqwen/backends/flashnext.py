@@ -149,8 +149,7 @@ class FlashNextBackend(Conversation):
             raise ValueError("native MTP and fused-quality are mutually exclusive")
         from models.flashnext.qsa_chunk import apply as apply_qsa
 
-        load_threshold = 0.20 if routing_profile == "fast" else threshold
-        os.environ["FLASHNEXT_TOPK_THRESHOLD"] = str(load_threshold)
+        os.environ["FLASHNEXT_TOPK_THRESHOLD"] = str(threshold)
         try:
             path = str(resolve_flashnext(model_path))
         except ValueError as exc:

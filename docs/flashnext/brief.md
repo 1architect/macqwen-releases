@@ -199,7 +199,6 @@ figures are scale calculations, not forecasts or measured gains.
 | `standard` | Threshold `0.85` without selective pinning |
 | `exact-quality` | Same trajectory with selective file-backed residency |
 | `cache-aware` | Exact-quality base with near-equal resident substitution |
-| `fast` | Aggressive approximate routing |
 | `fast-quality` | Approximate routing with quality recovery |
 | `fused-quality` | Experimental one-shot draft; failed its reasoning gate |
 
@@ -207,7 +206,7 @@ Threshold `1.0` keeps the shipped router selection.
 
 ## Status
 
-Our text runtime, six routing profiles, exact sessions, and shared chat
+Our text runtime, five routing profiles, exact sessions, and shared chat
 integration are active. We default to G64 Metal execution for REAP and retain
 `FLASHNEXT_METAL_G64=0` as the generic MLX rollback. G64 slabs remain off;
 the exact opt-in bundle, including stream-pack and the QSA flags, is on. Cache-aware stays optional; MTP stays

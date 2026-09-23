@@ -26,8 +26,6 @@ def _threshold(raw: str) -> float:
 
 def _threshold_display(backend):
     configured = backend.threshold
-    if backend.routing_profile == "fast":
-        return f"0.2 (configured {configured:g}; config ignored)"
     if backend.routing_profile == "fast-quality":
         return f"{configured:g} (warmup; tail threshold 0.2)"
     return configured
@@ -48,7 +46,7 @@ def _integer(raw: str, name: str, low: int = 1, high: int = 512) -> int:
 
 
 def _routing(raw: str) -> str:
-    options = ("standard", "fast", "fast-quality", "exact-quality", "cache-aware", "fused-quality")
+    options = ("standard", "fast-quality", "exact-quality", "cache-aware", "fused-quality")
     if raw not in options:
         raise ValueError(f"routing must be one of: {', '.join(options)}")
     return raw
@@ -116,12 +114,12 @@ SETTINGS = (
         "routing", "public", "flashnext", lambda b: b.routing_profile,
         _set_attr("routing_profile"), lambda b: True, _warn_routing, None,
         __file__, "routing_profile", ("--routing-profile",), "routing_profile",
-        {"choices": ("standard", "fast", "fast-quality", "exact-quality", "cache-aware", "fused-quality")},
+        {"choices": ("standard", "fast-quality", "exact-quality", "cache-aware", "fused-quality")},
     ),
     # The backend writes FLASHNEXT_TOPK_THRESHOLD internally while loading.
     # Keep provenance tied to CLI/default/live state instead of that internal
     # implementation variable.
-    Setting("threshold", (), 0.85, _threshold, "next-turn", "routing", "public", "flashnext", _threshold_display, _set_attr("threshold"), lambda b: b.routing_profile != "fast", None, None, __file__, "threshold", ("--threshold",), "threshold", {"type": float}),
+    Setting("threshold", (), 0.85, _threshold, "next-turn", "routing", "public", "flashnext", _threshold_display, _set_attr("threshold"), lambda b: True, None, None, __file__, "threshold", ("--threshold",), "threshold", {"type": float}),
     Setting("swap-epsilon", (), 0.02, _epsilon, "next-turn", "routing", "public", "flashnext", _effective_swap_epsilon, _set_attr("swap_epsilon"), _swap_active, _warn_cache, "FLASHNEXT_SWAP_EPSILON", __file__, "swap_epsilon", ("--swap-epsilon",), "swap_epsilon", {"type": float}),
     Setting("resident-experts", ("pinned-experts",), 32, lambda raw: _integer(raw, "resident-experts"), "next-turn", "routing", "public", "flashnext", lambda b: b.resident_experts, _set_attr("resident_experts"), _quality, None, None, __file__, "resident_experts", ("--resident-experts", "--pinned-experts"), "resident_experts", {"type": int}),
     Setting("pin-budget-gb", (), 6.0, _budget, "next-turn", "routing", "public", "flashnext", lambda b: b.pin_budget_gb, _set_attr("pin_budget_gb"), _quality, None, None, __file__, "pin_budget_gb", ("--pin-budget-gb",), "pin_budget_gb", {"type": float}),
