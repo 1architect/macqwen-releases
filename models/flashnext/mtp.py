@@ -19,7 +19,7 @@ from mlx_vlm.models.qwen3_5.language import (
     _create_qwen3_5_ssm_mask,
 )
 
-from .expert_cache import StreamingSwitchGLU
+from .expert_cache import MTP_LAYER_ID, StreamingSwitchGLU
 
 
 PREFIX = "language_model.mtp"
@@ -172,7 +172,7 @@ def swap_streaming(language, store, mode: str, capacity: int = 0) -> None:
         mode,
         capacity,
         old.activation,
-        layer_id=0,
+        layer_id=MTP_LAYER_ID,
         next_prefix=prefix,
     )
 

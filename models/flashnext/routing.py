@@ -5,6 +5,7 @@ from collections import Counter
 import hashlib
 import json
 import os
+import tempfile
 
 
 PROFILES = (
@@ -400,6 +401,14 @@ class RoutingProfile:
         self._effective_read_mode = None
         self.reset()
 
+    def _layer_count(self) -> int:
+        """Decoder layers of the loaded model; 48 when there is no model."""
+        layers = getattr(getattr(self.language, "model", None), "layers", None)
+        try:
+            return len(layers)
+        except TypeError:
+            return 48
+
     def _read_mode(self) -> str:
         value = getattr(self.store, "_read_mode", DEFAULT_READ_MODE)
         if value in READ_MODES:
@@ -462,9 +471,10 @@ class RoutingProfile:
         self.store._flashnext_read_mode_forced = self._read_mode_was_forced
         if self.mode == "fast":
             set_fast_profile()
-        self.candidates = {layer: Counter() for layer in range(48)}
-        self.route_counts = {layer: Counter() for layer in range(48)}
-        self.observed = {layer: 0 for layer in range(48)}
+        layers = range(self._layer_count())
+        self.candidates = {layer: Counter() for layer in layers}
+        self.route_counts = {layer: Counter() for layer in layers}
+        self.observed = {layer: 0 for layer in layers}
         self.pinned.clear()
         self.pinned_bytes = 0
         self.pinned_signature = ""
@@ -689,8 +699,23 @@ class RoutingProfile:
             # Keep the flat key for readers of the existing profile format.
             if "group_size" in quantization:
                 payload["group_size"] = int(quantization["group_size"])
-            with open(cache_file, "w") as handle:
-                json.dump(payload, handle)
+            # Publish atomically. This runs mid-decode, and a truncated file
+            # would disable the slab at every later launch.
+            directory = os.path.dirname(cache_file) or "."
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=directory, prefix=".pins-", delete=False,
+            ) as handle:
+                temporary = handle.name
+            try:
+                with open(temporary, "w") as handle:
+                    json.dump(payload, handle)
+                os.replace(temporary, cache_file)
+            except BaseException:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+                raise
             self._saved_signature = self.pinned_signature
         except OSError:
             pass

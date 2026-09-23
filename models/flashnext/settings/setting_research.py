@@ -46,10 +46,12 @@ def norm_convention(raw):
     raise ValueError("norm-convention must be auto, one, or zero")
 
 
-def research(name, key, default="0", lifecycle="startup", parser=text):
+def research(name, key, default="0", lifecycle="startup", parser=text, unset=None):
+    """``default`` is the chat default; ``unset`` is what the runtime does
+    when the variable is absent, when the two differ."""
     return Setting(
         name, (key,), default, parser, lifecycle, "research", "research-only", "flashnext",
-        env(key, default), None, flag(key), None, key, __file__,
+        env(key, default if unset is None else unset), None, flag(key), None, key, __file__,
     )
 
 
@@ -100,7 +102,7 @@ SETTINGS = (
     research("prefill-last-row", "FLASHNEXT_PREFILL_LAST_ROW", parser=choice(("0", "1"), "prefill-last-row")),
     research("norm-weight-cache", "FLASHNEXT_NORM_WEIGHT_CACHE", parser=choice(("0", "1"), "norm-weight-cache")),
     research("slab-counts", "FLASHNEXT_SLAB_COUNTS", "turn", "startup", choice(("turn", "cumulative"), "slab-counts")),
-    research("slab-profile", "FLASHNEXT_SLAB_PROFILE", "rolling", "startup", choice(("rolling", "frozen"), "slab-profile")),
+    research("slab-profile", "FLASHNEXT_SLAB_PROFILE", "frozen", "startup", choice(("rolling", "frozen"), "slab-profile"), unset="rolling"),
     research("slab-counts-decay", "FLASHNEXT_SLAB_COUNTS_DECAY", "0.9", "startup", float),
     research("slab-pack-max-age-days", "FLASHNEXT_SLAB_PACK_MAX_AGE_DAYS", "14", "startup", float),
     Setting(

@@ -102,15 +102,18 @@ def read_mode(raw):
     return value
 
 
+# Declared defaults match the chat launch environment (settings/launch.py):
+# `/config model defaults` applies them through the live setters. Readers keep
+# reporting the runtime's real state when a variable is unset.
 SETTINGS = (
     Setting("gpu-keepwarm", ("keepwarm", "FLASHNEXT_GPU_KEEPWARM"), "on", _on_off, "live", "runtime", "public", "flashnext", _keepwarm_reader, _keepwarm_setter, lambda _b: True, None, "FLASHNEXT_GPU_KEEPWARM", __file__),
-    Setting("metal-runtime", ("FLASHNEXT_METAL_RUNTIME",), "0", choice(("0", "1"), "metal-runtime"), "live", "runtime", "public", "flashnext", live_env_reader("FLASHNEXT_METAL_RUNTIME", "0"), env_setter("FLASHNEXT_METAL_RUNTIME"), lambda _b: os.environ.get("FLASHNEXT_METAL_RUNTIME", "0") == "1", None, "FLASHNEXT_METAL_RUNTIME", __file__),
-    Setting("slab-global", ("FLASHNEXT_SLAB_GLOBAL",), 0, integer, "startup", "storage", "public", "flashnext", env_reader("FLASHNEXT_SLAB_GLOBAL", 0, integer), None, lambda _b: True, None, "FLASHNEXT_SLAB_GLOBAL", __file__),
-    Setting("slab-pack", ("FLASHNEXT_SLAB_PACK",), "0", choice(("0", "1"), "slab-pack"), "startup", "storage", "public", "flashnext", env_reader("FLASHNEXT_SLAB_PACK", "0"), None, env_active("FLASHNEXT_SLAB_PACK"), None, "FLASHNEXT_SLAB_PACK", __file__),
+    Setting("metal-runtime", ("FLASHNEXT_METAL_RUNTIME",), "1", choice(("0", "1"), "metal-runtime"), "live", "runtime", "public", "flashnext", live_env_reader("FLASHNEXT_METAL_RUNTIME", "0"), env_setter("FLASHNEXT_METAL_RUNTIME"), lambda _b: os.environ.get("FLASHNEXT_METAL_RUNTIME", "0") == "1", None, "FLASHNEXT_METAL_RUNTIME", __file__),
+    Setting("slab-global", ("FLASHNEXT_SLAB_GLOBAL",), 60, integer, "startup", "storage", "public", "flashnext", env_reader("FLASHNEXT_SLAB_GLOBAL", 0, integer), None, lambda _b: True, None, "FLASHNEXT_SLAB_GLOBAL", __file__),
+    Setting("slab-pack", ("FLASHNEXT_SLAB_PACK",), "1", choice(("0", "1"), "slab-pack"), "startup", "storage", "public", "flashnext", env_reader("FLASHNEXT_SLAB_PACK", "0"), None, env_active("FLASHNEXT_SLAB_PACK"), None, "FLASHNEXT_SLAB_PACK", __file__),
     Setting("slab-policy", ("FLASHNEXT_SLAB_POLICY",), "skew", str, "startup", "storage", "public", "flashnext", env_reader("FLASHNEXT_SLAB_POLICY", "skew"), None, lambda _b: True, None, "FLASHNEXT_SLAB_POLICY", __file__),
     Setting("fused-shared", ("FLASHNEXT_FUSED_SHARED",), "1", choice(("0", "1"), "fused-shared"), "startup", "runtime", "public", "flashnext", env_reader("FLASHNEXT_FUSED_SHARED", "1"), None, env_active("FLASHNEXT_FUSED_SHARED"), None, "FLASHNEXT_FUSED_SHARED", __file__),
     Setting("fused-shared-parts", ("FLASHNEXT_FUSED_SHARED_PARTS",), "0", choice(("0", "1"), "fused-shared-parts"), "startup", "runtime", "public", "flashnext", env_reader("FLASHNEXT_FUSED_SHARED_PARTS", "0"), None, env_active("FLASHNEXT_FUSED_SHARED_PARTS"), None, "FLASHNEXT_FUSED_SHARED_PARTS", __file__),
-    Setting("fused-up-swiglu", ("FLASHNEXT_FUSED_UP_SWIGLU",), "0", choice(("0", "1"), "fused-up-swiglu"), "startup", "runtime", "public", "flashnext", env_reader("FLASHNEXT_FUSED_UP_SWIGLU", "0"), None, env_active("FLASHNEXT_FUSED_UP_SWIGLU"), None, "FLASHNEXT_FUSED_UP_SWIGLU", __file__),
+    Setting("fused-up-swiglu", ("FLASHNEXT_FUSED_UP_SWIGLU",), "1", choice(("0", "1"), "fused-up-swiglu"), "startup", "runtime", "public", "flashnext", env_reader("FLASHNEXT_FUSED_UP_SWIGLU", "0"), None, env_active("FLASHNEXT_FUSED_UP_SWIGLU"), None, "FLASHNEXT_FUSED_UP_SWIGLU", __file__),
     Setting("stream-pack", ("FLASHNEXT_STREAM_PACK",), "0", str, "startup", "storage", "public", "flashnext", env_reader("FLASHNEXT_STREAM_PACK", "0"), None, lambda _b: True, None, "FLASHNEXT_STREAM_PACK", __file__),
     Setting("pread-chunk", ("FLASHNEXT_PREAD_CHUNK",), 2, positive_integer, "live", "storage", "public", "flashnext", store_reader("_pread_chunk", "FLASHNEXT_PREAD_CHUNK", 2, positive_integer), env_setter("FLASHNEXT_PREAD_CHUNK", "_pread_chunk"), lambda _b: True, None, "FLASHNEXT_PREAD_CHUNK", __file__),
     Setting("io-workers", ("FLASHNEXT_IO_WORKERS",), 16, integer, "startup", "storage", "public", "flashnext", env_reader("FLASHNEXT_IO_WORKERS", 16, integer), None, lambda _b: True, None, "FLASHNEXT_IO_WORKERS", __file__),

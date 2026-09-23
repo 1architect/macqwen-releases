@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -1095,7 +1096,7 @@ class StreamingSwitchLinear(nn.Module):
 
 def _compatible_pin_profile(store=None, expected_group_size=None, layer_ids=None):
     """Return pin history only when it belongs to this store's layout."""
-    data = _load_pin_profile(_slab_profile_path(store, expected_group_size))
+    data = _load_pin_profile_or_none(_slab_profile_path(store, expected_group_size))
     if data is None or store is None:
         return data
     from .routing import pin_profile_compatible
@@ -1223,6 +1224,26 @@ def _load_pin_profile(pin_file: str | None = None) -> dict | None:
     return normalized
 
 
+_WARNED_PROFILES: set = set()
+
+
+def _load_pin_profile_or_none(pin_file: str | None = None) -> dict | None:
+    """Load a pin profile for the runtime, treating a corrupt file as absent.
+
+    The profile only chooses slab contents. A damaged file must fall back to
+    streaming rather than stop the model from loading; diagnostics that need
+    the error call ``_load_pin_profile`` directly.
+    """
+    try:
+        return _load_pin_profile(pin_file)
+    except (RuntimeError, ValueError) as error:
+        message = str(error)
+        if message not in _WARNED_PROFILES:
+            _WARNED_PROFILES.add(message)
+            print(f"flashnext: ignoring pin profile: {message}", file=sys.stderr)
+        return None
+
+
 def _slab_profile_path(store=None, expected_group_size=None) -> str:
     """Snapshot compatible live history once for a checkpoint's slab."""
     live = _pin_profile_path()
@@ -1234,8 +1255,9 @@ def _slab_profile_path(store=None, expected_group_size=None) -> str:
     directory = os.path.dirname(live) or "."
     frozen = os.path.join(directory, f"slab-frozen-{identity}.json")
     if os.path.exists(frozen):
+        _mark_frozen_used(frozen)
         return frozen
-    profile = _load_pin_profile(live)
+    profile = _load_pin_profile_or_none(live)
     if profile is None:
         return frozen
     from .routing import pin_profile_compatible
@@ -1254,7 +1276,27 @@ def _slab_profile_path(store=None, expected_group_size=None) -> str:
             os.link(handle.name, frozen)
         except FileExistsError:
             pass
+    _mark_frozen_used(frozen)
     return frozen
+
+
+_FROZEN_MARKED: set = set()
+
+
+def _mark_frozen_used(path: str) -> None:
+    """Touch a frozen snapshot once per process and prune stale ones.
+
+    The checkpoint identity includes shard metadata, so an identity change
+    leaves the old snapshot behind. Age-based pruning matches the slab packs.
+    """
+    if path in _FROZEN_MARKED:
+        return
+    _FROZEN_MARKED.add(path)
+    from pathlib import Path
+
+    from .slab_pack import mark_used_and_prune
+
+    mark_used_and_prune(Path(path), "slab-frozen-*.json")
 
 
 def _g64_pin_profile_compatible(store, profile: dict | None) -> tuple[bool, str | None]:
@@ -1595,6 +1637,11 @@ class ResidentSlab:
         return self.parts is not None
 
 
+# Layer id of the MTP expert block. It is not a backbone layer, so it must not
+# alias one: slab allocation, packed slots and route traces key on layer ids.
+MTP_LAYER_ID = -1
+
+
 class StreamingSwitchGLU(nn.Module):
     """SwitchGLU whose three projections stream from the checkpoint."""
 
@@ -1641,7 +1688,7 @@ class StreamingSwitchGLU(nn.Module):
             self._slab_pack_disabled_reason = "Q4/G64 slab pack requires FLASHNEXT_SLAB_G64=1"
         if pack_requested and g64 and slab_g64:
             history_ok, reason = _g64_pin_profile_compatible(
-                store, _load_pin_profile(_slab_profile_path(store, 64))
+                store, _load_pin_profile_or_none(_slab_profile_path(store, 64))
             )
             if not history_ok:
                 requested_slab_pack = False
@@ -1759,7 +1806,9 @@ class StreamingSwitchGLU(nn.Module):
         """Report the opt-in decode path to the patched MoE block."""
         return (
             os.environ.get("FLASHNEXT_METAL_RUNTIME") == "1"
-            and self.layer_id != 0
+            # Layer 0 stays on the reference path (historical guard). The
+            # MTP block uses MTP_LAYER_ID and stays there too.
+            and self.layer_id > 0
             and self._metal_runtime_capable
         )
 
@@ -2202,9 +2251,10 @@ class StreamingSwitchGLU(nn.Module):
             weights = [sl.parts for sl in slabs]
         else:
             with hostwindow.window("plan_host"):
+                keep = None if mask is None else set(mask)
                 wanted = list(
                     dict.fromkeys(
-                        e for e in routed if mask is None or e in set(mask)
+                        e for e in routed if keep is None or e in keep
                     )
                 )
                 if self.gate_proj.cache.store._sort_reads:

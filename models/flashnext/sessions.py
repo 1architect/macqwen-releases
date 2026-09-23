@@ -35,6 +35,9 @@ _CHECKSUM_PLACEHOLDER = "UNSET-" + "0" * 58
 # Every local file that can change cache state must invalidate saved sessions.
 _ENGINE_FILES = (
     "adaptive_topk.py",
+    # Opt-in compiled graphs replace upstream chains when enabled.
+    "compile_glue.py",
+    "compiled.py",
     "expert_cache.py",
     "loader.py",
     # The custom executor computes every routed MoE output on the default

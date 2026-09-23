@@ -747,31 +747,33 @@ def get_or_create_slab_pack(
     return pack
 
 
-def _mark_used_and_prune(current: Path) -> int:
-    """Record that ``current`` was used and delete long-unused packs.
+def _max_age_days() -> float:
+    try:
+        return float(os.environ.get("FLASHNEXT_SLAB_PACK_MAX_AGE_DAYS", "14"))
+    except ValueError:
+        return 14.0
 
-    The allocation follows the saved route history, which changes between
-    sessions, so every new allocation writes a new pack of about 180 MB and
-    nothing ever removed the old ones. Opening a pack sets its mtime, so
-    mtime means last use. A pack unused for
-    ``FLASHNEXT_SLAB_PACK_MAX_AGE_DAYS`` (default 14, 0 disables) is removed.
-    Age rather than count keeps every pack a benchmark has just prepared.
+
+def mark_used_and_prune(current: Path, pattern: str) -> int:
+    """Record that ``current`` was used and delete long-unused siblings.
+
+    Opening a cache file sets its mtime, so mtime means last use. Files in the
+    same directory matching ``pattern`` and unused for
+    ``FLASHNEXT_SLAB_PACK_MAX_AGE_DAYS`` (default 14, 0 disables) are removed.
+    Age rather than count keeps every file a benchmark has just prepared.
     Returns the number of files removed.
     """
     try:
         os.utime(current)
     except OSError:
         pass
-    try:
-        days = float(os.environ.get("FLASHNEXT_SLAB_PACK_MAX_AGE_DAYS", "14"))
-    except ValueError:
-        days = 14.0
+    days = _max_age_days()
     if days <= 0:
         return 0
     cutoff = time.time() - days * 86400
     removed = 0
     try:
-        candidates = list(current.parent.glob("slab-pack-slots*.bin"))
+        candidates = list(current.parent.glob(pattern))
     except OSError:
         return 0
     for path in candidates:
@@ -783,3 +785,8 @@ def _mark_used_and_prune(current: Path) -> int:
         except OSError:
             continue
     return removed
+
+
+def _mark_used_and_prune(current: Path) -> int:
+    """Slab packs: every new allocation writes a new pack of about 180 MB."""
+    return mark_used_and_prune(current, "slab-pack-slots*.bin")

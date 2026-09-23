@@ -100,6 +100,28 @@ class FlashNextBackendTests(unittest.TestCase):
 
         self.assertEqual(prompt_lengths, [1, 2])
 
+    def test_loaded_session_clears_pending_replay(self):
+        backend = self.backend()
+        backend.tape = [1, 2, 3]
+        backend._replay_needed = True
+        loaded = SimpleNamespace(
+            cache=[SimpleNamespace(offset=5)], token_ids=[4, 5, 6, 7, 8],
+            turn_closed=True, thinking=False, position_ids=None,
+            rope_deltas=None,
+        )
+        sessions = SimpleNamespace(
+            profile={"mode": "exact-quality"},
+            saved_profile=lambda _name: {"mode": "exact-quality"},
+            load=lambda _name: loaded,
+        )
+        backend._sessions = lambda: sessions
+        backend._fused_pending = False
+
+        backend.load_session("saved")
+
+        self.assertFalse(backend._replay_needed)
+        self.assertTrue(backend.check_invariant())
+
 
 class _ScriptedLanguage:
     """Yield scripted token IDs, then a stop ID, through greedy argmax."""

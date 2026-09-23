@@ -124,6 +124,13 @@ def load_streaming(
     apply_adaptive_topk()
     apply_qsa_chunk()
     apply_compile_glue()
+    from . import compiled
+
+    if compiled.ENABLED:
+        # The research switch was read here once and then never acted on:
+        # only bench_production installed the chains. Install verifies each
+        # chain with mx.array_equal first and refuses an inexact one.
+        compiled.install()
     path = Path(os.path.expanduser(model_dir))
     store = SafeTensorStore(str(path))
     mtp_path = path / "model-mtp.safetensors"

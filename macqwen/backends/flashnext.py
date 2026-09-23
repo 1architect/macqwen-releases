@@ -335,6 +335,9 @@ class FlashNextBackend(Conversation):
         self.tape = list(loaded.token_ids)
         self.pending = []
         self.turn_closed = loaded.turn_closed
+        # The restored cache already holds the whole tape. A replay flag left
+        # by an earlier cancelled turn would feed the tape through it again.
+        self._replay_needed = False
         # A loaded snapshot contains only the target cache. The MTP block
         # has no history, so native MTP stays off for this conversation
         # until reset starts both histories together.
