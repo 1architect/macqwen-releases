@@ -110,6 +110,17 @@ three reversed fresh-process pairs measured +2.4% mean inside a 1.0% two-SE
 band, 3 of 3 pairs (`results/flashnext/20260923-035157-bundle-slab/`), so the
 gain resolves.
 
+### 5 tok/s path, phases 0 to 2, 2026-09-23
+
+At P15 a token is about 232 ms of read wait plus 138 ms of everything else
+(`bench_split_p15`). One-layer look-ahead with the next layer's router finds
+72% of the experts at top 10; with a perfect predictor and the clock held,
+reading one layer early tied (-1.2%) because the other work grew by what the
+read wait lost. Overlap stays rejected. 5 tok/s needs about 115 to 180
+MB/token of physical reads, against about 400 today; see the last
+`research.md` section. Remaining levers: effective drive rate (1.9 against
+3.0 GB/s), compute, and bytes.
+
 ### Keep-warm on stream-pack waits, 2026-09-23
 
 Keep-warm did not cover the stream-pack read wait, so the 12 slab-pack layers

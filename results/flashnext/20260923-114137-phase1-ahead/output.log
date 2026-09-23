@@ -1,0 +1,103 @@
+=== arm 1: off
+patched layers: 48
+digest: 73db8ef2d784ddb8
+free memory: 111.125 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.64 tok/s
+ms/token: 379.5
+miss: 0.375
+ahead: 0
+MB/token: 471.5
+rdahead: 0
+vm/token compress=4363 decompress=2803 pagein=15925 pageout=4 reactivated=1204 swapin=16 swapout=0
+gpu active share: 0.995
+gpu mean active state: 14.99 of 15
+gpu state residency: P15=1.00
+=== arm 2: ahead
+patched layers: 48
+digest: 73db8ef2d784ddb8
+free memory: 134.140625 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.80 tok/s
+ms/token: 357.0
+miss: 0.375
+ahead: 1
+MB/token: 596.2
+rdahead: 0
+vm/token compress=7834 decompress=6087 pagein=20243 pageout=5 reactivated=3606 swapin=34 swapout=0
+gpu active share: 0.980
+gpu mean active state: 7.11 of 15
+gpu state residency: P2=0.02 P3=0.11 P5=0.32 P7=0.24 P9=0.12 P11=0.09 P13=0.04 P15=0.06
+=== arm 3: ahead
+patched layers: 48
+digest: 73db8ef2d784ddb8
+free memory: 118.5625 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.26 tok/s
+ms/token: 442.2
+miss: 0.375
+ahead: 1
+MB/token: 597.9
+rdahead: 0
+vm/token compress=11660 decompress=9436 pagein=19704 pageout=10 reactivated=6518 swapin=2 swapout=0
+gpu active share: 0.966
+gpu mean active state: 3.50 of 15
+gpu state residency: P1=0.08 P2=0.36 P3=0.25 P5=0.18 P7=0.09 P9=0.02 P15=0.01
+=== arm 4: off
+patched layers: 48
+digest: 73db8ef2d784ddb8
+free memory: 114.53125 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.60 tok/s
+ms/token: 384.6
+miss: 0.375
+ahead: 0
+MB/token: 476.5
+rdahead: 0
+vm/token compress=6149 decompress=5131 pagein=15712 pageout=6 reactivated=2301 swapin=1 swapout=0
+gpu active share: 0.995
+gpu mean active state: 14.99 of 15
+gpu state residency: P15=1.00
+=== arm 5: off
+patched layers: 48
+digest: 73db8ef2d784ddb8
+free memory: 80.296875 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.60 tok/s
+ms/token: 384.2
+miss: 0.375
+ahead: 0
+MB/token: 476.2
+rdahead: 0
+vm/token compress=1778 decompress=1325 pagein=15582 pageout=1 reactivated=228 swapin=0 swapout=0
+gpu active share: 0.995
+gpu mean active state: 14.99 of 15
+gpu state residency: P15=1.00
+=== arm 6: ahead
+patched layers: 48
+digest: 73db8ef2d784ddb8
+free memory: 121.421875 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 3.16 tok/s
+ms/token: 316.5
+miss: 0.375
+ahead: 1
+MB/token: 598.1
+rdahead: 0
+vm/token compress=2061 decompress=1709 pagein=19569 pageout=1 reactivated=966 swapin=0 swapout=0
+gpu active share: 0.987
+gpu mean active state: 8.41 of 15
+gpu state residency: P3=0.04 P5=0.19 P7=0.27 P9=0.25 P11=0.11 P13=0.09 P15=0.05
+=== done

@@ -137,7 +137,7 @@ class StreamingShardedEmbedding(nn.Module):
 
     def _parallel_blocks(self, groups):
         """Read every shard's rows on the I/O pool, then dequantize in order."""
-        from models.flashnext.expert_cache import _submit_read
+        from models.flashnext.expert_cache import _resolve_future, _submit_read
 
         pending = []
         for shard_index, (_, rows) in groups.items():
@@ -149,7 +149,9 @@ class StreamingShardedEmbedding(nn.Module):
         blocks = []
         for shard, futures in pending:
             weight, scales, biases = (
-                shard.store.to_mx(f"{shard.prefix}.{part}", future.result())
+                shard.store.to_mx(
+                    f"{shard.prefix}.{part}", _resolve_future(future, None)
+                )
                 for part, future in zip(("weight", "scales", "biases"), futures)
             )
             blocks.append(mx.dequantize(

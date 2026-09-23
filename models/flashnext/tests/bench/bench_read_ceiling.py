@@ -38,7 +38,14 @@ PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
 
 
 _PICK = {"mode": "ram", "fixed": [], "rng": None, "fixed_route": False,
-         "miss": 0.0}
+         "miss": 0.0, "ahead": False, "next": {}, "order": [], "prefix": {}}
+# Perfect-prediction look-ahead. The synthetic route of the next layer is drawn
+# while the current layer runs, and its cold rows are read on a separate pool
+# right away; the real read of that layer then finds them in the page cache.
+# Same rows, same physical bytes, only issued one layer earlier. The upper bound
+# on what an exact route predictor could overlap.
+_AHEAD_POOL = None
+AHEAD_WIDTH = 10
 
 
 def patch(language) -> None:
@@ -63,6 +70,36 @@ def patch(language) -> None:
         # synthetic route below must not consume that stale host list.
         self._routed_host = None
         width = inds.shape[-1]
+        layer = self.layer_id
+        vals = _PICK["next"].pop(layer, None)
+        if vals is None:
+            vals = draw(width)
+        else:
+            # Drawn one layer early at full top-k width and shuffled, so any
+            # prefix keeps the cold share; adaptive top-k decides the width.
+            vals = vals[:width]
+        if inds.size == width:
+            # Decode always draws one layer ahead, so both arms route the
+            # same experts and keep one digest; --ahead only issues the reads.
+            order = _PICK["order"]
+            following = order[(order.index(layer) + 1) % len(order)]
+            ahead = draw(AHEAD_WIDTH)
+            _PICK["rng"].shuffle(ahead)
+            _PICK["next"][following] = ahead
+            prefix = _PICK["prefix"][following]
+            for projection in PROJECTIONS if _PICK["ahead"] else ():
+                for part in PARTS:
+                    _AHEAD_POOL.submit(
+                        self.gate_proj.cache.store.rows_np,
+                        f"{prefix}.{projection}.{part}", ahead,
+                    )
+        return _o(
+            self, x,
+            mx.broadcast_to(mx.array(vals, dtype=inds.dtype), inds.shape),
+            *args, **kwargs,
+        )
+
+    def draw(width):
         if _PICK["mode"] == "ram":
             fixed = _PICK["fixed"]
             miss = _PICK["miss"]
@@ -89,11 +126,7 @@ def patch(language) -> None:
                         (_PICK["rng"].choice(512 - pool, size=cold,
                                              replace=False) + pool).tolist()
                     )
-                return _o(
-                    self, x,
-                    mx.broadcast_to(mx.array(vals, dtype=inds.dtype), inds.shape),
-                    *args, **kwargs,
-                )
+                return vals
             if len(fixed) > width and not _PICK["fixed_route"]:
                 # A pool wider than the route separates two causes that the
                 # plain ram arm confounds. Reusing eight experts every token
@@ -108,12 +141,13 @@ def patch(language) -> None:
                 vals = (fixed * (width // len(fixed) + 1))[:width]
         else:
             vals = _PICK["rng"].choice(512, size=width, replace=False).tolist()
-        return _o(
-            self, x,
-            mx.broadcast_to(mx.array(vals, dtype=inds.dtype), inds.shape),
-            *args, **kwargs,
-        )
+        return vals
 
+    _PICK["order"] = [block.layer_id for block in blocks]
+    _PICK["prefix"] = {
+        block.layer_id: block.gate_proj.cache.prefix.rsplit(".", 1)[0]
+        for block in blocks
+    }
     cls.__call__ = call
     return len(blocks)
 
@@ -140,6 +174,17 @@ def main() -> None:
                              "draw the route from them; 0 pins exactly the "
                              "routed set, which keeps the working set tiny")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--threshold", type=float, default=0.85,
+                        help="adaptive top-k mass; 1.0 routes all ten slots "
+                             "so the look-ahead width matches exactly")
+    parser.add_argument("--hold-clock", action="store_true",
+                        help="keep one ALU-only spin in flight on its own "
+                             "stream for the whole decode, so the GPU clock "
+                             "does not depend on where the waits fall")
+    parser.add_argument("--ahead", action="store_true",
+                        help="read the next layer's synthetic route one layer "
+                             "early on a separate pool (perfect-prediction "
+                             "overlap); same rows and bytes")
     args = parser.parse_args()
 
     os.environ.setdefault("FLASHNEXT_TOPK_THRESHOLD", "0.85")
@@ -149,7 +194,7 @@ def main() -> None:
     language = model.language_model
     store = language.model.layers[0].mlp.switch_mlp.gate_proj.cache.store
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
-    set_threshold(0.85)
+    set_threshold(args.threshold)
 
     fixed = list(range(max(args.pool, args.experts)))
     pinned = 0
@@ -163,6 +208,12 @@ def main() -> None:
                 for part in PARTS:
                     pinned += store.pin_rows(f"{prefix}.{projection}.{part}", fixed)
     _PICK["miss"] = args.miss
+    _PICK["ahead"] = args.ahead
+    if args.ahead:
+        global _AHEAD_POOL
+        from concurrent.futures import ThreadPoolExecutor
+
+        _AHEAD_POOL = ThreadPoolExecutor(8, thread_name_prefix="flashnext-ahead")
     _PICK["fixed_route"] = args.route_fixed
     _PICK["mode"] = args.mode
     _PICK["fixed"] = fixed
@@ -196,6 +247,31 @@ def main() -> None:
     from models.flashnext.tests.bench.gpu_pstates import GpuStates, summarize
 
     gpu_states = GpuStates()
+    holding = None
+    if args.hold_clock:
+        import threading
+
+        from models.flashnext.expert_cache import _KEEPWARM_ITERS, _KEEPWARM_SOURCE
+
+        holding = threading.Event()
+
+        def hold():
+            # MLX streams belong to the thread that made them.
+            stream = mx.new_stream(mx.gpu)
+            kernel = mx.fast.metal_kernel(
+                name="flashnext_hold_clock", input_names=["iterations"],
+                output_names=["out"], source=_KEEPWARM_SOURCE,
+            )
+            iterations = mx.array([_KEEPWARM_ITERS[0]], dtype=mx.int32)
+            while not holding.is_set():
+                mx.eval(kernel(
+                    inputs=[iterations], grid=(32, 1, 1), threadgroup=(32, 1, 1),
+                    output_shapes=[(32,)], output_dtypes=[mx.float32],
+                    stream=stream,
+                )[0])
+
+        holder = threading.Thread(target=hold, daemon=True)
+        holder.start()
     gpu_before = gpu_states.sample()
     began = time.perf_counter()
     for _ in range(args.tokens):
@@ -205,6 +281,9 @@ def main() -> None:
         produced.append(int(token.item()))
     elapsed = time.perf_counter() - began
     gpu_after = gpu_states.sample()
+    if holding is not None:
+        holding.set()
+        holder.join()
     physical = disk_bytes_read() - before
     vm_after = vm_counters()
     from models.flashnext.diskio import free_memory_mb
@@ -225,6 +304,8 @@ def main() -> None:
     print(f"rate: {args.tokens / elapsed:.2f} tok/s", flush=True)
     print(f"ms/token: {elapsed / args.tokens * 1000:.1f}", flush=True)
     print(f"miss: {args.miss}", flush=True)
+    print(f"ahead: {int(args.ahead)}  hold-clock: {int(args.hold_clock)}  "
+          f"threshold: {args.threshold}", flush=True)
     print(f"MB/token: {physical / args.tokens / 1e6:.1f}", flush=True)
     print(f"rdahead: {int(store._rdahead)}", flush=True)
     print(vm_delta(vm_before, vm_after, args.tokens), flush=True)

@@ -5185,3 +5185,102 @@ band of 5.1%, unresolved. Pair 3's fix arm read 34 MB/token more than its
 control over the second window, about 19 ms/token at 0.55 ms/MB, so page-cache
 state dominates that pair. The fix stays on as the intended keep-warm
 behaviour; it has no resolved speed claim.
+
+## Path to 5 tok/s, phases 0 to 2, 2026-09-23
+
+Goal: 5 tok/s (200 ms/token) on the installed checkpoint without quantizing or
+pruning. All runs used the chat defaults with keep-warm on stream-pack waits,
+8 pins, greedy decoding and private pin copies. The machine was busy (load 2 to
+4.5, a browser decoding video).
+
+### Phase 0: split at P15
+
+`bench_split_p15` (new) decodes the long-states prompt twice in one normal-chat
+backend: an unprofiled reference arm, then a profiled arm with the runtime's I/O
+timers. Evidence: `results/flashnext/20260923-113438-phase0-p15/`. The first
+attempt crashed: with `FLASHNEXT_PROFILE_IO=1` the parallel n-gram prefill (a
+bundle member) passed the profiler's `_ProfiledRead` wrapper to
+`mx.from_dlpack`. It now resolves futures through `_resolve_future`; a unit
+test covers the profiled path.
+
+Reference arm: 367.7 ms/token (2.72 tok/s), 394.7 MB/token, mean GPU state
+14.98, digest `e19af44d5268e9d1`. Profiled arm, same digest:
+
+| Bucket | ms/token |
+|---|---:|
+| waiting for expert reads (`io_wait`) | 232.1 |
+| GPU drain at the router sync (`score_sync`) | 93.0 |
+| route sync (`router_sync`) | 8.3 |
+| n-gram rows | 5.7 |
+| top-k host loop | 3.4 |
+| `to_mx`, issue, shared expert | 5.0 |
+| remainder (host, final token sync) | 22.7 |
+| total | 370.3 |
+
+At P15 the non-read part of a token is about 138 ms. Reads are 63% of the
+token. The synthetic zero-read floor (`bench_read_ceiling --miss 0 --pool 32`)
+measured 206.6 and 217.6 ms/token with the GPU 99.6% active but at mean state
+5.5 to 6.3; with 4.95 GB pinned and compressor traffic it is not a clean
+floor, so the production split is the compute figure.
+
+### Phase 2: route predictability
+
+`bench_route_predict` (new) applies the routers of layers L+1 and L+2 to layer
+L's MoE input and compares their top-m experts with the experts those layers
+route. Two 128-token prompts. Evidence:
+`results/flashnext/20260923-113918-route-predict/`.
+
+| Predictor | Recall, photosynthesis | Recall, SketchUp | Unused streamed experts per layer |
+|---|---:|---:|---:|
+| previous token, same layer | 42.8% | 38.1% | |
+| lead 1, top 8 | 64.8% | 65.8% | 2.8 |
+| lead 1, top 10 | 71.8% | 72.8% | 4.2 |
+| lead 1, top 16 | 82.4% | 83.8% | 9.2 |
+| lead 2, top 10 | 59.6% | 62.1% | 5.0 |
+
+About 7.7 to 7.9 experts per layer are streamed. The next layer's router on this
+layer's input is a much better predictor than the previous token, but no width
+reaches 80% recall with at most 25% extra reads.
+
+### Phase 1: overlap at P15 with a perfect predictor
+
+`bench_read_ceiling --ahead` (new) draws each layer's synthetic route one layer
+early and reads it on a separate pool while the current layer runs; the real
+read then finds the rows cached. Both arms draw routes identically, so they
+keep one digest. `--hold-clock` keeps one spin in flight on a background
+thread's own stream for the whole decode; `--threshold` fixes the route width.
+
+A first run at threshold 0.85 was confounded: the look-ahead drew ten experts
+where the layer used seven to ten (597 against 474 MB/token), and the GPU state
+fell to 3.5 to 8.4 because the shorter waits left keep-warm nothing to cover.
+Pairs: -5.9%, +15.0%, -17.6% token time
+(`20260923-114137-phase1-ahead/`, superseded).
+
+Clean run: threshold 1.0, 3 of 10 experts cold per layer, clock held in both
+arms, 60 tokens, order off/ahead/ahead/off/off/ahead
+(`20260923-114600-phase1b-ahead-held/`). All arms kept digest
+`4953cf6d83e6c2ac`, mean GPU state 14.99 and 443 to 450 MB/token.
+
+| Pair | Off | Ahead | Change |
+|---:|---:|---:|---:|
+| 1 | 358.3 | 358.8 | +0.1% |
+| 2 | 370.6 | 359.7 | -2.9% |
+| 3 | 358.8 | 356.3 | -0.7% |
+
+A profiled pair (40 tokens) explains the tie. Look-ahead cut the read wait from
+238.3 to 225.7 ms/token, and the rest of the token grew from 114.0 to
+134.8 ms. Of the read wait, 159 to 176 ms was queue residence for the eight
+workers and 53 to 60 ms time inside `pread` on the critical task; physical
+reads ran at about 1.9 GB/s during the wait. Reading earlier does not reduce
+the drive's work, and concurrent reads slow the rest of the token. The overlap
+rejection of 2026-08-30 therefore holds at P15, with the clock held. Exact
+look-ahead prefetch is rejected on this machine.
+
+### Consequence for 5 tok/s
+
+Without overlap a token is reads plus compute. At the measured 138 ms of
+compute, 200 ms leaves about 62 ms for reads: about 115 MB/token at the
+observed 1.9 GB/s, or about 180 MB/token at the 3.0 GB/s this pattern reaches
+in isolation, against about 400 MB/token today. The best realizable cache
+policy saves 2.8% and Belady's optimum 41% at 4 GB. No measured software lever
+reaches that byte count on 16 GB.

@@ -15,6 +15,21 @@ from models.flashnext.store import SafeTensorStore
 
 class ParallelNgramTests(unittest.TestCase):
     def test_parallel_matches_serial(self):
+        self._check_parallel_matches_serial()
+
+    def test_parallel_matches_serial_while_profiling_io(self):
+        # Profiled reads return a timing wrapper; the parallel path crashed
+        # on it during prefill (2026-09-23).
+        from models.flashnext import expert_cache
+
+        previous = expert_cache.profile_enabled()
+        expert_cache.set_profile(True)
+        try:
+            self._check_parallel_matches_serial()
+        finally:
+            expert_cache.set_profile(previous)
+
+    def _check_parallel_matches_serial(self):
         mx.random.seed(9)
         sizes = (40, 25, 33)
         tensors, weight_map = {}, {}

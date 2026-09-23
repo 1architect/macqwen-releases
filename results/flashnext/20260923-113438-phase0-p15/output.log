@@ -1,0 +1,110 @@
+=== 1 floor pool32
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+patched layers: 48
+digest: b3a205801de8aa74
+free memory: 139.59375 MB
+mode: ram
+pool: 32 pinned/layer, route 8, touched 32/layer
+pinned: 4.95 GB
+rate: 4.84 tok/s
+ms/token: 206.6
+miss: 0.0
+MB/token: 0.1
+rdahead: 0
+vm/token compress=599 decompress=1047 pagein=97 pageout=0 reactivated=147 swapin=2 swapout=0
+gpu active share: 0.997
+gpu mean active state: 5.53 of 15
+gpu state residency: P3=0.25 P5=0.44 P7=0.19 P9=0.06 P13=0.01 P15=0.03
+=== 2 split p15
+reference  {'tokens': 128, 'gen_rate': 2.672, 'ms_per_token': 374.28, 'mb_per_token': 406.0, 'gpu_mean_state': 14.977, 'gpu_active_share': 0.9877, 'digest': 'e19af44d5268e9d1'}
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/tests/bench/bench_split_p15.py", line 138, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/tests/bench/bench_split_p15.py", line 116, in main
+    profiled = decode(backend, args.tokens, clocks, meter)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/tests/bench/bench_split_p15.py", line 53, in decode
+    _text, stats = backend.generate(tokens, on_prefilled=on_prefilled)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/macqwen/backends/flashnext.py", line 637, in generate
+    _, token = prefill_language(
+               ^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/prefill.py", line 103, in prefill_language
+    _logits, _hidden, token = prefill_target(
+                              ^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/prefill.py", line 60, in prefill_target
+    output = language(ids, **call)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/models/.venv-qwen4exp/lib/python3.12/site-packages/mlx_vlm/models/qwen3_5/language.py", line 2072, in __call__
+    out = self.model(
+          ^^^^^^^^^^^
+  File "/Users/gioma/models/.venv-qwen4exp/lib/python3.12/site-packages/mlx_vlm/models/qwen4_exp/language.py", line 819, in __call__
+    hidden_states = layer(
+                    ^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/compile_glue.py", line 42, in _decoder_call
+    return _ORIGINAL["decoder"](
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/models/.venv-qwen4exp/lib/python3.12/site-packages/mlx_vlm/models/qwen4_exp/language.py", line 753, in __call__
+    hidden_states = hidden_states + self.ple(
+                                    ^^^^^^^^^
+  File "/Users/gioma/models/.venv-qwen4exp/lib/python3.12/site-packages/mlx_vlm/models/qwen4_exp/language.py", line 704, in __call__
+    embeddings = self.ple_embedding(input_ids, cache)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/models/.venv-qwen4exp/lib/python3.12/site-packages/mlx_vlm/models/qwen4_exp/language.py", line 641, in __call__
+    embeddings = self.ngram_embedding(ngram_ids)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/ngram.py", line 185, in __call__
+    values = self._direct(flat) if self.direct else self._legacy(flat)
+             ^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/ngram.py", line 133, in _direct
+    result = self._direct_rows(flat)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/ngram.py", line 169, in _direct_rows
+    blocks = self._parallel_blocks(groups)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/ngram.py", line 151, in _parallel_blocks
+    weight, scales, biases = (
+    ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/ngram.py", line 152, in <genexpr>
+    shard.store.to_mx(f"{shard.prefix}.{part}", future.result())
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/store.py", line 589, in to_mx
+    array = mx.from_dlpack(out, copy=False) if self._dlpack else mx.array(out)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: from_dlpack(): incompatible function arguments. The following argument types are supported:
+    1. from_dlpack(x: DLPackCompatible, /, *, copy: bool | None = None) -> array
+
+Invoked with types: models.flashnext.expert_cache._ProfiledRead, kwargs = { copy: bool }
+=== 3 floor pool32
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+patched layers: 48
+digest: b3a205801de8aa74
+free memory: 108.546875 MB
+mode: ram
+pool: 32 pinned/layer, route 8, touched 32/layer
+pinned: 4.95 GB
+rate: 4.60 tok/s
+ms/token: 217.6
+miss: 0.0
+MB/token: 0.1
+rdahead: 0
+vm/token compress=1076 decompress=1641 pagein=148 pageout=1 reactivated=1222 swapin=2 swapout=0
+gpu active share: 0.996
+gpu mean active state: 6.32 of 15
+gpu state residency: P3=0.07 P5=0.38 P7=0.42 P9=0.11
+=== done
+=== 4 split p15 (rerun after ngram profile fix)
+reference  {'tokens': 128, 'gen_rate': 2.719, 'ms_per_token': 367.72, 'mb_per_token': 394.7, 'gpu_mean_state': 14.981, 'gpu_active_share': 0.9879, 'digest': 'e19af44d5268e9d1'}
+profiled   {'tokens': 128, 'gen_rate': 2.701, 'ms_per_token': 370.26, 'mb_per_token': 407.0, 'gpu_mean_state': 14.971, 'gpu_active_share': 0.9899, 'digest': 'e19af44d5268e9d1', 'split_ms_per_token': {'io_wait': 232.14, 'to_mx': 2.68, 'moe_issue': 1.95, 'router_sync': 8.29, 'score_sync': 93.04, 'topk_python': 3.4, 'shared_expert': 0.4, 'ngram_wait': 5.7, 'remainder': 22.66}, 'io_calls_per_token': 48.0}
+  io_wait          232.14 ms/token
+  to_mx              2.68 ms/token
+  moe_issue          1.95 ms/token
+  router_sync        8.29 ms/token
+  score_sync        93.04 ms/token
+  topk_python        3.40 ms/token
+  shared_expert      0.40 ms/token
+  ngram_wait         5.70 ms/token
+  remainder         22.66 ms/token
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-113438-phase0-p15/split-p15-rerun.json

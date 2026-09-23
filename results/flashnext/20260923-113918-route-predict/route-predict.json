@@ -1,0 +1,125 @@
+{
+ "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+ "resident_experts": 8,
+ "tokens": 128,
+ "leads": [
+  1,
+  2
+ ],
+ "widths": [
+  8,
+  10,
+  16,
+  24
+ ],
+ "slab_experts": 60,
+ "prompts": {
+  "photosynthesis": {
+   "tokens": 128,
+   "gen_rate": 2.681,
+   "digest": "e19af44d5268e9d1",
+   "layer_samples": 6144,
+   "predictors": {
+    "lead1-top8": {
+     "recall": 0.6477,
+     "streamed_recall": 0.6478,
+     "wasted_streamed_per_layer": 2.788
+    },
+    "lead1-top10": {
+     "recall": 0.7182,
+     "streamed_recall": 0.7181,
+     "wasted_streamed_per_layer": 4.196
+    },
+    "lead1-top16": {
+     "recall": 0.8236,
+     "streamed_recall": 0.8235,
+     "wasted_streamed_per_layer": 9.24
+    },
+    "lead1-top24": {
+     "recall": 0.8797,
+     "streamed_recall": 0.8796,
+     "wasted_streamed_per_layer": 16.624
+    },
+    "lead2-top8": {
+     "recall": 0.5313,
+     "streamed_recall": 0.5313,
+     "wasted_streamed_per_layer": 3.611
+    },
+    "lead2-top10": {
+     "recall": 0.5961,
+     "streamed_recall": 0.5961,
+     "wasted_streamed_per_layer": 5.031
+    },
+    "lead2-top16": {
+     "recall": 0.715,
+     "streamed_recall": 0.7148,
+     "wasted_streamed_per_layer": 9.864
+    },
+    "lead2-top24": {
+     "recall": 0.7941,
+     "streamed_recall": 0.7939,
+     "wasted_streamed_per_layer": 16.918
+    }
+   },
+   "previous_token": {
+    "recall": 0.4279,
+    "streamed_recall": 0.4283
+   },
+   "streamed_per_layer": 7.92
+  },
+  "sketchup": {
+   "tokens": 128,
+   "gen_rate": 2.484,
+   "digest": "cffbe0087a8a83c7",
+   "layer_samples": 6144,
+   "predictors": {
+    "lead1-top8": {
+     "recall": 0.6583,
+     "streamed_recall": 0.657,
+     "wasted_streamed_per_layer": 2.784
+    },
+    "lead1-top10": {
+     "recall": 0.7277,
+     "streamed_recall": 0.7264,
+     "wasted_streamed_per_layer": 4.206
+    },
+    "lead1-top16": {
+     "recall": 0.8375,
+     "streamed_recall": 0.8365,
+     "wasted_streamed_per_layer": 9.212
+    },
+    "lead1-top24": {
+     "recall": 0.8942,
+     "streamed_recall": 0.8934,
+     "wasted_streamed_per_layer": 16.586
+    },
+    "lead2-top8": {
+     "recall": 0.5549,
+     "streamed_recall": 0.5541,
+     "wasted_streamed_per_layer": 3.495
+    },
+    "lead2-top10": {
+     "recall": 0.6206,
+     "streamed_recall": 0.6196,
+     "wasted_streamed_per_layer": 4.911
+    },
+    "lead2-top16": {
+     "recall": 0.7429,
+     "streamed_recall": 0.7417,
+     "wasted_streamed_per_layer": 9.721
+    },
+    "lead2-top24": {
+     "recall": 0.823,
+     "streamed_recall": 0.8219,
+     "wasted_streamed_per_layer": 16.756
+    }
+   },
+   "previous_token": {
+    "recall": 0.3805,
+    "streamed_recall": 0.3803
+   },
+   "streamed_per_layer": 7.723
+  }
+ },
+ "status": "completed"
+}

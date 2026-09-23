@@ -1,0 +1,201 @@
+=== arm 1: off
+patched layers: 48
+digest: 4953cf6d83e6c2ac
+free memory: 654.46875 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.79 tok/s
+ms/token: 358.3
+miss: 0.3
+ahead: 0  hold-clock: 1  threshold: 1.0
+MB/token: 448.3
+rdahead: 0
+vm/token compress=17170 decompress=16207 pagein=14761 pageout=2 reactivated=27752 swapin=0 swapout=0
+gpu active share: 1.000
+gpu mean active state: 14.99 of 15
+gpu state residency: P15=1.00
+=== arm 2: ahead
+patched layers: 48
+digest: 4953cf6d83e6c2ac
+free memory: 661.53125 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.79 tok/s
+ms/token: 358.8
+miss: 0.3
+ahead: 1  hold-clock: 1  threshold: 1.0
+MB/token: 450.0
+rdahead: 0
+vm/token compress=20389 decompress=19512 pagein=14830 pageout=1 reactivated=28652 swapin=2 swapout=0
+gpu active share: 0.995
+gpu mean active state: 14.99 of 15
+gpu state residency: P15=1.00
+=== arm 3: ahead
+patched layers: 48
+digest: 4953cf6d83e6c2ac
+free memory: 680.890625 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.78 tok/s
+ms/token: 359.7
+miss: 0.3
+ahead: 1  hold-clock: 1  threshold: 1.0
+MB/token: 450.4
+rdahead: 0
+vm/token compress=19668 decompress=18488 pagein=15117 pageout=3 reactivated=29054 swapin=3 swapout=0
+gpu active share: 0.994
+gpu mean active state: 14.99 of 15
+gpu state residency: P15=1.00
+=== arm 4: off
+patched layers: 48
+digest: 4953cf6d83e6c2ac
+free memory: 618.421875 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.70 tok/s
+ms/token: 370.6
+miss: 0.3
+ahead: 0  hold-clock: 1  threshold: 1.0
+MB/token: 449.4
+rdahead: 0
+vm/token compress=20012 decompress=19286 pagein=15089 pageout=4 reactivated=29356 swapin=3 swapout=0
+gpu active share: 1.000
+gpu mean active state: 14.99 of 15
+gpu state residency: P15=1.00
+=== arm 5: off
+patched layers: 48
+digest: 4953cf6d83e6c2ac
+free memory: 646.1875 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.79 tok/s
+ms/token: 358.8
+miss: 0.3
+ahead: 0  hold-clock: 1  threshold: 1.0
+MB/token: 446.0
+rdahead: 0
+vm/token compress=16996 decompress=17096 pagein=14990 pageout=5 reactivated=21671 swapin=11 swapout=0
+gpu active share: 1.000
+gpu mean active state: 14.99 of 15
+gpu state residency: P15=1.00
+=== arm 6: ahead
+patched layers: 48
+digest: 4953cf6d83e6c2ac
+free memory: 668.234375 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.81 tok/s
+ms/token: 356.3
+miss: 0.3
+ahead: 1  hold-clock: 1  threshold: 1.0
+MB/token: 442.9
+rdahead: 0
+vm/token compress=23772 decompress=23405 pagein=14514 pageout=2 reactivated=17134 swapin=0 swapout=0
+gpu active share: 0.994
+gpu mean active state: 14.99 of 15
+gpu state residency: P15=1.00
+=== done
+=== arm 7: off profiled
+patched layers: 48
+digest: 8b644575f6ac2dea
+free memory: 590.625 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.84 tok/s
+ms/token: 352.3
+miss: 0.3
+ahead: 0  hold-clock: 1  threshold: 1.0
+MB/token: 443.4
+rdahead: 0
+vm/token compress=16875 decompress=16068 pagein=14519 pageout=1 reactivated=24254 swapin=0 swapout=0
+gpu active share: 1.000
+gpu mean active state: 14.99 of 15
+gpu state residency: P15=1.00
+prof completion_overhead: 1.38 ms/token
+prof critical_pread: 59.72 ms/token
+prof critical_queue: 175.54 ms/token
+prof critical_task_overhead: 1.61 ms/token
+prof io_calls: 1920
+prof io_wait: 238.26 ms/token
+prof layer_completion_count: 48000.00 ms/token
+prof layer_completion_sum: 238.26 ms/token
+prof moe_issue: 2.35 ms/token
+prof ngram_wait: 1.69 ms/token
+prof pread_bytes: 1468262400000.00 ms/token
+prof pread_calls: 4301550.00 ms/token
+prof pread_service_sum: 1553.35 ms/token
+prof queue_delay_sum: 3870.10 ms/token
+prof read_tasks: 2159775.00 ms/token
+prof router_sync: 1.44 ms/token
+prof score_sync: 0.00 ms/token
+prof score_sync_bytes: 0.00 ms/token
+prof score_sync_calls: 0.00 ms/token
+prof score_sync_physical_bytes: 0.00 ms/token
+prof score_sync_pool_completed_after: 0.00 ms/token
+prof score_sync_pool_completed_before: 0.00 ms/token
+prof score_sync_pool_queued_after: 0.00 ms/token
+prof score_sync_pool_queued_before: 0.00 ms/token
+prof score_sync_pool_running_after: 0.00 ms/token
+prof score_sync_pool_running_before: 0.00 ms/token
+prof score_sync_threshold_active: 0.00 ms/token
+prof score_sync_threshold_inactive: 48000.00 ms/token
+prof shared_expert: 0.28 ms/token
+prof task_service_sum: 1698.47 ms/token
+prof to_mx: 2.78 ms/token
+prof topk_python: 0.00 ms/token
+=== arm 8: ahead profiled
+patched layers: 48
+digest: 8b644575f6ac2dea
+free memory: 607.84375 MB
+mode: ram
+pool: 8 pinned/layer, route 8, touched 8/layer
+pinned: 1.24 GB
+rate: 2.77 tok/s
+ms/token: 360.5
+miss: 0.3
+ahead: 1  hold-clock: 1  threshold: 1.0
+MB/token: 444.2
+rdahead: 0
+vm/token compress=22906 decompress=22598 pagein=14681 pageout=1 reactivated=20698 swapin=0 swapout=0
+gpu active share: 0.995
+gpu mean active state: 14.99 of 15
+gpu state residency: P15=1.00
+prof completion_overhead: 2.57 ms/token
+prof critical_pread: 52.54 ms/token
+prof critical_queue: 159.13 ms/token
+prof critical_task_overhead: 11.43 ms/token
+prof io_calls: 1920
+prof io_wait: 225.68 ms/token
+prof layer_completion_count: 48000.00 ms/token
+prof layer_completion_sum: 225.68 ms/token
+prof moe_issue: 2.77 ms/token
+prof ngram_wait: 2.39 ms/token
+prof pread_bytes: 1468262400000.00 ms/token
+prof pread_calls: 4301550.00 ms/token
+prof pread_service_sum: 864.81 ms/token
+prof queue_delay_sum: 4179.73 ms/token
+prof read_tasks: 2159775.00 ms/token
+prof router_sync: 4.07 ms/token
+prof score_sync: 0.00 ms/token
+prof score_sync_bytes: 0.00 ms/token
+prof score_sync_calls: 0.00 ms/token
+prof score_sync_physical_bytes: 0.00 ms/token
+prof score_sync_pool_completed_after: 0.00 ms/token
+prof score_sync_pool_completed_before: 0.00 ms/token
+prof score_sync_pool_queued_after: 0.00 ms/token
+prof score_sync_pool_queued_before: 0.00 ms/token
+prof score_sync_pool_running_after: 0.00 ms/token
+prof score_sync_pool_running_before: 0.00 ms/token
+prof score_sync_threshold_active: 0.00 ms/token
+prof score_sync_threshold_inactive: 48000.00 ms/token
+prof shared_expert: 0.33 ms/token
+prof task_service_sum: 1397.32 ms/token
+prof to_mx: 3.32 ms/token
+prof topk_python: 0.00 ms/token
