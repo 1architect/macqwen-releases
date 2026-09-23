@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## MACQWEN 0.5.0 - 2026-09-23
+
+### Added
+
+- Support the installed `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP`
+  checkpoint: alias `vontra-mtp`, content-identity policy with 8 resident
+  experts, frozen slab profiles with a rolling opt-in, and boot-stable
+  slab identity.
+- Add GPU keep-warm as the chat default with a
+  `/config model gpu-keepwarm` toggle, after resolving the GPU
+  clock-collapse finding.
+- Promote the exact opt-in bundle (streamed embedding, compiled glue and
+  norm, cached norm gain, interactive QoS, parallel n-gram prefill, QSA
+  flags, stream-pack) to the chat default with a resolved +2.4%
+  measurement.
+- Add an opt-in locked expert working set (`FLASHNEXT_EXPERT_LOCK_GB`,
+  off, no measured gain) and retained benchmarks for long states,
+  prefill I/O, route traces, cache simulation, footprints, and slab drift.
 
 ### Changed
 
@@ -35,6 +52,12 @@
   migration.
 - Stop writing benchmark output to `/tmp`, to the working directory, or to
   fixed paths.
+
+### Tests
+
+- Pass 425 checkpoint-free shared tests, 417 Flash-Next tests, 22 Qwen27B
+  tests, 58 K2-Horizon tests, and 175 Bonsai-2 tests (5 skipped), plus
+  Python bytecode compilation.
 
 ## MACQWEN 0.4.6 - 2026-09-20
 
