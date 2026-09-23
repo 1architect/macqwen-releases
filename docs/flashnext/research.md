@@ -4948,3 +4948,45 @@ not a default.
 We made the bundle the chat default on 2026-09-23 at the user's request,
 without a resolution band. Its variables are in `settings/launch.py`; an
 explicit environment value at launch rolls back any member.
+
+## Checkpoint identity changed at every boot; slab was off, 2026-09-23
+
+`slab_pack.checkpoint_identity` hashed each shard's `st_dev`, `st_ino` and
+ctime. macOS gives the data volume a new device number at each boot. The
+machine rebooted at 21:25, 21:55, 23:28 and 00:44, and the identity changed
+each time (`b59d036b`, `5742efaa`, `f27db192`, `628e3a8b`, `a92412ad`). After
+each reboot the pin history and frozen snapshot belonged to "another
+checkpoint", slab allocation returned nothing and the 60-slot pack stayed
+off. The token digest cannot show this: slab hits do not change arithmetic.
+Session fingerprints had the same flaw. Both now hash shard name, size and
+mtime only (identity `9b74bb32`). The frozen snapshot was re-seeded from
+`20260922-195811-slab-drift/frozen-pins.json` under the new identity; the old
+files are in `~/.cache/flashnext/backup-20260923-033128/`.
+
+Correction to the two earlier sections of this date: the refactor gate
+(`20260923-023827-refactor-gate`) and the bundle comparison
+(`20260923-030140-exact-bundle`) ran with the slab off in every arm. Both
+comparisons are internally consistent, since both arms lacked it, but the
+refactor gate's comparison with the 2026-09-22 run is not like for like
+(that run had the slab), and the bundle result applies to a slab-off
+runtime. A first extras run (`20260923-032509-extras`) was also slab-off and
+is superseded below.
+
+## Larger slab, compiled chains and prewarm, 2026-09-23
+
+With the slab working, `extras` added a 120-slot slab over 20 layers
+(`FLASHNEXT_SLAB_GLOBAL=120`, `FLASHNEXT_SLAB_NUM_LAYERS=20`),
+`FLASHNEXT_COMPILE=1` and `FLASHNEXT_PREWARM=1` to the current chat defaults.
+Four fresh processes, 128 greedy tokens, 8 pins, order
+defaults/extras/extras/defaults. Evidence:
+`results/flashnext/20260923-033140-extras-slab/`.
+
+| Pair | Defaults | Extras | Change |
+|---:|---:|---:|---:|
+| 1 | 2.973 | 2.870 | -3.5% |
+| 2 | 3.052 | 2.952 | -3.3% |
+
+All arms kept digest `e19af44d5268e9d1`. Physical reads were 359 to 378
+against 361 to 371 MB/token over the second 64 tokens, and the extras arms'
+mean GPU performance state fell to about 9.5 against 13 to 14 for defaults.
+The three changes were not separated. Rejected as a set; the defaults stay.

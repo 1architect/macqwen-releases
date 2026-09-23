@@ -109,6 +109,15 @@ resolution band yet. Six reversed fresh-process pairs with
 `bench_long_states --conditions bundle` against `keepwarm`, bundle variables
 set explicitly to `0`/defaults in the control arm, would resolve it.
 
+### Checkpoint identity fix, 2026-09-23
+
+The slab cache identity changed at every reboot until commit `b33781d`,
+which silently turned the slab pack off after each boot. It now hashes shard
+name, size and mtime only. If the slab ever looks inactive, check that a
+`slab-pack-slots60-*.bin` in `~/.cache/flashnext/` has today's mtime.
+A 120-slot slab with `FLASHNEXT_COMPILE` and prewarm lost 3.3% to 3.5% in
+two pairs and is rejected as a set.
+
 ### Rules the user set this session
 
 - Commits and pushes are allowed; the author is always the user

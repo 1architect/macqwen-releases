@@ -1,0 +1,25 @@
+=== arm 1: defaults
+== defaults: free 83 MB
+  defaults     tok   64  3.14 tok/s   326.9 MB/tok  gpu state 14.98  pcpu state 18.80
+  defaults     tok  128  3.03 tok/s   359.6 MB/tok  gpu state 14.98  pcpu state 18.78
+  defaults: gen 3.06 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-032509-extras/arm-1-defaults.json
+=== arm 2: extras
+== defaults: free 76 MB
+  defaults     tok   64  3.17 tok/s   319.7 MB/tok  gpu state 14.98  pcpu state 18.77
+  defaults     tok  128  3.08 tok/s   346.2 MB/tok  gpu state 14.98  pcpu state 18.78
+  defaults: gen 3.097 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-032509-extras/arm-2-extras.json
+=== arm 3: extras
+== defaults: free 75 MB
+  defaults     tok   64  3.17 tok/s   317.7 MB/tok  gpu state 14.98  pcpu state 18.78
+  defaults     tok  128  3.07 tok/s   344.3 MB/tok  gpu state 14.98  pcpu state 18.77
+  defaults: gen 3.094 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-032509-extras/arm-3-extras.json
+=== arm 4: defaults
+== defaults: free 83 MB
+  defaults     tok   64  3.20 tok/s   317.7 MB/tok  gpu state 14.98  pcpu state 18.77
+  defaults     tok  128  3.08 tok/s   344.6 MB/tok  gpu state 14.98  pcpu state 18.77
+  defaults: gen 3.111 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-032509-extras/arm-4-defaults.json
+=== done
