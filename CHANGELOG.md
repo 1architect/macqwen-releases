@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## MACQWEN 0.5.1 - 2026-09-23
 
 ### Added
 
@@ -25,6 +25,12 @@
   answer `/save` failed with "There is no Stream(gpu, N) in current thread".
 - Parallel n-gram reads no longer crash when I/O profiling is on.
 - Slab record offsets in the Metal kernels are 64-bit.
+
+### Tests
+
+- Pass 427 checkpoint-free shared tests, 430 Flash-Next tests, 22 Qwen27B
+  tests, 58 K2-Horizon tests, and 175 Bonsai-2 tests (5 skipped), plus
+  Python bytecode compilation.
 
 ## MACQWEN 0.5.0 - 2026-09-23
 
