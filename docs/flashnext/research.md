@@ -5127,3 +5127,30 @@ keep-warm spins only during read waits, so a likely reading is that the GPU
 now idles in the host phases between waits and the governor lowers its clock;
 this is not measured. Locking stays off. A keep-warm that covers the whole
 layer, not only the read wait, is the premise for retesting both.
+
+## Whole-turn keep-warm, 2026-09-23 (discarded)
+
+Premise: the 120-slot slab and the locked working set shortened read waits,
+and keep-warm spins only during read waits, so the GPU clock fell to about
+state 8 in both. The candidate ran keep-warm on a background thread for the
+whole turn, one spin in flight at a time on its own stream (a checkpoint-free
+probe showed background-thread submission beside main-thread evaluation was
+safe and exact over six runs). Quiet machine, fresh process per arm, 128
+greedy tokens, order D L LK LS D LS LK L D. Evidence:
+`results/flashnext/20260923-043415-keepwarm-layer/`.
+
+| Condition | tok/s | MB/token, tokens 65-128 | Mean GPU state |
+|---|---|---|---|
+| defaults (read-wait keep-warm) | 3.101, 3.160, 3.165 | 322 to 354 | 12.0 to 13.6 |
+| layer mode | 3.103, 3.186 | 327 to 344 | 15.0 |
+| layer mode + 3 GB expert lock | 2.904, 2.899 | 316 to 326 | 15.0 |
+| layer mode + 120-slot slab | 3.159, 3.086 | 329 to 355 | 15.0 |
+
+All nine arms kept digest `e19af44d5268e9d1`. Layer mode held the GPU at
+P15 in every arm, but measured +0.1% and +0.7% against the neighbouring
+defaults, a tie. With the clock held, the expert lock still lost 6% to 8% and
+the 120-slot slab 0.0% and -2.3%. The clock drop was therefore not what cost
+those two: the lock's loss comes from elsewhere (compressor traffic rose 2.4
+to 7 times in the earlier run), and the larger slab reads no fewer bytes.
+Layer mode was discarded and its code removed. The expert lock remains in the
+runtime, off, with no measured gain.

@@ -1,0 +1,55 @@
+=== arm 1: defaults
+== defaults: free 82 MB
+  defaults     tok   64  3.20 tok/s   319.5 MB/tok  gpu state 12.98  pcpu state 18.80
+  defaults     tok  128  3.06 tok/s   353.6 MB/tok  gpu state 13.62  pcpu state 18.83
+  defaults: gen 3.101 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-043415-keepwarm-layer/arm-1-defaults.json
+=== arm 2: layer
+== defaults: free 83 MB
+  defaults     tok   64  3.15 tok/s   323.8 MB/tok  gpu state 14.99  pcpu state 18.80
+  defaults     tok  128  3.11 tok/s   344.4 MB/tok  gpu state 14.99  pcpu state 18.81
+  defaults: gen 3.103 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-043415-keepwarm-layer/arm-2-layer.json
+=== arm 3: layer-lock3
+== defaults: free 85 MB
+  defaults     tok   64  2.94 tok/s   322.7 MB/tok  gpu state 14.99  pcpu state 18.92
+  defaults     tok  128  2.92 tok/s   326.0 MB/tok  gpu state 14.99  pcpu state 18.90
+  defaults: gen 2.904 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-043415-keepwarm-layer/arm-3-layer-lock3.json
+=== arm 4: layer-slab120
+== defaults: free 86 MB
+  defaults     tok   64  3.23 tok/s   304.5 MB/tok  gpu state 14.99  pcpu state 18.84
+  defaults     tok  128  3.13 tok/s   328.6 MB/tok  gpu state 14.99  pcpu state 18.83
+  defaults: gen 3.159 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-043415-keepwarm-layer/arm-4-layer-slab120.json
+=== arm 5: defaults
+== defaults: free 84 MB
+  defaults     tok   64  3.24 tok/s   307.2 MB/tok  gpu state 12.39  pcpu state 18.80
+  defaults     tok  128  3.14 tok/s   323.7 MB/tok  gpu state 11.98  pcpu state 18.79
+  defaults: gen 3.16 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-043415-keepwarm-layer/arm-5-defaults.json
+=== arm 6: layer-slab120
+== defaults: free 83 MB
+  defaults     tok   64  3.24 tok/s   313.6 MB/tok  gpu state 14.99  pcpu state 18.88
+  defaults     tok  128  3.00 tok/s   354.8 MB/tok  gpu state 14.99  pcpu state 18.98
+  defaults: gen 3.086 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-043415-keepwarm-layer/arm-6-layer-slab120.json
+=== arm 7: layer-lock3
+== defaults: free 84 MB
+  defaults     tok   64  2.92 tok/s   316.3 MB/tok  gpu state 14.99  pcpu state 18.94
+  defaults     tok  128  2.93 tok/s   315.5 MB/tok  gpu state 14.99  pcpu state 18.93
+  defaults: gen 2.899 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-043415-keepwarm-layer/arm-7-layer-lock3.json
+=== arm 8: layer
+== defaults: free 77 MB
+  defaults     tok   64  3.25 tok/s   301.6 MB/tok  gpu state 14.99  pcpu state 18.84
+  defaults     tok  128  3.16 tok/s   327.5 MB/tok  gpu state 14.99  pcpu state 18.83
+  defaults: gen 3.186 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-043415-keepwarm-layer/arm-8-layer.json
+=== arm 9: defaults
+== defaults: free 80 MB
+  defaults     tok   64  3.22 tok/s   307.1 MB/tok  gpu state 11.92  pcpu state 18.82
+  defaults     tok  128  3.16 tok/s   322.2 MB/tok  gpu state 12.19  pcpu state 18.80
+  defaults: gen 3.165 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-043415-keepwarm-layer/arm-9-defaults.json
+=== done
