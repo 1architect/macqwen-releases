@@ -102,6 +102,13 @@ last `research.md` section); their names now do nothing, and an unknown
 (`FLASHNEXT_OVERLAP=0`) measured +5.2% inside a 9.0% band and stays on;
 `bench_long_states` has a `keepwarm-nooverlap` condition to repeat it.
 
+The exact opt-in bundle became the chat default at the user's request on
+2026-09-23 after two fresh-process pairs (+4.6%, +5.0%, digest
+`e19af44d5268e9d1`); see the last `research.md` section. The bundle has no
+resolution band yet. Six reversed fresh-process pairs with
+`bench_long_states --conditions bundle` against `keepwarm`, bundle variables
+set explicitly to `0`/defaults in the control arm, would resolve it.
+
 ### Rules the user set this session
 
 - Commits and pushes are allowed; the author is always the user
@@ -217,10 +224,19 @@ We use the MLX-backed Metal runtime with the G64 executor enabled:
 FLASHNEXT_METAL_RUNTIME=1
 FLASHNEXT_METAL_G64=1
 FLASHNEXT_SLAB_G64=0
-FLASHNEXT_STREAM_PACK=0
-FLASHNEXT_QSA_CACHE_POOLED_KEYS=0
-FLASHNEXT_QSA_SCATTER_DECODE=0
+FLASHNEXT_GPU_KEEPWARM=1
 ```
+
+The exact opt-in bundle is also on by default since 2026-09-23 (full list in
+`models/flashnext/settings/launch.py`): `FLASHNEXT_STREAM_EMBED=1`,
+`FLASHNEXT_COMPILE_HC=1`, `FLASHNEXT_COMPILE_NORM=1`,
+`FLASHNEXT_NORM_WEIGHT_CACHE=1`, `FLASHNEXT_IO_QOS=user-interactive`,
+`FLASHNEXT_NGRAM_PARALLEL_MIN=64`, `FLASHNEXT_QSA_CACHE_POOLED_KEYS=1`,
+`FLASHNEXT_QSA_SCATTER_DECODE=1`, `FLASHNEXT_OVERLAP=0`,
+`FLASHNEXT_RDAHEAD=0`, `FLASHNEXT_IO_WORKERS=8`, `FLASHNEXT_STREAM_PACK=1`
+and `FLASHNEXT_STREAM_PACK_CHUNK=2`. The launcher only fills unset
+variables, so any member rolls back with an explicit value, for example
+`FLASHNEXT_IO_WORKERS=16 ./chat.sh`.
 
 We roll back to generic MLX Q4/G64 execution with an explicit override:
 
@@ -231,8 +247,8 @@ FLASHNEXT_METAL_G64=0 ./chat.sh --checkpoint "$HOME/models/Qwen3.8-Flash-Next-RE
 The runtime flag selects the MLX-backed Metal path. The separate G64 flag
 selects the executor, and we preserve explicit `0` overrides. Generic Q4/G32
 slab settings remain available for compatible historical checkpoints. They do
-not activate G64 slabs while `FLASHNEXT_SLAB_G64=0`. QSA optimization flags
-remain off; the existing allocation guard remains active.
+not activate G64 slabs while `FLASHNEXT_SLAB_G64=0`. The QSA allocation
+guard remains active alongside the bundle's QSA flags.
 
 `FLASHNEXT_NATIVE_PIPELINE` is obsolete because the native integration was
 removed. Do not add it to a launcher or use it as a control.
@@ -420,8 +436,7 @@ our requested promotion does not resolve the separate long-turn quality gate.
 ## Next steps
 
 1. Keep our requested G64 Metal default and the explicit generic MLX rollback.
-   Keep G64 slabs, stream-pack, and QSA optimization flags off. Do not
-   reintroduce the removed native prototype.
+   Keep G64 slabs off. Do not reintroduce the removed native prototype.
 2. Keep the corrected shared-total reasoning semantics, benchmark evidence,
    and checkpoint-bound pin profiles covered by non-model regression tests.
 3. Test QSA completed-block key caching and the scatter-based decode mask as

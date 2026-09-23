@@ -4944,3 +4944,7 @@ resolution band or a sign test below p = 0.5, so the +4.8% mean is
 directional. The effect is consistent in both pairs and in the byte counts,
 and it matches the sum of the members' earlier point estimates. The bundle is
 not a default.
+
+We made the bundle the chat default on 2026-09-23 at the user's request,
+without a resolution band. Its variables are in `settings/launch.py`; an
+explicit environment value at launch rolls back any member.

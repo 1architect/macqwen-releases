@@ -26,8 +26,10 @@ RMSNorm convention per model, sanitizes mixed Conv1d layouts, and filters stale
 expert IDs from old pin history. `chat.sh` defaults to the MLX-backed Metal
 runtime (`FLASHNEXT_METAL_RUNTIME=1`). We default to the G64 Metal executor
 with `FLASHNEXT_METAL_G64=1`. We retain generic MLX expert execution as the
-explicit rollback with `FLASHNEXT_METAL_G64=0`. G64 slabs and stream-pack remain
-off with `FLASHNEXT_SLAB_G64=0` and `FLASHNEXT_STREAM_PACK=0`.
+explicit rollback with `FLASHNEXT_METAL_G64=0`. G64 slabs remain off with
+`FLASHNEXT_SLAB_G64=0`. Since 2026-09-23 the chat also enables an exact opt-in
+bundle (streamed embedding, compiled glue, QoS, QSA flags, stream-pack and
+others; see `settings/launch.py`).
 
 We enabled this default on 2026-09-17 after six reversed interleaved pairs
 of 32 tokens. Reference median is 2.374 tok/s; Metal median is 2.665 tok/s.
@@ -178,8 +180,8 @@ short equality check, not a representative quality seed. Interrupted
 generations are incomplete gates, not quality failures.
 
 We require our permission before any new quality or performance run.
-We keep `FLASHNEXT_QSA_CACHE_POOLED_KEYS=0` and
-`FLASHNEXT_QSA_SCATTER_DECODE=0`; the existing allocation guard remains active.
+Both QSA flags are on as part of the 2026-09-23 bundle; the existing
+allocation guard remains active.
 Residency is a separate policy question: a
 REAP-specific 32-versus-8 pin comparison must preserve routing and arithmetic
 and win on physical reads or sustained throughput. Extending last-row-only
@@ -207,8 +209,8 @@ Threshold `1.0` keeps the shipped router selection.
 
 Our text runtime, six routing profiles, exact sessions, and shared chat
 integration are active. We default to G64 Metal execution for REAP and retain
-`FLASHNEXT_METAL_G64=0` as the generic MLX rollback. G64 slabs, stream-pack,
-and QSA optimization flags remain off. Cache-aware stays optional; MTP stays
+`FLASHNEXT_METAL_G64=0` as the generic MLX rollback. G64 slabs remain off;
+the exact opt-in bundle, including stream-pack and the QSA flags, is on. Cache-aware stays optional; MTP stays
 disabled. Our requested promotion uses short controlled speed and exact-digest
 evidence. We skip long-turn quality validation at our request and leave general
 quality unverified. Residency and last-row-only prefill remain separate

@@ -19,14 +19,20 @@ The shared measurement rules are in [`../measurement-standard.md`](../measuremen
 - Preserve generic MLX Q4/G64 as our comparison reference and explicit rollback
   with `FLASHNEXT_METAL_G64=0`. The 60-slot Q4/G32 Frontier 8A profiles remain
   checkpoint-specific historical controls, not the current REAP runtime.
-- Keep G64 packed residency, Frontier 8B, and streamed expert-major records
-  disabled by default. G64 slabs and stream-pack stay off with
-  `FLASHNEXT_SLAB_G64=0` and `FLASHNEXT_STREAM_PACK=0`.
+- Keep G64 packed residency and Frontier 8B disabled by default. G64 slabs
+  stay off with `FLASHNEXT_SLAB_G64=0`. Streamed expert-major records
+  (`FLASHNEXT_STREAM_PACK=1`, chunk 2) are part of the exact opt-in bundle we
+  made the chat default on 2026-09-23.
 - For normal Vontra Q4/G32 chat, keep a frozen per-checkpoint slab profile as
   the requested default. Live pin history still updates for routing; use
   `FLASHNEXT_SLAB_PROFILE=rolling` for the previous slab behavior.
-- Keep QSA optimization flags off: `FLASHNEXT_QSA_CACHE_POOLED_KEYS=0` and
-  `FLASHNEXT_QSA_SCATTER_DECODE=0`. The existing allocation guard remains active.
+- The exact opt-in bundle is the chat default since 2026-09-23 at our request:
+  streamed embedding, compiled injections and norm, cached norm gain, QoS
+  user-interactive, parallel n-gram prefill, both QSA flags, overlap off,
+  read-ahead off, 8 I/O workers and stream-pack. It rests on two paired runs
+  (+4.6%, +5.0%, identical digest) without a resolution band; the list is in
+  `settings/launch.py`. Any member rolls back with an explicit environment
+  value at launch. The existing QSA allocation guard remains active.
 - Preserve the exact token digest. Any digest change rejects the optimization.
 - Preserve BF16 rounding boundaries. A small numerical difference is not an
   acceptable quality result.
@@ -125,8 +131,9 @@ defaults.
 1. Keep G64 Metal as our requested default and generic MLX as the explicit
    rollback and comparison reference.
 2. Leave long and cached behavior validation open until we authorize it.
-3. Keep QSA optimization flags off. Complete the cached tool-result QSA/prefill
-   check only with our permission; assess key caching and scatter masks separately.
+3. The QSA flags are on as part of the bundle. Complete the cached
+   tool-result QSA/prefill check and a 16K-32K context comparison only with
+   our permission.
 4. Retain the predeclared-seed, completed-output G64 quality protocol as pending
    work. Our default promotion does not clear this gate or authorize a run.
 5. Compare 32 versus 8 REAP expert pins without changing routes or arithmetic.

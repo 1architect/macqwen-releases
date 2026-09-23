@@ -19,15 +19,30 @@ CHAT_ENV = {
     "FLASHNEXT_FUSED_SHARED": "1",
     "FLASHNEXT_FUSED_SHARED_PARTS": "0",
     "FLASHNEXT_FUSED_UP_SWIGLU": "1",
-    "FLASHNEXT_STREAM_PACK": "0",
     "FLASHNEXT_PROFILE_IO": "0",
     "FLASHNEXT_PREAD_CHUNK": "2",
-    "FLASHNEXT_IO_WORKERS": "16",
     "FLASHNEXT_READ": "pread",
     # Hold the GPU clock during expert reads. 2026-09-22: +23.1% decode over
     # three paired 128-token arms at 8 pins, identical digests, and no thermal
     # warning over a 384-token answer. Preferences can turn it off.
     "FLASHNEXT_GPU_KEEPWARM": "1",
+    # Exact opt-in bundle, promoted on 2026-09-23 at the user's request after
+    # two fresh-process pairs at 128 tokens: +4.6% and +5.0%, identical digest
+    # e19af44d5268e9d1, no resolution band yet. Every member keeps the token
+    # digest; research.md records each one's own measurement.
+    "FLASHNEXT_STREAM_EMBED": "1",
+    "FLASHNEXT_COMPILE_HC": "1",
+    "FLASHNEXT_COMPILE_NORM": "1",
+    "FLASHNEXT_NORM_WEIGHT_CACHE": "1",
+    "FLASHNEXT_IO_QOS": "user-interactive",
+    "FLASHNEXT_NGRAM_PARALLEL_MIN": "64",
+    "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "1",
+    "FLASHNEXT_QSA_SCATTER_DECODE": "1",
+    "FLASHNEXT_OVERLAP": "0",
+    "FLASHNEXT_RDAHEAD": "0",
+    "FLASHNEXT_IO_WORKERS": "8",
+    "FLASHNEXT_STREAM_PACK": "1",
+    "FLASHNEXT_STREAM_PACK_CHUNK": "2",
 }
 
 
