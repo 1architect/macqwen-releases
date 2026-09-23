@@ -1,0 +1,117 @@
+<|im_start|>user
+Resuma o texto a seguir em duas frases.
+
+
+
+We recorded a terminal sanity check with 3 consecutive arms and a 32-token
+horizon. The median generation rate was 3.74 tok/s (range 3.23–3.78), tail
+rate was 3.45 tok/s, physical reads were 193.3 MB/token, and every arm produced
+digest `1a9abb4b5fdc523a`. This is a sanity check, not a statistical promotion;
+it does not promote G64 or change the MLX control.
+
+## Historical status, 2026-09-04
+
+At that time, the FlashNext runtime used 60 skew-selected slots, file-backed
+slab storage, the SIMD Q4/G32 Metal MoE path, scratch-free fused-down
+accumulation, shared-output fusion, Up-QMV/SwiGLU, chunk 2, and 16 I/O workers.
+
+The controlled 60-slot Frontier 8A profile measures 3.08 tok/s generation, 3.00 tok/s tail, and 279.7 MB/token. The corrected decode-only 16-worker control measures 3.13 tok/s generation, 3.04 tok/s tail, and 262.0 MB/token. The accepted clean-boot baseline remains 2.83 tok/s.
+
+The isolated custom Q4 kernel is bit-identical and 3.5% to 4.4% faster on production shapes. The complete-model comparison remains unresolved inside a 7.8% resolution band. Issues #24, #25, #43, #45, #48, and #49 remain open. Issue #23 remains the bit-exact RMSNorm compile gate.
+
+Later corrections supersede these interpretations. Historical tables remain
+checkpoint-specific evidence. Use the operational correction and the final
+REAP sections for active decisions.
+
+## Original chronological record
+
+Every measured experiment, in the order it was run. Read [`handoff.md`](handoff.md) first: it holds the current state, how to run the model, and the rules. This file holds the evidence behind them. Nothing here is a proposal. Each section records what was tested, what it measured, and why it was kept or rejected. Before proposing an optimisation, search this file for it. The test registry in the handoff is the index.
+
+## Historical prefill bottleneck
+
+This section records the first implementation state. Later sections supersede its rates and proposed next steps. Prefill runs at 0.77 tok/s. 93 tokens take about 120 seconds. A MoE prefill routes about 290 distinct experts per layer against decode's 10, so it reads 25.35 GB to process 93 tokens. Chunking the prompt is worse, not better: 16-token chunks would read 69 GB total. The GPU is idle throughout. `gather_qmm` is 3.2 s of a 121 s prefill. This is where the remaining work is. MACQWEN integration: `macqwen/session.py` now appends only the new turn to its live cache. Context images remain separate work.
+
+## Native MTP tests on 2026-08-27
+
+- Downloaded only the 76 native MTP tensors: 1.63 GB.
+- Added mixed-precision inference for MTP modules missing from `config.json`.
+- Fixed adaptive top-k for multi-token forwards.
+- Five-token prefill improved from 10.17 s to 7.23 s, 29% faster.
+- Exact MTP depth 4 reached 0.37 tok/s with 34% draft acceptance.
+- Exact MTP depth 1 reached 0.72 tok/s with 89% draft acceptance.
+- Target-only threshold 0.30 reached 1.98 tok/s, but factual output failed.
+- Target-only top-1 reached 3.08 tok/s, but output became unusable.
+- MTP-only reached 44.3 tok/s, then entered repetition and lost coherence.
+
+Keep MTP disabled by default. Exact MTP adds more streamed work than it saves on this 16 GB machine. Later I/O work raises top-1 above this result. See the final continuation.
+
+## Non-quantized path limits
+
+Later tests changed the physical result, but not the quality conclusion.
+
+- Positioned `pread` replaces NumPy fancy-indexed `mmap` for normal routing. Reversed tests measure 1.64 to 2.09 tok/s, versus 0.84 to 1.02.
+- DLPack removes the NumPy-to-MLX copy. Shared-expert overlap adds about 3%.
+- At 1.4 experts per layer, shared-shard `mmap` beats `pread` by about 34%.
+- One shared `mmap` per shard adds about 3% over one map per tensor.
+- Disabling reasoning cuts the first prompt from 68 to 28 tokens.
+- `--fast` keeps threshold 0.20 globally and 0.40 on 12 sensitive layers. It does not renormalize scores after removing experts.
+- Warm raw-prompt tests cross 5 tok/s. A real 40-token Portuguese chat answer measures 3.21 tok/s and shows lexical quality loss.
+- Top-1 averages 4.75 tok/s and sometimes reaches 5.68 tok/s. It outputs control tokens instead of an answer for the seasons prompt.
+- Disabling PLE averages 5.36 tok/s. It outputs code fences and control-token repetitions. PLE is required. Rejected in this continuation:
+
+- `preadv` ties `pread` normally and loses to `mmap` at low routing.
+- Partial score renormalization changes correct answers.
+- `MADV_NORMAL`, `MADV_SEQUENTIAL`, and `MADV_WILLNEED` lose.
+- A last-result cache hits 17% to 22%, but gives no speed gain.
+- Grouping nine reads into three tasks loses about 12%.
+- Eight and twelve I/O workers do not beat sixteen.
+- Parallel n-gram reads give no measurable gain.
+- Running PLE every two or four tokens gives no speed gain.
+- BF16 router softmax loses to FP32 accumulation.
+- Softmax over only ten selected router values is slower.
+
+The non-quantized quality ceiling remains below 5 tok/s. Every tested configuration above 5 tok/s destroys useful output.
+
+## Exact-path tests
+
+More non-quantized paths were measured after the final continuation.
+
+- Oracle speculative verification reaches 1.53 tok/s at block 1, 2.21 at block 8, and 3.17 at block 24. These numbers assume a free, perfect draft. A real draft must be slower and has lower acceptance, so it cannot reach 5.
+- Lossless Zstandard compression reduces packed expert weights by 4%. Scales and biases compress better, but the combined row shrinks only 10%.
+- The normal profile requests 37.60 GB for 32 tokens. macOS reads 16.16 GB physically, so the page-cache fill rate is 57%. It runs at 2.06 tok/s.
+- The fast profile requests 8.77 GB and reads 2.82 GB physically. Its fill rate is 68% and it runs at 3.30 tok/s, but the Portuguese output is broken.
+- Pinning the six experts selected during the first eight generation tokens uses 0.93 GB and improves 1.61-1.62 to 1.65-1.68 tok/s, about 3%. This is below measured variance. Pinning 1.85 GB is slower. Updating the pinned set every eight tokens is also slower.
+- Loading those six experts as reusable MLX slabs ties page pinning at 1.23 versus 1.20 tok/s. The extra merge path has no useful gain.
+- Pinning two additional recurring fast experts uses 1.24 GB. Its repeated gain is only 9%, below variance. Four extras use 1.54 GB and fall to 1.40 tok/s against a 1.49 tok/s control.
+- Allocating 288 tail slots globally improves future mass coverage from 28.2% to 30.2%, but increases active experts and falls from 1.63 to 1.47 tok/s. A 192-slot global set covers 24.2%, keeps coherent output, and measures 1.61 tok/s. Cost-aware allocation loses the same tail mass.
+- `F_NOCACHE` for n-gram rows ties the control. Using it for experts is 8% slower. Disabling cache only during prefill also gives no gain.
+- Sorting expert reads, clearing MLX's 26-87 MB temporary cache, and forcing router-first scheduling all tie or lose against the control.
+- Selective layer protection improves the fast response but still emits lexical errors, while speed falls from 2.64-2.85 to 2.19-2.43 tok/s.
+- Post-cut score renormalization makes the low-I/O profiles incoherent.
+- The earlier `F_RDAHEAD=0` result had the wrong sign. The order-corrected result is 1.3% faster than the default in 8 of 8 pairs, flat across miss levels, and does not clear a resolution band.
+- `F_RDADVISEV` averages 0.89 tok/s against 0.98 for direct `pread`, 10% slower. Its `NOAGE` flag returns `EPERM` on this checkpoint filesystem.
+- A 1024-row cache per n-gram shard has only a 4.9% hit rate. It averages 0.75 tok/s against 0.99 without the cache, while token IDs stay equal.
+- Metal I/O returns byte-identical rows. On 15.7 GB of cold random ranges, batch 8 improves only 3%. Batches 2 and 4 lose 2% to 3% against `pread`. Broad RAM pinning confirms the kernel already uses free RAM efficiently. A narrow eight-expert normal-route set is the useful exception below.
+
+## Contribution-oracle and fixed-overhead tests
+
+Two remaining non-quantized hypotheses were tested and rejected. The expert-contribution oracle evaluates all top-10 expert outputs, then checks every possible subset. Over eight decode tokens and 384 layer-token rows:
+
+- threshold 0.85 selects 7.93 experts per layer;
+- the best possible subset at the same local output error selects 7.92;
+- perfect information saves only 0.1% of expert slots;
+- router-score and measured-contribution ranks have rho 0.877;
+- their top expert matches on 75.5% of rows.
+
+The router score is already nearly optimal for choosing a smaller subset. An output-based controller cannot recover the quality lost by `--fast`. It also must compute an expert before observing its output, so it cannot save runtime I/O directly. The retained diagnostic is:
+
+```bash
+./models/flashnext/bench_contribution_oracle.py --tokens 8
+```
+
+A proposed hyper-connection profile inserted `mx.eval` after every component. The profile added 192 GPU synchronizations per token and mixed work between timing buckets. Its reported 89.3 ms per token<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

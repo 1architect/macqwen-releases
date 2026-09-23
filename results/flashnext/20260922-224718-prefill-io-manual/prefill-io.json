@@ -1,0 +1,64 @@
+{
+ "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+ "tokens": 1024,
+ "conditions": [
+  "baseline"
+ ],
+ "arms": [
+  {
+   "round": 1,
+   "condition": "baseline",
+   "prompt_tokens": 1007,
+   "prefill_s": 49.283,
+   "prefill_tok_s": 20.43,
+   "prefill_gb": 50.721,
+   "drive_gb_s": 1.029,
+   "free_mb_before": 128.625,
+   "digest": "f88d3c8963149cb6",
+   "mlx_peak_gb": 6.145,
+   "profile": {
+    "io_wait": 25.6392,
+    "router_sync": 0.5287,
+    "ngram_wait": 5.5915,
+    "to_mx": 0.0162,
+    "moe_issue": 0.0055,
+    "score_sync": 14.9017,
+    "topk_python": 0.074,
+    "shared_expert": 0.0106,
+    "score_sync_bytes": 2584576.0,
+    "score_sync_physical_bytes": 2584576,
+    "score_sync_calls": 48,
+    "score_sync_threshold_active": 48,
+    "score_sync_threshold_inactive": 0,
+    "score_sync_pool_queued_before": 0,
+    "score_sync_pool_queued_after": 0,
+    "score_sync_pool_running_before": 0,
+    "score_sync_pool_running_after": 0,
+    "score_sync_pool_completed_before": 0,
+    "score_sync_pool_completed_after": 0,
+    "io_calls": 48,
+    "read_tasks": 72279,
+    "pread_calls": 144369,
+    "pread_bytes": 49277952000,
+    "queue_delay_sum": 22476.5102,
+    "task_service_sum": 408.9605,
+    "pread_service_sum": 345.2422,
+    "critical_queue": 25.562,
+    "critical_pread": 0.0632,
+    "critical_task_overhead": 0.0128,
+    "completion_overhead": 0.0011,
+    "layer_completion_sum": 25.6392,
+    "layer_completion_count": 48
+   }
+  }
+ ],
+ "status": "completed",
+ "summary": {
+  "baseline": {
+   "median_tok_s": 20.43,
+   "arms": [
+    20.43
+   ]
+  }
+ }
+}

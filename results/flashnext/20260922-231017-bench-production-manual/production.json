@@ -1,0 +1,5796 @@
+{
+  "prompt_source": "/private/tmp/claude-501/-Users-gioma-Developer-MACQWEN/f0ec8ed8-2503-4119-9932-020f2dab4817/scratchpad/qsa-prompt.txt",
+  "prompt": "<|im_start|>user\nResuma o texto a seguir em duas frases.\n\n\n\nWe recorded a terminal sanity check with 3 consecutive arms and a 32-token\nhorizon. The median generation rate was 3.74 tok/s (range 3.23\u20133.78), tail\nrate was 3.45 tok/s, physical reads were 193.3 MB/token, and every arm produced\ndigest `1a9abb4b5fdc523a`. This is a sanity check, not a statistical promotion;\nit does not promote G64 or change the MLX control.\n\n## Historical status, 2026-09-04\n\nAt that time, the FlashNext runtime used 60 skew-selected slots, file-backed\nslab storage, the SIMD Q4/G32 Metal MoE path, scratch-free fused-down\naccumulation, shared-output fusion, Up-QMV/SwiGLU, chunk 2, and 16 I/O workers.\n\nThe controlled 60-slot Frontier 8A profile measures 3.08 tok/s generation, 3.00 tok/s tail, and 279.7 MB/token. The corrected decode-only 16-worker control measures 3.13 tok/s generation, 3.04 tok/s tail, and 262.0 MB/token. The accepted clean-boot baseline remains 2.83 tok/s.\n\nThe isolated custom Q4 kernel is bit-identical and 3.5% to 4.4% faster on production shapes. The complete-model comparison remains unresolved inside a 7.8% resolution band. Issues #24, #25, #43, #45, #48, and #49 remain open. Issue #23 remains the bit-exact RMSNorm compile gate.\n\nLater corrections supersede these interpretations. Historical tables remain\ncheckpoint-specific evidence. Use the operational correction and the final\nREAP sections for active decisions.\n\n## Original chronological record\n\nEvery measured experiment, in the order it was run. Read [`handoff.md`](handoff.md) first: it holds the current state, how to run the model, and the rules. This file holds the evidence behind them. Nothing here is a proposal. Each section records what was tested, what it measured, and why it was kept or rejected. Before proposing an optimisation, search this file for it. The test registry in the handoff is the index.\n\n## Historical prefill bottleneck\n\nThis section records the first implementation state. Later sections supersede its rates and proposed next steps. Prefill runs at 0.77 tok/s. 93 tokens take about 120 seconds. A MoE prefill routes about 290 distinct experts per layer against decode's 10, so it reads 25.35 GB to process 93 tokens. Chunking the prompt is worse, not better: 16-token chunks would read 69 GB total. The GPU is idle throughout. `gather_qmm` is 3.2 s of a 121 s prefill. This is where the remaining work is. MACQWEN integration: `macqwen/session.py` now appends only the new turn to its live cache. Context images remain separate work.\n\n## Native MTP tests on 2026-08-27\n\n- Downloaded only the 76 native MTP tensors: 1.63 GB.\n- Added mixed-precision inference for MTP modules missing from `config.json`.\n- Fixed adaptive top-k for multi-token forwards.\n- Five-token prefill improved from 10.17 s to 7.23 s, 29% faster.\n- Exact MTP depth 4 reached 0.37 tok/s with 34% draft acceptance.\n- Exact MTP depth 1 reached 0.72 tok/s with 89% draft acceptance.\n- Target-only threshold 0.30 reached 1.98 tok/s, but factual output failed.\n- Target-only top-1 reached 3.08 tok/s, but output became unusable.\n- MTP-only reached 44.3 tok/s, then entered repetition and lost coherence.\n\nKeep MTP disabled by default. Exact MTP adds more streamed work than it saves on this 16 GB machine. Later I/O work raises top-1 above this result. See the final continuation.\n\n## Non-quantized path limits\n\nLater tests changed the physical result, but not the quality conclusion.\n\n- Positioned `pread` replaces NumPy fancy-indexed `mmap` for normal routing. Reversed tests measure 1.64 to 2.09 tok/s, versus 0.84 to 1.02.\n- DLPack removes the NumPy-to-MLX copy. Shared-expert overlap adds about 3%.\n- At 1.4 experts per layer, shared-shard `mmap` beats `pread` by about 34%.\n- One shared `mmap` per shard adds about 3% over one map per tensor.\n- Disabling reasoning cuts the first prompt from 68 to 28 tokens.\n- `--fast` keeps threshold 0.20 globally and 0.40 on 12 sensitive layers. It does not renormalize scores after removing experts.\n- Warm raw-prompt tests cross 5 tok/s. A real 40-token Portuguese chat answer measures 3.21 tok/s and shows lexical quality loss.\n- Top-1 averages 4.75 tok/s and sometimes reaches 5.68 tok/s. It outputs control tokens instead of an answer for the seasons prompt.\n- Disabling PLE averages 5.36 tok/s. It outputs code fences and control-token repetitions. PLE is required. Rejected in this continuation:\n\n- `preadv` ties `pread` normally and loses to `mmap` at low routing.\n- Partial score renormalization changes correct answers.\n- `MADV_NORMAL`, `MADV_SEQUENTIAL`, and `MADV_WILLNEED` lose.\n- A last-result cache hits 17% to 22%, but gives no speed gain.\n- Grouping nine reads into three tasks loses about 12%.\n- Eight and twelve I/O workers do not beat sixteen.\n- Parallel n-gram reads give no measurable gain.\n- Running PLE every two or four tokens gives no speed gain.\n- BF16 router softmax loses to FP32 accumulation.\n- Softmax over only ten selected router values is slower.\n\nThe non-quantized quality ceiling remains below 5 tok/s. Every tested configuration above 5 tok/s destroys useful output.\n\n## Exact-path tests\n\nMore non-quantized paths were measured after the final continuation.\n\n- Oracle speculative verification reaches 1.53 tok/s at block 1, 2.21 at block 8, and 3.17 at block 24. These numbers assume a free, perfect draft. A real draft must be slower and has lower acceptance, so it cannot reach 5.\n- Lossless Zstandard compression reduces packed expert weights by 4%. Scales and biases compress better, but the combined row shrinks only 10%.\n- The normal profile requests 37.60 GB for 32 tokens. macOS reads 16.16 GB physically, so the page-cache fill rate is 57%. It runs at 2.06 tok/s.\n- The fast profile requests 8.77 GB and reads 2.82 GB physically. Its fill rate is 68% and it runs at 3.30 tok/s, but the Portuguese output is broken.\n- Pinning the six experts selected during the first eight generation tokens uses 0.93 GB and improves 1.61-1.62 to 1.65-1.68 tok/s, about 3%. This is below measured variance. Pinning 1.85 GB is slower. Updating the pinned set every eight tokens is also slower.\n- Loading those six experts as reusable MLX slabs ties page pinning at 1.23 versus 1.20 tok/s. The extra merge path has no useful gain.\n- Pinning two additional recurring fast experts uses 1.24 GB. Its repeated gain is only 9%, below variance. Four extras use 1.54 GB and fall to 1.40 tok/s against a 1.49 tok/s control.\n- Allocating 288 tail slots globally improves future mass coverage from 28.2% to 30.2%, but increases active experts and falls from 1.63 to 1.47 tok/s. A 192-slot global set covers 24.2%, keeps coherent output, and measures 1.61 tok/s. Cost-aware allocation loses the same tail mass.\n- `F_NOCACHE` for n-gram rows ties the control. Using it for experts is 8% slower. Disabling cache only during prefill also gives no gain.\n- Sorting expert reads, clearing MLX's 26-87 MB temporary cache, and forcing router-first scheduling all tie or lose against the control.\n- Selective layer protection improves the fast response but still emits lexical errors, while speed falls from 2.64-2.85 to 2.19-2.43 tok/s.\n- Post-cut score renormalization makes the low-I/O profiles incoherent.\n- The earlier `F_RDAHEAD=0` result had the wrong sign. The order-corrected result is 1.3% faster than the default in 8 of 8 pairs, flat across miss levels, and does not clear a resolution band.\n- `F_RDADVISEV` averages 0.89 tok/s against 0.98 for direct `pread`, 10% slower. Its `NOAGE` flag returns `EPERM` on this checkpoint filesystem.\n- A 1024-row cache per n-gram shard has only a 4.9% hit rate. It averages 0.75 tok/s against 0.99 without the cache, while token IDs stay equal.\n- Metal I/O returns byte-identical rows. On 15.7 GB of cold random ranges, batch 8 improves only 3%. Batches 2 and 4 lose 2% to 3% against `pread`. Broad RAM pinning confirms the kernel already uses free RAM efficiently. A narrow eight-expert normal-route set is the useful exception below.\n\n## Contribution-oracle and fixed-overhead tests\n\nTwo remaining non-quantized hypotheses were tested and rejected. The expert-contribution oracle evaluates all top-10 expert outputs, then checks every possible subset. Over eight decode tokens and 384 layer-token rows:\n\n- threshold 0.85 selects 7.93 experts per layer;\n- the best possible subset at the same local output error selects 7.92;\n- perfect information saves only 0.1% of expert slots;\n- router-score and measured-contribution ranks have rho 0.877;\n- their top expert matches on 75.5% of rows.\n\nThe router score is already nearly optimal for choosing a smaller subset. An output-based controller cannot recover the quality lost by `--fast`. It also must compute an expert before observing its output, so it cannot save runtime I/O directly. The retained diagnostic is:\n\n```bash\n./models/flashnext/bench_contribution_oracle.py --tokens 8\n```\n\nA proposed hyper-connection profile inserted `mx.eval` after every component. The profile added 192 GPU synchronizations per token and mixed work between timing buckets. Its reported 89.3 ms per token<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+  "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+  "chat_template": "preformatted; no additional template",
+  "sampling": "greedy",
+  "seed_policy": "deterministic argmax; no sampling seed",
+  "token_limit": 32,
+  "quality_gate": "not run; exact token equality only",
+  "status": "completed",
+  "comparison": "qsa",
+  "fresh_arms": false,
+  "routing_altering": false,
+  "condition_definitions": {
+    "baseline": {
+      "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "0",
+      "FLASHNEXT_QSA_SCATTER_DECODE": "0"
+    },
+    "cache-only": {
+      "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "1",
+      "FLASHNEXT_QSA_SCATTER_DECODE": "0"
+    },
+    "scatter-only": {
+      "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "0",
+      "FLASHNEXT_QSA_SCATTER_DECODE": "1"
+    }
+  },
+  "effective_environment": {
+    "FLASHNEXT_METAL_RUNTIME": "1",
+    "FLASHNEXT_METAL_G64": "0",
+    "FLASHNEXT_SLAB_G64": "0",
+    "FLASHNEXT_SLAB": "0",
+    "FLASHNEXT_SLAB_GLOBAL": "0",
+    "FLASHNEXT_SLAB_PACK": "0",
+    "FLASHNEXT_SLAB_PACK_REQUIRE_EXISTING": "0",
+    "FLASHNEXT_SLAB_POLICY": "skew",
+    "FLASHNEXT_SLAB_PROFILE": "frozen",
+    "FLASHNEXT_SLAB_MIN_SLOTS": "4",
+    "FLASHNEXT_SLAB_MAX_SLOTS": "6",
+    "FLASHNEXT_SLAB_NUM_LAYERS": "12",
+    "FLASHNEXT_FUSED_SHARED": "1",
+    "FLASHNEXT_FUSED_SHARED_PARTS": "0",
+    "FLASHNEXT_FUSED_UP_SWIGLU": "1",
+    "FLASHNEXT_STREAM_PACK": "0",
+    "FLASHNEXT_PROFILE_IO": "0",
+    "FLASHNEXT_PREAD_CHUNK": "2",
+    "FLASHNEXT_IO_WORKERS": "16",
+    "FLASHNEXT_READ": "pread",
+    "FLASHNEXT_PREWARM": "0"
+  },
+  "conditions": [
+    {
+      "condition": "baseline",
+      "arms_run": 4,
+      "arms_kept": 3,
+      "gen_median": 2.06,
+      "gen_min": 1.813,
+      "gen_max": 2.098,
+      "gen_sd": 0.155,
+      "tail_median": 2.205,
+      "mb_per_token_median": 494.4,
+      "free_mb_first": 118.0,
+      "elapsed_rate_correlation": 0.0,
+      "arms": [
+        {
+          "elapsed_s": 79.047,
+          "gen_tokens": 32,
+          "gen_rate": 2.06,
+          "tail_rate": 2.246,
+          "mb_per_token": 494.08,
+          "pinned_gb": 4.509,
+          "rss_mb": 4712.645,
+          "rss_process_peak_mb": 4954.98,
+          "active_mb": 3392.425,
+          "mlx_process_peak_mb": 7446.697,
+          "mlx_cache_mb": 705.057,
+          "memory_before": {
+            "rss_mb": 2370.945024,
+            "rss_process_peak_mb": 2985.263104,
+            "active_mb": 3192.05488,
+            "mlx_process_peak_mb": 3192.05488,
+            "mlx_cache_mb": 0.02382
+          },
+          "memory_prefilled": {
+            "rss_mb": 705.527808,
+            "rss_process_peak_mb": 2985.263104,
+            "active_mb": 3416.798506,
+            "mlx_process_peak_mb": 7446.696535,
+            "mlx_cache_mb": 649.314304
+          },
+          "vm_before": {
+            "reactivated": 36543518,
+            "decompress": 128147056,
+            "compress": 138324425,
+            "pagein": 139408014,
+            "pageout": 272207,
+            "swapin": 1058618,
+            "swapout": 1987139
+          },
+          "vm_prefilled": {
+            "reactivated": 37573553,
+            "decompress": 132694326,
+            "compress": 143141634,
+            "pagein": 141395498,
+            "pageout": 272680,
+            "swapin": 1059052,
+            "swapout": 1991175
+          },
+          "vm_after": {
+            "reactivated": 37614110,
+            "decompress": 132904911,
+            "compress": 143295995,
+            "pagein": 141923433,
+            "pageout": 272688,
+            "swapin": 1059052,
+            "swapout": 1991175
+          },
+          "vm_counters": {
+            "reactivated": 40557,
+            "decompress": 210585,
+            "compress": 154361,
+            "pagein": 527935,
+            "pageout": 8,
+            "swapin": 0,
+            "swapout": 0
+          },
+          "prefill_vm_counters": {
+            "reactivated": 1030035,
+            "decompress": 4547270,
+            "compress": 4817209,
+            "pagein": 1987484,
+            "pageout": 473,
+            "swapin": 434,
+            "swapout": 4036
+          },
+          "prefill_wall_s": 60.372,
+          "prefill_seconds": 60.372,
+          "prefill_read_bytes": 59190947840,
+          "decode_read_bytes": 15810547712,
+          "prompt_tokens": 2582,
+          "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+          "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+          "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+          "capable_layers": null,
+          "actual_path": [],
+          "free_mb_before": 83.625,
+          "wall": 75.958,
+          "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+          "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+          "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+          "source_fingerprints": {
+            "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+            "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+          },
+          "qsa": {
+            "cache_pooled_keys": false,
+            "scatter_decode": false,
+            "patch_installed": true,
+            "layers": [
+              {
+                "layer": 3,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 7,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 11,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 15,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 19,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 23,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 27,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 31,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 35,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 39,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 43,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 47,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              }
+            ],
+            "derived_bytes": 0
+          },
+          "qsa_derived_bytes": 0
+        },
+        {
+          "elapsed_s": 481.203,
+          "gen_tokens": 32,
+          "gen_rate": 2.06,
+          "tail_rate": 2.205,
+          "mb_per_token": 494.395,
+          "pinned_gb": 4.509,
+          "rss_mb": 4625.531,
+          "rss_process_peak_mb": 5068.095,
+          "active_mb": 3392.425,
+          "mlx_process_peak_mb": 7455.036,
+          "mlx_cache_mb": 705.231,
+          "memory_before": {
+            "rss_mb": 4675.33824,
+            "rss_process_peak_mb": 5068.095488,
+            "active_mb": 3198.39549,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 899.111068
+          },
+          "memory_prefilled": {
+            "rss_mb": 692.518912,
+            "rss_process_peak_mb": 5068.095488,
+            "active_mb": 3423.139114,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 649.314304
+          },
+          "vm_before": {
+            "reactivated": 41324179,
+            "decompress": 153356928,
+            "compress": 164149752,
+            "pagein": 151941142,
+            "pageout": 274690,
+            "swapin": 1145768,
+            "swapout": 2117663
+          },
+          "vm_prefilled": {
+            "reactivated": 42248123,
+            "decompress": 158243122,
+            "compress": 169290834,
+            "pagein": 153914933,
+            "pageout": 275142,
+            "swapin": 1164335,
+            "swapout": 2139071
+          },
+          "vm_after": {
+            "reactivated": 42296892,
+            "decompress": 158502020,
+            "compress": 169491769,
+            "pagein": 154460762,
+            "pageout": 275275,
+            "swapin": 1165988,
+            "swapout": 2139071
+          },
+          "vm_counters": {
+            "reactivated": 48769,
+            "decompress": 258898,
+            "compress": 200935,
+            "pagein": 545829,
+            "pageout": 133,
+            "swapin": 1653,
+            "swapout": 0
+          },
+          "prefill_vm_counters": {
+            "reactivated": 923944,
+            "decompress": 4886194,
+            "compress": 5141082,
+            "pagein": 1973791,
+            "pageout": 452,
+            "swapin": 18567,
+            "swapout": 21408
+          },
+          "prefill_wall_s": 60.742,
+          "prefill_seconds": 60.742,
+          "prefill_read_bytes": 59294248960,
+          "decode_read_bytes": 15820640256,
+          "prompt_tokens": 2582,
+          "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+          "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+          "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+          "capable_layers": null,
+          "actual_path": [],
+          "free_mb_before": 118.062,
+          "wall": 76.315,
+          "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+          "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+          "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+          "source_fingerprints": {
+            "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+            "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+          },
+          "qsa": {
+            "cache_pooled_keys": false,
+            "scatter_decode": false,
+            "patch_installed": true,
+            "layers": [
+              {
+                "layer": 3,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 7,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 11,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 15,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 19,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 23,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 27,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 31,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 35,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 39,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 43,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 47,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              }
+            ],
+            "derived_bytes": 0
+          },
+          "qsa_derived_bytes": 0
+        },
+        {
+          "elapsed_s": 559.106,
+          "gen_tokens": 32,
+          "gen_rate": 2.098,
+          "tail_rate": 2.262,
+          "mb_per_token": 489.851,
+          "pinned_gb": 4.509,
+          "rss_mb": 4672.684,
+          "rss_process_peak_mb": 5264.409,
+          "active_mb": 3392.425,
+          "mlx_process_peak_mb": 7455.036,
+          "mlx_cache_mb": 705.231,
+          "memory_before": {
+            "rss_mb": 4620.959744,
+            "rss_process_peak_mb": 5068.095488,
+            "active_mb": 3198.39549,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 899.26064
+          },
+          "memory_prefilled": {
+            "rss_mb": 925.253632,
+            "rss_process_peak_mb": 5068.095488,
+            "active_mb": 3423.139114,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 649.314304
+          },
+          "vm_before": {
+            "reactivated": 42298121,
+            "decompress": 158506509,
+            "compress": 169498306,
+            "pagein": 154462388,
+            "pageout": 275275,
+            "swapin": 1166036,
+            "swapout": 2139071
+          },
+          "vm_prefilled": {
+            "reactivated": 43254359,
+            "decompress": 163501657,
+            "compress": 174637587,
+            "pagein": 156483579,
+            "pageout": 294511,
+            "swapin": 1170135,
+            "swapout": 2147995
+          },
+          "vm_after": {
+            "reactivated": 43272667,
+            "decompress": 163720279,
+            "compress": 174786663,
+            "pagein": 157001428,
+            "pageout": 294560,
+            "swapin": 1170542,
+            "swapout": 2147995
+          },
+          "vm_counters": {
+            "reactivated": 18308,
+            "decompress": 218622,
+            "compress": 149076,
+            "pagein": 517849,
+            "pageout": 49,
+            "swapin": 407,
+            "swapout": 0
+          },
+          "prefill_vm_counters": {
+            "reactivated": 956238,
+            "decompress": 4995148,
+            "compress": 5139281,
+            "pagein": 2021191,
+            "pageout": 19236,
+            "swapin": 4099,
+            "swapout": 8924
+          },
+          "prefill_wall_s": 62.486,
+          "prefill_seconds": 62.486,
+          "prefill_read_bytes": 59109244928,
+          "decode_read_bytes": 15675219968,
+          "prompt_tokens": 2582,
+          "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+          "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+          "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+          "capable_layers": null,
+          "actual_path": [],
+          "free_mb_before": 80.719,
+          "wall": 77.783,
+          "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+          "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+          "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+          "source_fingerprints": {
+            "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+            "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+          },
+          "qsa": {
+            "cache_pooled_keys": false,
+            "scatter_decode": false,
+            "patch_installed": true,
+            "layers": [
+              {
+                "layer": 3,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 7,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 11,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 15,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 19,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 23,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 27,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 31,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 35,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 39,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 43,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 47,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              }
+            ],
+            "derived_bytes": 0
+          },
+          "qsa_derived_bytes": 0
+        },
+        {
+          "elapsed_s": 956.517,
+          "gen_tokens": 32,
+          "gen_rate": 1.813,
+          "tail_rate": 1.993,
+          "mb_per_token": 522.176,
+          "pinned_gb": 4.509,
+          "rss_mb": 4623.548,
+          "rss_process_peak_mb": 5264.409,
+          "active_mb": 3392.425,
+          "mlx_process_peak_mb": 7455.036,
+          "mlx_cache_mb": 705.231,
+          "memory_before": {
+            "rss_mb": 4747.280384,
+            "rss_process_peak_mb": 5264.408576,
+            "active_mb": 3198.39549,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 899.111068
+          },
+          "memory_prefilled": {
+            "rss_mb": 362.610688,
+            "rss_process_peak_mb": 5264.408576,
+            "active_mb": 3423.139114,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 649.314304
+          },
+          "vm_before": {
+            "reactivated": 46683331,
+            "decompress": 184486902,
+            "compress": 195713774,
+            "pagein": 166897928,
+            "pageout": 295935,
+            "swapin": 1208894,
+            "swapout": 2174834
+          },
+          "vm_prefilled": {
+            "reactivated": 47806205,
+            "decompress": 189626590,
+            "compress": 201030953,
+            "pagein": 168933803,
+            "pageout": 298771,
+            "swapin": 1229316,
+            "swapout": 2216418
+          },
+          "vm_after": {
+            "reactivated": 47985082,
+            "decompress": 190036181,
+            "compress": 201359242,
+            "pagein": 169522357,
+            "pageout": 302133,
+            "swapin": 1263966,
+            "swapout": 2216418
+          },
+          "vm_counters": {
+            "reactivated": 178877,
+            "decompress": 409591,
+            "compress": 328289,
+            "pagein": 588554,
+            "pageout": 3362,
+            "swapin": 34650,
+            "swapout": 0
+          },
+          "prefill_vm_counters": {
+            "reactivated": 1122874,
+            "decompress": 5139688,
+            "compress": 5317179,
+            "pagein": 2035875,
+            "pageout": 2836,
+            "swapin": 20422,
+            "swapout": 41584
+          },
+          "prefill_wall_s": 68.395,
+          "prefill_seconds": 68.395,
+          "prefill_read_bytes": 59239481344,
+          "decode_read_bytes": 16709627904,
+          "prompt_tokens": 2582,
+          "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+          "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+          "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+          "capable_layers": null,
+          "actual_path": [],
+          "free_mb_before": 102.547,
+          "wall": 86.091,
+          "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+          "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+          "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+          "source_fingerprints": {
+            "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+            "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+          },
+          "qsa": {
+            "cache_pooled_keys": false,
+            "scatter_decode": false,
+            "patch_installed": true,
+            "layers": [
+              {
+                "layer": 3,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 7,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 11,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 15,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 19,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 23,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 27,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 31,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 35,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 39,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 43,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 47,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              }
+            ],
+            "derived_bytes": 0
+          },
+          "qsa_derived_bytes": 0
+        }
+      ]
+    },
+    {
+      "condition": "cache-only",
+      "arms_run": 4,
+      "arms_kept": 3,
+      "gen_median": 1.986,
+      "gen_min": 1.903,
+      "gen_max": 2.067,
+      "gen_sd": 0.082,
+      "tail_median": 2.189,
+      "mb_per_token_median": 493.6,
+      "free_mb_first": 108.0,
+      "elapsed_rate_correlation": 0.0,
+      "arms": [
+        {
+          "elapsed_s": 155.912,
+          "gen_tokens": 32,
+          "gen_rate": 2.105,
+          "tail_rate": 2.275,
+          "mb_per_token": 499.254,
+          "pinned_gb": 4.509,
+          "rss_mb": 4696.867,
+          "rss_process_peak_mb": 4993.696,
+          "active_mb": 3394.653,
+          "mlx_process_peak_mb": 7455.036,
+          "mlx_cache_mb": 702.854,
+          "memory_before": {
+            "rss_mb": 4728.963072,
+            "rss_process_peak_mb": 4954.980352,
+            "active_mb": 3198.39549,
+            "mlx_process_peak_mb": 7446.696535,
+            "mlx_cache_mb": 899.086464
+          },
+          "memory_prefilled": {
+            "rss_mb": 630.030336,
+            "rss_process_peak_mb": 4993.695744,
+            "active_mb": 3425.33457,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 649.314304
+          },
+          "vm_before": {
+            "reactivated": 37614145,
+            "decompress": 132906053,
+            "compress": 143296639,
+            "pagein": 141924424,
+            "pageout": 272688,
+            "swapin": 1059052,
+            "swapout": 1991175
+          },
+          "vm_prefilled": {
+            "reactivated": 38593191,
+            "decompress": 137273334,
+            "compress": 147837557,
+            "pagein": 143890105,
+            "pageout": 272995,
+            "swapin": 1083742,
+            "swapout": 2023823
+          },
+          "vm_after": {
+            "reactivated": 38625698,
+            "decompress": 137506758,
+            "compress": 148003080,
+            "pagein": 144430654,
+            "pageout": 273101,
+            "swapin": 1084142,
+            "swapout": 2023823
+          },
+          "vm_counters": {
+            "reactivated": 32507,
+            "decompress": 233424,
+            "compress": 165523,
+            "pagein": 540549,
+            "pageout": 106,
+            "swapin": 400,
+            "swapout": 0
+          },
+          "prefill_vm_counters": {
+            "reactivated": 979046,
+            "decompress": 4367281,
+            "compress": 4540918,
+            "pagein": 1965681,
+            "pageout": 307,
+            "swapin": 24690,
+            "swapout": 32648
+          },
+          "prefill_wall_s": 61.477,
+          "prefill_seconds": 61.477,
+          "prefill_read_bytes": 59473633280,
+          "decode_read_bytes": 15976116224,
+          "prompt_tokens": 2582,
+          "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+          "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+          "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+          "capable_layers": null,
+          "actual_path": [],
+          "free_mb_before": 78.844,
+          "wall": 76.745,
+          "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+          "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+          "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+          "source_fingerprints": {
+            "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+            "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+          },
+          "qsa": {
+            "cache_pooled_keys": true,
+            "scatter_decode": false,
+            "patch_installed": true,
+            "layers": [
+              {
+                "layer": 3,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 7,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 11,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 15,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 19,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 23,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 27,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 31,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 35,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 39,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 43,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 47,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              }
+            ],
+            "derived_bytes": 2006016
+          },
+          "qsa_derived_bytes": 2006016
+        },
+        {
+          "elapsed_s": 404.76,
+          "gen_tokens": 32,
+          "gen_rate": 1.903,
+          "tail_rate": 2.189,
+          "mb_per_token": 510.464,
+          "pinned_gb": 4.509,
+          "rss_mb": 4652.859,
+          "rss_process_peak_mb": 5068.095,
+          "active_mb": 3394.653,
+          "mlx_process_peak_mb": 7455.036,
+          "mlx_cache_mb": 702.854,
+          "memory_before": {
+            "rss_mb": 4749.656064,
+            "rss_process_peak_mb": 5068.095488,
+            "active_mb": 3198.39549,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 896.268426
+          },
+          "memory_prefilled": {
+            "rss_mb": 677.691392,
+            "rss_process_peak_mb": 5068.095488,
+            "active_mb": 3425.33457,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 649.314304
+          },
+          "vm_before": {
+            "reactivated": 40496352,
+            "decompress": 147999000,
+            "compress": 158628316,
+            "pagein": 149428057,
+            "pageout": 274027,
+            "swapin": 1104638,
+            "swapout": 2076679
+          },
+          "vm_prefilled": {
+            "reactivated": 41259719,
+            "decompress": 153110130,
+            "compress": 163974841,
+            "pagein": 151407341,
+            "pageout": 274545,
+            "swapin": 1129649,
+            "swapout": 2117663
+          },
+          "vm_after": {
+            "reactivated": 41324092,
+            "decompress": 153355516,
+            "compress": 164149430,
+            "pagein": 151941051,
+            "pageout": 274690,
+            "swapin": 1145436,
+            "swapout": 2117663
+          },
+          "vm_counters": {
+            "reactivated": 64373,
+            "decompress": 245386,
+            "compress": 174589,
+            "pagein": 533710,
+            "pageout": 145,
+            "swapin": 15787,
+            "swapout": 0
+          },
+          "prefill_vm_counters": {
+            "reactivated": 763367,
+            "decompress": 5111130,
+            "compress": 5346525,
+            "pagein": 1979284,
+            "pageout": 518,
+            "swapin": 25011,
+            "swapout": 40984
+          },
+          "prefill_wall_s": 67.471,
+          "prefill_seconds": 67.471,
+          "prefill_read_bytes": 59321524224,
+          "decode_read_bytes": 16334839808,
+          "prompt_tokens": 2582,
+          "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+          "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+          "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+          "capable_layers": null,
+          "actual_path": [],
+          "free_mb_before": 107.797,
+          "wall": 84.364,
+          "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+          "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+          "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+          "source_fingerprints": {
+            "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+            "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+          },
+          "qsa": {
+            "cache_pooled_keys": true,
+            "scatter_decode": false,
+            "patch_installed": true,
+            "layers": [
+              {
+                "layer": 3,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 7,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 11,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 15,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 19,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 23,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 27,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 31,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 35,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 39,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 43,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 47,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              }
+            ],
+            "derived_bytes": 2006016
+          },
+          "qsa_derived_bytes": 2006016
+        },
+        {
+          "elapsed_s": 633.853,
+          "gen_tokens": 32,
+          "gen_rate": 2.067,
+          "tail_rate": 2.234,
+          "mb_per_token": 481.853,
+          "pinned_gb": 4.509,
+          "rss_mb": 4690.313,
+          "rss_process_peak_mb": 5264.409,
+          "active_mb": 3394.653,
+          "mlx_process_peak_mb": 7455.036,
+          "mlx_cache_mb": 702.854,
+          "memory_before": {
+            "rss_mb": 4695.785472,
+            "rss_process_peak_mb": 5264.408576,
+            "active_mb": 3198.39549,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 899.26064
+          },
+          "memory_prefilled": {
+            "rss_mb": 714.58816,
+            "rss_process_peak_mb": 5264.408576,
+            "active_mb": 3425.33457,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 649.314304
+          },
+          "vm_before": {
+            "reactivated": 43272667,
+            "decompress": 163722307,
+            "compress": 174786663,
+            "pagein": 157001727,
+            "pageout": 294560,
+            "swapin": 1170542,
+            "swapout": 2147995
+          },
+          "vm_prefilled": {
+            "reactivated": 43910914,
+            "decompress": 168485955,
+            "compress": 179661705,
+            "pagein": 158931807,
+            "pageout": 294851,
+            "swapin": 1173279,
+            "swapout": 2147995
+          },
+          "vm_after": {
+            "reactivated": 43952460,
+            "decompress": 168690069,
+            "compress": 179788917,
+            "pagein": 159443894,
+            "pageout": 294881,
+            "swapin": 1173758,
+            "swapout": 2147995
+          },
+          "vm_counters": {
+            "reactivated": 41546,
+            "decompress": 204114,
+            "compress": 127212,
+            "pagein": 512087,
+            "pageout": 30,
+            "swapin": 479,
+            "swapout": 0
+          },
+          "prefill_vm_counters": {
+            "reactivated": 638247,
+            "decompress": 4763648,
+            "compress": 4875042,
+            "pagein": 1930080,
+            "pageout": 291,
+            "swapin": 2737,
+            "swapout": 0
+          },
+          "prefill_wall_s": 59.119,
+          "prefill_seconds": 59.119,
+          "prefill_read_bytes": 58909855744,
+          "decode_read_bytes": 15419297792,
+          "prompt_tokens": 2582,
+          "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+          "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+          "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+          "capable_layers": null,
+          "actual_path": [],
+          "free_mb_before": 110.969,
+          "wall": 74.639,
+          "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+          "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+          "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+          "source_fingerprints": {
+            "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+            "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+          },
+          "qsa": {
+            "cache_pooled_keys": true,
+            "scatter_decode": false,
+            "patch_installed": true,
+            "layers": [
+              {
+                "layer": 3,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 7,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 11,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 15,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 19,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 23,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 27,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 31,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 35,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 39,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 43,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 47,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              }
+            ],
+            "derived_bytes": 2006016
+          },
+          "qsa_derived_bytes": 2006016
+        },
+        {
+          "elapsed_s": 870.312,
+          "gen_tokens": 32,
+          "gen_rate": 1.986,
+          "tail_rate": 2.16,
+          "mb_per_token": 493.621,
+          "pinned_gb": 4.509,
+          "rss_mb": 4730.421,
+          "rss_process_peak_mb": 5264.409,
+          "active_mb": 3394.653,
+          "mlx_process_peak_mb": 7455.036,
+          "mlx_cache_mb": 702.854,
+          "memory_before": {
+            "rss_mb": 4733.878272,
+            "rss_process_peak_mb": 5264.408576,
+            "active_mb": 3198.39549,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 896.268426
+          },
+          "memory_prefilled": {
+            "rss_mb": 1019.543552,
+            "rss_process_peak_mb": 5264.408576,
+            "active_mb": 3425.33457,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 648.8064
+          },
+          "vm_before": {
+            "reactivated": 45801790,
+            "decompress": 179271958,
+            "compress": 190478794,
+            "pagein": 164434399,
+            "pageout": 295645,
+            "swapin": 1198749,
+            "swapout": 2168222
+          },
+          "vm_prefilled": {
+            "reactivated": 46659935,
+            "decompress": 184266951,
+            "compress": 195565182,
+            "pagein": 166376066,
+            "pageout": 295887,
+            "swapin": 1206241,
+            "swapout": 2174834
+          },
+          "vm_after": {
+            "reactivated": 46683331,
+            "decompress": 184485896,
+            "compress": 195713774,
+            "pagein": 166897806,
+            "pageout": 295935,
+            "swapin": 1208894,
+            "swapout": 2174834
+          },
+          "vm_counters": {
+            "reactivated": 23396,
+            "decompress": 218945,
+            "compress": 148592,
+            "pagein": 521740,
+            "pageout": 48,
+            "swapin": 2653,
+            "swapout": 0
+          },
+          "prefill_vm_counters": {
+            "reactivated": 858145,
+            "decompress": 4994993,
+            "compress": 5086388,
+            "pagein": 1941667,
+            "pageout": 242,
+            "swapin": 7492,
+            "swapout": 6612
+          },
+          "prefill_wall_s": 66.492,
+          "prefill_seconds": 66.491,
+          "prefill_read_bytes": 59144482816,
+          "decode_read_bytes": 15795884032,
+          "prompt_tokens": 2582,
+          "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+          "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+          "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+          "capable_layers": null,
+          "actual_path": [],
+          "free_mb_before": 107.781,
+          "wall": 82.678,
+          "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+          "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+          "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+          "source_fingerprints": {
+            "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+            "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+          },
+          "qsa": {
+            "cache_pooled_keys": true,
+            "scatter_decode": false,
+            "patch_installed": true,
+            "layers": [
+              {
+                "layer": 3,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 7,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 11,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 15,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 19,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 23,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 27,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 31,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 35,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 39,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 43,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              },
+              {
+                "layer": 47,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": [
+                  1,
+                  1,
+                  653,
+                  128
+                ],
+                "pooled_bytes": 167168,
+                "pool_reusable": true
+              }
+            ],
+            "derived_bytes": 2006016
+          },
+          "qsa_derived_bytes": 2006016
+        }
+      ]
+    },
+    {
+      "condition": "scatter-only",
+      "arms_run": 4,
+      "arms_kept": 3,
+      "gen_median": 2.009,
+      "gen_min": 1.997,
+      "gen_max": 2.132,
+      "gen_sd": 0.075,
+      "tail_median": 2.221,
+      "mb_per_token_median": 492.5,
+      "free_mb_first": 109.0,
+      "elapsed_rate_correlation": 0.0,
+      "arms": [
+        {
+          "elapsed_s": 237.919,
+          "gen_tokens": 32,
+          "gen_rate": 2.081,
+          "tail_rate": 2.261,
+          "mb_per_token": 485.976,
+          "pinned_gb": 4.509,
+          "rss_mb": 4734.632,
+          "rss_process_peak_mb": 5068.095,
+          "active_mb": 3392.229,
+          "mlx_process_peak_mb": 7455.036,
+          "mlx_cache_mb": 702.435,
+          "memory_before": {
+            "rss_mb": 4717.182976,
+            "rss_process_peak_mb": 4993.695744,
+            "active_mb": 3198.39549,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 899.111196
+          },
+          "memory_prefilled": {
+            "rss_mb": 893.616128,
+            "rss_process_peak_mb": 4993.695744,
+            "active_mb": 3423.139114,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 648.8064
+          },
+          "vm_before": {
+            "reactivated": 38625834,
+            "decompress": 137508051,
+            "compress": 148003711,
+            "pagein": 144431666,
+            "pageout": 273101,
+            "swapin": 1084142,
+            "swapout": 2023823
+          },
+          "vm_prefilled": {
+            "reactivated": 39516212,
+            "decompress": 142562612,
+            "compress": 153200764,
+            "pagein": 146415686,
+            "pageout": 273548,
+            "swapin": 1090987,
+            "swapout": 2049651
+          },
+          "vm_after": {
+            "reactivated": 39543107,
+            "decompress": 142795115,
+            "compress": 153364140,
+            "pagein": 146936745,
+            "pageout": 273626,
+            "swapin": 1091160,
+            "swapout": 2049651
+          },
+          "vm_counters": {
+            "reactivated": 26895,
+            "decompress": 232503,
+            "compress": 163376,
+            "pagein": 521059,
+            "pageout": 78,
+            "swapin": 173,
+            "swapout": 0
+          },
+          "prefill_vm_counters": {
+            "reactivated": 890378,
+            "decompress": 5054561,
+            "compress": 5197053,
+            "pagein": 1984020,
+            "pageout": 447,
+            "swapin": 6845,
+            "swapout": 25828
+          },
+          "prefill_wall_s": 66.445,
+          "prefill_seconds": 66.445,
+          "prefill_read_bytes": 59124363264,
+          "decode_read_bytes": 15551217664,
+          "prompt_tokens": 2582,
+          "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+          "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+          "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+          "capable_layers": null,
+          "actual_path": [],
+          "free_mb_before": 100.344,
+          "wall": 81.894,
+          "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+          "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+          "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+          "source_fingerprints": {
+            "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+            "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+          },
+          "qsa": {
+            "cache_pooled_keys": false,
+            "scatter_decode": true,
+            "patch_installed": true,
+            "layers": [
+              {
+                "layer": 3,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 7,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 11,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 15,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 19,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 23,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 27,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 31,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 35,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 39,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 43,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 47,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              }
+            ],
+            "derived_bytes": 0
+          },
+          "qsa_derived_bytes": 0
+        },
+        {
+          "elapsed_s": 320.287,
+          "gen_tokens": 32,
+          "gen_rate": 1.997,
+          "tail_rate": 2.221,
+          "mb_per_token": 497.842,
+          "pinned_gb": 4.509,
+          "rss_mb": 4734.337,
+          "rss_process_peak_mb": 5068.095,
+          "active_mb": 3392.229,
+          "mlx_process_peak_mb": 7455.036,
+          "mlx_cache_mb": 702.435,
+          "memory_before": {
+            "rss_mb": 4752.637952,
+            "rss_process_peak_mb": 5068.095488,
+            "active_mb": 3198.39549,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 896.268426
+          },
+          "memory_prefilled": {
+            "rss_mb": 900.562944,
+            "rss_process_peak_mb": 5068.095488,
+            "active_mb": 3423.139114,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 649.314304
+          },
+          "vm_before": {
+            "reactivated": 39543107,
+            "decompress": 142796723,
+            "compress": 153364140,
+            "pagein": 146936826,
+            "pageout": 273626,
+            "swapin": 1091160,
+            "swapout": 2049651
+          },
+          "vm_prefilled": {
+            "reactivated": 40475136,
+            "decompress": 147783850,
+            "compress": 158480982,
+            "pagein": 148907711,
+            "pageout": 274009,
+            "swapin": 1096676,
+            "swapout": 2076679
+          },
+          "vm_after": {
+            "reactivated": 40495841,
+            "decompress": 147996881,
+            "compress": 158627207,
+            "pagein": 149427683,
+            "pageout": 274027,
+            "swapin": 1104622,
+            "swapout": 2076679
+          },
+          "vm_counters": {
+            "reactivated": 20705,
+            "decompress": 213031,
+            "compress": 146225,
+            "pagein": 519972,
+            "pageout": 18,
+            "swapin": 7946,
+            "swapout": 0
+          },
+          "prefill_vm_counters": {
+            "reactivated": 932029,
+            "decompress": 4987127,
+            "compress": 5116842,
+            "pagein": 1970885,
+            "pageout": 383,
+            "swapin": 5516,
+            "swapout": 27028
+          },
+          "prefill_wall_s": 66.167,
+          "prefill_seconds": 66.167,
+          "prefill_read_bytes": 59143168000,
+          "decode_read_bytes": 15930949632,
+          "prompt_tokens": 2582,
+          "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+          "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+          "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+          "capable_layers": null,
+          "actual_path": [],
+          "free_mb_before": 108.531,
+          "wall": 82.259,
+          "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+          "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+          "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+          "source_fingerprints": {
+            "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+            "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+          },
+          "qsa": {
+            "cache_pooled_keys": false,
+            "scatter_decode": true,
+            "patch_installed": true,
+            "layers": [
+              {
+                "layer": 3,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 7,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 11,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 15,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 19,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 23,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 27,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 31,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 35,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 39,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 43,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 47,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              }
+            ],
+            "derived_bytes": 0
+          },
+          "qsa_derived_bytes": 0
+        },
+        {
+          "elapsed_s": 710.484,
+          "gen_tokens": 32,
+          "gen_rate": 2.009,
+          "tail_rate": 2.152,
+          "mb_per_token": 491.559,
+          "pinned_gb": 4.509,
+          "rss_mb": 4633.674,
+          "rss_process_peak_mb": 5264.409,
+          "active_mb": 3392.229,
+          "mlx_process_peak_mb": 7455.036,
+          "mlx_cache_mb": 702.435,
+          "memory_before": {
+            "rss_mb": 4706.418688,
+            "rss_process_peak_mb": 5264.408576,
+            "active_mb": 3198.39549,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 899.111068
+          },
+          "memory_prefilled": {
+            "rss_mb": 105.709568,
+            "rss_process_peak_mb": 5264.408576,
+            "active_mb": 3423.139114,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 649.314304
+          },
+          "vm_before": {
+            "reactivated": 43952522,
+            "decompress": 168691794,
+            "compress": 179789589,
+            "pagein": 159443900,
+            "pageout": 294881,
+            "swapin": 1173758,
+            "swapout": 2147995
+          },
+          "vm_prefilled": {
+            "reactivated": 44733116,
+            "decompress": 173869458,
+            "compress": 185134944,
+            "pagein": 161397471,
+            "pageout": 295148,
+            "swapin": 1194304,
+            "swapout": 2160338
+          },
+          "vm_after": {
+            "reactivated": 44796412,
+            "decompress": 174133808,
+            "compress": 185293138,
+            "pagein": 161940094,
+            "pageout": 295229,
+            "swapin": 1196573,
+            "swapout": 2160338
+          },
+          "vm_counters": {
+            "reactivated": 63296,
+            "decompress": 264350,
+            "compress": 158194,
+            "pagein": 542623,
+            "pageout": 81,
+            "swapin": 2269,
+            "swapout": 0
+          },
+          "prefill_vm_counters": {
+            "reactivated": 780594,
+            "decompress": 5177664,
+            "compress": 5345355,
+            "pagein": 1953571,
+            "pageout": 267,
+            "swapin": 20546,
+            "swapout": 12343
+          },
+          "prefill_wall_s": 60.563,
+          "prefill_seconds": 60.563,
+          "prefill_read_bytes": 59054800896,
+          "decode_read_bytes": 15729885184,
+          "prompt_tokens": 2582,
+          "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+          "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+          "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+          "capable_layers": null,
+          "actual_path": [],
+          "free_mb_before": 108.203,
+          "wall": 76.52,
+          "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+          "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+          "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+          "source_fingerprints": {
+            "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+            "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+          },
+          "qsa": {
+            "cache_pooled_keys": false,
+            "scatter_decode": true,
+            "patch_installed": true,
+            "layers": [
+              {
+                "layer": 3,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 7,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 11,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 15,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 19,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 23,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 27,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 31,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 35,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 39,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 43,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 47,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              }
+            ],
+            "derived_bytes": 0
+          },
+          "qsa_derived_bytes": 0
+        },
+        {
+          "elapsed_s": 787.527,
+          "gen_tokens": 32,
+          "gen_rate": 2.132,
+          "tail_rate": 2.328,
+          "mb_per_token": 492.478,
+          "pinned_gb": 4.509,
+          "rss_mb": 4716.79,
+          "rss_process_peak_mb": 5264.409,
+          "active_mb": 3392.229,
+          "mlx_process_peak_mb": 7455.036,
+          "mlx_cache_mb": 702.435,
+          "memory_before": {
+            "rss_mb": 4657.39776,
+            "rss_process_peak_mb": 5264.408576,
+            "active_mb": 3198.39549,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 896.268426
+          },
+          "memory_prefilled": {
+            "rss_mb": 720.224256,
+            "rss_process_peak_mb": 5264.408576,
+            "active_mb": 3423.139114,
+            "mlx_process_peak_mb": 7455.036027,
+            "mlx_cache_mb": 648.8064
+          },
+          "vm_before": {
+            "reactivated": 44796798,
+            "decompress": 174135454,
+            "compress": 185293519,
+            "pagein": 161940222,
+            "pageout": 295229,
+            "swapin": 1196573,
+            "swapout": 2160338
+          },
+          "vm_prefilled": {
+            "reactivated": 45767600,
+            "decompress": 179040519,
+            "compress": 190330399,
+            "pagein": 163913110,
+            "pageout": 295614,
+            "swapin": 1197885,
+            "swapout": 2168222
+          },
+          "vm_after": {
+            "reactivated": 45801790,
+            "decompress": 179270898,
+            "compress": 190478794,
+            "pagein": 164434380,
+            "pageout": 295645,
+            "swapin": 1198749,
+            "swapout": 2168222
+          },
+          "vm_counters": {
+            "reactivated": 34190,
+            "decompress": 230379,
+            "compress": 148395,
+            "pagein": 521270,
+            "pageout": 31,
+            "swapin": 864,
+            "swapout": 0
+          },
+          "prefill_vm_counters": {
+            "reactivated": 970802,
+            "decompress": 4905065,
+            "compress": 5036880,
+            "pagein": 1972888,
+            "pageout": 385,
+            "swapin": 1312,
+            "swapout": 7884
+          },
+          "prefill_wall_s": 61.853,
+          "prefill_seconds": 61.853,
+          "prefill_read_bytes": 59074211840,
+          "decode_read_bytes": 15759282176,
+          "prompt_tokens": 2582,
+          "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+          "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+          "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+          "capable_layers": null,
+          "actual_path": [],
+          "free_mb_before": 103.812,
+          "wall": 76.921,
+          "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+          "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+          "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+          "source_fingerprints": {
+            "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+            "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+          },
+          "qsa": {
+            "cache_pooled_keys": false,
+            "scatter_decode": true,
+            "patch_installed": true,
+            "layers": [
+              {
+                "layer": 3,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 7,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 11,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 15,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 19,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 23,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 27,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 31,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 35,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 39,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 43,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              },
+              {
+                "layer": 47,
+                "context_tokens": 2614,
+                "sparse_active": true,
+                "pooled_shape": null,
+                "pooled_bytes": 0,
+                "pool_reusable": false
+              }
+            ],
+            "derived_bytes": 0
+          },
+          "qsa_derived_bytes": 0
+        }
+      ]
+    }
+  ],
+  "raw_arms": {
+    "baseline": [
+      {
+        "elapsed_s": 79.04654587499954,
+        "gen_tokens": 32,
+        "gen_rate": 2.059519513195262,
+        "tail_rate": 2.2457752512588574,
+        "mb_per_token": 494.079616,
+        "pinned_gb": 4.50936832,
+        "rss_mb": 4712.644608,
+        "rss_process_peak_mb": 4954.980352,
+        "active_mb": 3392.425174,
+        "mlx_process_peak_mb": 7446.696535,
+        "mlx_cache_mb": 705.05678,
+        "memory_before": {
+          "rss_mb": 2370.945024,
+          "rss_process_peak_mb": 2985.263104,
+          "active_mb": 3192.05488,
+          "mlx_process_peak_mb": 3192.05488,
+          "mlx_cache_mb": 0.02382
+        },
+        "memory_prefilled": {
+          "rss_mb": 705.527808,
+          "rss_process_peak_mb": 2985.263104,
+          "active_mb": 3416.798506,
+          "mlx_process_peak_mb": 7446.696535,
+          "mlx_cache_mb": 649.314304
+        },
+        "vm_before": {
+          "reactivated": 36543518,
+          "decompress": 128147056,
+          "compress": 138324425,
+          "pagein": 139408014,
+          "pageout": 272207,
+          "swapin": 1058618,
+          "swapout": 1987139
+        },
+        "vm_prefilled": {
+          "reactivated": 37573553,
+          "decompress": 132694326,
+          "compress": 143141634,
+          "pagein": 141395498,
+          "pageout": 272680,
+          "swapin": 1059052,
+          "swapout": 1991175
+        },
+        "vm_after": {
+          "reactivated": 37614110,
+          "decompress": 132904911,
+          "compress": 143295995,
+          "pagein": 141923433,
+          "pageout": 272688,
+          "swapin": 1059052,
+          "swapout": 1991175
+        },
+        "vm_counters": {
+          "reactivated": 40557,
+          "decompress": 210585,
+          "compress": 154361,
+          "pagein": 527935,
+          "pageout": 8,
+          "swapin": 0,
+          "swapout": 0
+        },
+        "prefill_vm_counters": {
+          "reactivated": 1030035,
+          "decompress": 4547270,
+          "compress": 4817209,
+          "pagein": 1987484,
+          "pageout": 473,
+          "swapin": 434,
+          "swapout": 4036
+        },
+        "prefill_wall_s": 60.37203366599988,
+        "prefill_seconds": 60.37153454200052,
+        "prefill_read_bytes": 59190947840,
+        "decode_read_bytes": 15810547712,
+        "prompt_tokens": 2582,
+        "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+        "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+        "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+        "capable_layers": null,
+        "actual_path": [],
+        "free_mb_before": 83.625,
+        "wall": 75.95849879100024,
+        "ids": [
+          46,
+          30970,
+          2128,
+          64,
+          201273,
+          401,
+          184574,
+          378,
+          82918,
+          635,
+          15135,
+          16753,
+          5666,
+          11,
+          69910,
+          4726,
+          1649,
+          194650,
+          14805,
+          459,
+          195129,
+          401,
+          192505,
+          178453,
+          401,
+          220,
+          20,
+          9341,
+          2600,
+          1067,
+          308,
+          945
+        ],
+        "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+        "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+        "source_fingerprints": {
+          "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+        },
+        "qsa": {
+          "cache_pooled_keys": false,
+          "scatter_decode": false,
+          "patch_installed": true,
+          "layers": [
+            {
+              "layer": 3,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 7,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 11,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 15,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 19,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 23,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 27,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 31,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 35,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 39,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 43,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 47,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            }
+          ],
+          "derived_bytes": 0
+        },
+        "qsa_derived_bytes": 0
+      },
+      {
+        "elapsed_s": 481.2034669579998,
+        "gen_tokens": 32,
+        "gen_rate": 2.0600888873002363,
+        "tail_rate": 2.204933995181051,
+        "mb_per_token": 494.395008,
+        "pinned_gb": 4.50936832,
+        "rss_mb": 4625.53088,
+        "rss_process_peak_mb": 5068.095488,
+        "active_mb": 3392.425174,
+        "mlx_process_peak_mb": 7455.036027,
+        "mlx_cache_mb": 705.230956,
+        "memory_before": {
+          "rss_mb": 4675.33824,
+          "rss_process_peak_mb": 5068.095488,
+          "active_mb": 3198.39549,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 899.111068
+        },
+        "memory_prefilled": {
+          "rss_mb": 692.518912,
+          "rss_process_peak_mb": 5068.095488,
+          "active_mb": 3423.139114,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 649.314304
+        },
+        "vm_before": {
+          "reactivated": 41324179,
+          "decompress": 153356928,
+          "compress": 164149752,
+          "pagein": 151941142,
+          "pageout": 274690,
+          "swapin": 1145768,
+          "swapout": 2117663
+        },
+        "vm_prefilled": {
+          "reactivated": 42248123,
+          "decompress": 158243122,
+          "compress": 169290834,
+          "pagein": 153914933,
+          "pageout": 275142,
+          "swapin": 1164335,
+          "swapout": 2139071
+        },
+        "vm_after": {
+          "reactivated": 42296892,
+          "decompress": 158502020,
+          "compress": 169491769,
+          "pagein": 154460762,
+          "pageout": 275275,
+          "swapin": 1165988,
+          "swapout": 2139071
+        },
+        "vm_counters": {
+          "reactivated": 48769,
+          "decompress": 258898,
+          "compress": 200935,
+          "pagein": 545829,
+          "pageout": 133,
+          "swapin": 1653,
+          "swapout": 0
+        },
+        "prefill_vm_counters": {
+          "reactivated": 923944,
+          "decompress": 4886194,
+          "compress": 5141082,
+          "pagein": 1973791,
+          "pageout": 452,
+          "swapin": 18567,
+          "swapout": 21408
+        },
+        "prefill_wall_s": 60.74246720800056,
+        "prefill_seconds": 60.74231858300027,
+        "prefill_read_bytes": 59294248960,
+        "decode_read_bytes": 15820640256,
+        "prompt_tokens": 2582,
+        "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+        "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+        "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+        "capable_layers": null,
+        "actual_path": [],
+        "free_mb_before": 118.0625,
+        "wall": 76.31548616700002,
+        "ids": [
+          46,
+          30970,
+          2128,
+          64,
+          201273,
+          401,
+          184574,
+          378,
+          82918,
+          635,
+          15135,
+          16753,
+          5666,
+          11,
+          69910,
+          4726,
+          1649,
+          194650,
+          14805,
+          459,
+          195129,
+          401,
+          192505,
+          178453,
+          401,
+          220,
+          20,
+          9341,
+          2600,
+          1067,
+          308,
+          945
+        ],
+        "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+        "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+        "source_fingerprints": {
+          "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+        },
+        "qsa": {
+          "cache_pooled_keys": false,
+          "scatter_decode": false,
+          "patch_installed": true,
+          "layers": [
+            {
+              "layer": 3,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 7,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 11,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 15,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 19,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 23,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 27,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 31,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 35,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 39,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 43,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 47,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            }
+          ],
+          "derived_bytes": 0
+        },
+        "qsa_derived_bytes": 0
+      },
+      {
+        "elapsed_s": 559.1060371249996,
+        "gen_tokens": 32,
+        "gen_rate": 2.0981677618884,
+        "tail_rate": 2.262057324909185,
+        "mb_per_token": 489.850624,
+        "pinned_gb": 4.50936832,
+        "rss_mb": 4672.684032,
+        "rss_process_peak_mb": 5264.408576,
+        "active_mb": 3392.425174,
+        "mlx_process_peak_mb": 7455.036027,
+        "mlx_cache_mb": 705.230956,
+        "memory_before": {
+          "rss_mb": 4620.959744,
+          "rss_process_peak_mb": 5068.095488,
+          "active_mb": 3198.39549,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 899.26064
+        },
+        "memory_prefilled": {
+          "rss_mb": 925.253632,
+          "rss_process_peak_mb": 5068.095488,
+          "active_mb": 3423.139114,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 649.314304
+        },
+        "vm_before": {
+          "reactivated": 42298121,
+          "decompress": 158506509,
+          "compress": 169498306,
+          "pagein": 154462388,
+          "pageout": 275275,
+          "swapin": 1166036,
+          "swapout": 2139071
+        },
+        "vm_prefilled": {
+          "reactivated": 43254359,
+          "decompress": 163501657,
+          "compress": 174637587,
+          "pagein": 156483579,
+          "pageout": 294511,
+          "swapin": 1170135,
+          "swapout": 2147995
+        },
+        "vm_after": {
+          "reactivated": 43272667,
+          "decompress": 163720279,
+          "compress": 174786663,
+          "pagein": 157001428,
+          "pageout": 294560,
+          "swapin": 1170542,
+          "swapout": 2147995
+        },
+        "vm_counters": {
+          "reactivated": 18308,
+          "decompress": 218622,
+          "compress": 149076,
+          "pagein": 517849,
+          "pageout": 49,
+          "swapin": 407,
+          "swapout": 0
+        },
+        "prefill_vm_counters": {
+          "reactivated": 956238,
+          "decompress": 4995148,
+          "compress": 5139281,
+          "pagein": 2021191,
+          "pageout": 19236,
+          "swapin": 4099,
+          "swapout": 8924
+        },
+        "prefill_wall_s": 62.48572920799961,
+        "prefill_seconds": 62.485557957999845,
+        "prefill_read_bytes": 59109244928,
+        "decode_read_bytes": 15675219968,
+        "prompt_tokens": 2582,
+        "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+        "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+        "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+        "capable_layers": null,
+        "actual_path": [],
+        "free_mb_before": 80.71875,
+        "wall": 77.78346095800043,
+        "ids": [
+          46,
+          30970,
+          2128,
+          64,
+          201273,
+          401,
+          184574,
+          378,
+          82918,
+          635,
+          15135,
+          16753,
+          5666,
+          11,
+          69910,
+          4726,
+          1649,
+          194650,
+          14805,
+          459,
+          195129,
+          401,
+          192505,
+          178453,
+          401,
+          220,
+          20,
+          9341,
+          2600,
+          1067,
+          308,
+          945
+        ],
+        "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+        "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+        "source_fingerprints": {
+          "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+        },
+        "qsa": {
+          "cache_pooled_keys": false,
+          "scatter_decode": false,
+          "patch_installed": true,
+          "layers": [
+            {
+              "layer": 3,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 7,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 11,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 15,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 19,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 23,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 27,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 31,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 35,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 39,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 43,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 47,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            }
+          ],
+          "derived_bytes": 0
+        },
+        "qsa_derived_bytes": 0
+      },
+      {
+        "elapsed_s": 956.5172356659996,
+        "gen_tokens": 32,
+        "gen_rate": 1.8132829663767778,
+        "tail_rate": 1.9934973632801412,
+        "mb_per_token": 522.175872,
+        "pinned_gb": 4.50936832,
+        "rss_mb": 4623.548416,
+        "rss_process_peak_mb": 5264.408576,
+        "active_mb": 3392.425174,
+        "mlx_process_peak_mb": 7455.036027,
+        "mlx_cache_mb": 705.230956,
+        "memory_before": {
+          "rss_mb": 4747.280384,
+          "rss_process_peak_mb": 5264.408576,
+          "active_mb": 3198.39549,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 899.111068
+        },
+        "memory_prefilled": {
+          "rss_mb": 362.610688,
+          "rss_process_peak_mb": 5264.408576,
+          "active_mb": 3423.139114,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 649.314304
+        },
+        "vm_before": {
+          "reactivated": 46683331,
+          "decompress": 184486902,
+          "compress": 195713774,
+          "pagein": 166897928,
+          "pageout": 295935,
+          "swapin": 1208894,
+          "swapout": 2174834
+        },
+        "vm_prefilled": {
+          "reactivated": 47806205,
+          "decompress": 189626590,
+          "compress": 201030953,
+          "pagein": 168933803,
+          "pageout": 298771,
+          "swapin": 1229316,
+          "swapout": 2216418
+        },
+        "vm_after": {
+          "reactivated": 47985082,
+          "decompress": 190036181,
+          "compress": 201359242,
+          "pagein": 169522357,
+          "pageout": 302133,
+          "swapin": 1263966,
+          "swapout": 2216418
+        },
+        "vm_counters": {
+          "reactivated": 178877,
+          "decompress": 409591,
+          "compress": 328289,
+          "pagein": 588554,
+          "pageout": 3362,
+          "swapin": 34650,
+          "swapout": 0
+        },
+        "prefill_vm_counters": {
+          "reactivated": 1122874,
+          "decompress": 5139688,
+          "compress": 5317179,
+          "pagein": 2035875,
+          "pageout": 2836,
+          "swapin": 20422,
+          "swapout": 41584
+        },
+        "prefill_wall_s": 68.39472204199956,
+        "prefill_seconds": 68.39454233300057,
+        "prefill_read_bytes": 59239481344,
+        "decode_read_bytes": 16709627904,
+        "prompt_tokens": 2582,
+        "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+        "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+        "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+        "capable_layers": null,
+        "actual_path": [],
+        "free_mb_before": 102.546875,
+        "wall": 86.09125533299994,
+        "ids": [
+          46,
+          30970,
+          2128,
+          64,
+          201273,
+          401,
+          184574,
+          378,
+          82918,
+          635,
+          15135,
+          16753,
+          5666,
+          11,
+          69910,
+          4726,
+          1649,
+          194650,
+          14805,
+          459,
+          195129,
+          401,
+          192505,
+          178453,
+          401,
+          220,
+          20,
+          9341,
+          2600,
+          1067,
+          308,
+          945
+        ],
+        "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+        "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+        "source_fingerprints": {
+          "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+        },
+        "qsa": {
+          "cache_pooled_keys": false,
+          "scatter_decode": false,
+          "patch_installed": true,
+          "layers": [
+            {
+              "layer": 3,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 7,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 11,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 15,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 19,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 23,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 27,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 31,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 35,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 39,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 43,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 47,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            }
+          ],
+          "derived_bytes": 0
+        },
+        "qsa_derived_bytes": 0
+      }
+    ],
+    "cache-only": [
+      {
+        "elapsed_s": 155.91174574999968,
+        "gen_tokens": 32,
+        "gen_rate": 2.104622598006997,
+        "tail_rate": 2.2749063891474193,
+        "mb_per_token": 499.253632,
+        "pinned_gb": 4.50936832,
+        "rss_mb": 4696.866816,
+        "rss_process_peak_mb": 4993.695744,
+        "active_mb": 3394.652638,
+        "mlx_process_peak_mb": 7455.036027,
+        "mlx_cache_mb": 702.854048,
+        "memory_before": {
+          "rss_mb": 4728.963072,
+          "rss_process_peak_mb": 4954.980352,
+          "active_mb": 3198.39549,
+          "mlx_process_peak_mb": 7446.696535,
+          "mlx_cache_mb": 899.086464
+        },
+        "memory_prefilled": {
+          "rss_mb": 630.030336,
+          "rss_process_peak_mb": 4993.695744,
+          "active_mb": 3425.33457,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 649.314304
+        },
+        "vm_before": {
+          "reactivated": 37614145,
+          "decompress": 132906053,
+          "compress": 143296639,
+          "pagein": 141924424,
+          "pageout": 272688,
+          "swapin": 1059052,
+          "swapout": 1991175
+        },
+        "vm_prefilled": {
+          "reactivated": 38593191,
+          "decompress": 137273334,
+          "compress": 147837557,
+          "pagein": 143890105,
+          "pageout": 272995,
+          "swapin": 1083742,
+          "swapout": 2023823
+        },
+        "vm_after": {
+          "reactivated": 38625698,
+          "decompress": 137506758,
+          "compress": 148003080,
+          "pagein": 144430654,
+          "pageout": 273101,
+          "swapin": 1084142,
+          "swapout": 2023823
+        },
+        "vm_counters": {
+          "reactivated": 32507,
+          "decompress": 233424,
+          "compress": 165523,
+          "pagein": 540549,
+          "pageout": 106,
+          "swapin": 400,
+          "swapout": 0
+        },
+        "prefill_vm_counters": {
+          "reactivated": 979046,
+          "decompress": 4367281,
+          "compress": 4540918,
+          "pagein": 1965681,
+          "pageout": 307,
+          "swapin": 24690,
+          "swapout": 32648
+        },
+        "prefill_wall_s": 61.476934000000256,
+        "prefill_seconds": 61.476712582999426,
+        "prefill_read_bytes": 59473633280,
+        "decode_read_bytes": 15976116224,
+        "prompt_tokens": 2582,
+        "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+        "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+        "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+        "capable_layers": null,
+        "actual_path": [],
+        "free_mb_before": 78.84375,
+        "wall": 76.74487587500062,
+        "ids": [
+          46,
+          30970,
+          2128,
+          64,
+          201273,
+          401,
+          184574,
+          378,
+          82918,
+          635,
+          15135,
+          16753,
+          5666,
+          11,
+          69910,
+          4726,
+          1649,
+          194650,
+          14805,
+          459,
+          195129,
+          401,
+          192505,
+          178453,
+          401,
+          220,
+          20,
+          9341,
+          2600,
+          1067,
+          308,
+          945
+        ],
+        "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+        "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+        "source_fingerprints": {
+          "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+        },
+        "qsa": {
+          "cache_pooled_keys": true,
+          "scatter_decode": false,
+          "patch_installed": true,
+          "layers": [
+            {
+              "layer": 3,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 7,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 11,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 15,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 19,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 23,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 27,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 31,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 35,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 39,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 43,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 47,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            }
+          ],
+          "derived_bytes": 2006016
+        },
+        "qsa_derived_bytes": 2006016
+      },
+      {
+        "elapsed_s": 404.7597994580001,
+        "gen_tokens": 32,
+        "gen_rate": 1.9026311419171824,
+        "tail_rate": 2.1893602943851835,
+        "mb_per_token": 510.463744,
+        "pinned_gb": 4.50936832,
+        "rss_mb": 4652.859392,
+        "rss_process_peak_mb": 5068.095488,
+        "active_mb": 3394.652638,
+        "mlx_process_peak_mb": 7455.036027,
+        "mlx_cache_mb": 702.85392,
+        "memory_before": {
+          "rss_mb": 4749.656064,
+          "rss_process_peak_mb": 5068.095488,
+          "active_mb": 3198.39549,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 896.268426
+        },
+        "memory_prefilled": {
+          "rss_mb": 677.691392,
+          "rss_process_peak_mb": 5068.095488,
+          "active_mb": 3425.33457,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 649.314304
+        },
+        "vm_before": {
+          "reactivated": 40496352,
+          "decompress": 147999000,
+          "compress": 158628316,
+          "pagein": 149428057,
+          "pageout": 274027,
+          "swapin": 1104638,
+          "swapout": 2076679
+        },
+        "vm_prefilled": {
+          "reactivated": 41259719,
+          "decompress": 153110130,
+          "compress": 163974841,
+          "pagein": 151407341,
+          "pageout": 274545,
+          "swapin": 1129649,
+          "swapout": 2117663
+        },
+        "vm_after": {
+          "reactivated": 41324092,
+          "decompress": 153355516,
+          "compress": 164149430,
+          "pagein": 151941051,
+          "pageout": 274690,
+          "swapin": 1145436,
+          "swapout": 2117663
+        },
+        "vm_counters": {
+          "reactivated": 64373,
+          "decompress": 245386,
+          "compress": 174589,
+          "pagein": 533710,
+          "pageout": 145,
+          "swapin": 15787,
+          "swapout": 0
+        },
+        "prefill_vm_counters": {
+          "reactivated": 763367,
+          "decompress": 5111130,
+          "compress": 5346525,
+          "pagein": 1979284,
+          "pageout": 518,
+          "swapin": 25011,
+          "swapout": 40984
+        },
+        "prefill_wall_s": 67.47121904199957,
+        "prefill_seconds": 67.47101791700061,
+        "prefill_read_bytes": 59321524224,
+        "decode_read_bytes": 16334839808,
+        "prompt_tokens": 2582,
+        "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+        "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+        "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+        "capable_layers": null,
+        "actual_path": [],
+        "free_mb_before": 107.796875,
+        "wall": 84.36359466700014,
+        "ids": [
+          46,
+          30970,
+          2128,
+          64,
+          201273,
+          401,
+          184574,
+          378,
+          82918,
+          635,
+          15135,
+          16753,
+          5666,
+          11,
+          69910,
+          4726,
+          1649,
+          194650,
+          14805,
+          459,
+          195129,
+          401,
+          192505,
+          178453,
+          401,
+          220,
+          20,
+          9341,
+          2600,
+          1067,
+          308,
+          945
+        ],
+        "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+        "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+        "source_fingerprints": {
+          "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+        },
+        "qsa": {
+          "cache_pooled_keys": true,
+          "scatter_decode": false,
+          "patch_installed": true,
+          "layers": [
+            {
+              "layer": 3,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 7,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 11,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 15,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 19,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 23,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 27,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 31,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 35,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 39,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 43,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 47,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            }
+          ],
+          "derived_bytes": 2006016
+        },
+        "qsa_derived_bytes": 2006016
+      },
+      {
+        "elapsed_s": 633.8529642909998,
+        "gen_tokens": 32,
+        "gen_rate": 2.0670455314415297,
+        "tail_rate": 2.2341554997240687,
+        "mb_per_token": 481.853056,
+        "pinned_gb": 4.50936832,
+        "rss_mb": 4690.313216,
+        "rss_process_peak_mb": 5264.408576,
+        "active_mb": 3394.652638,
+        "mlx_process_peak_mb": 7455.036027,
+        "mlx_cache_mb": 702.85392,
+        "memory_before": {
+          "rss_mb": 4695.785472,
+          "rss_process_peak_mb": 5264.408576,
+          "active_mb": 3198.39549,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 899.26064
+        },
+        "memory_prefilled": {
+          "rss_mb": 714.58816,
+          "rss_process_peak_mb": 5264.408576,
+          "active_mb": 3425.33457,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 649.314304
+        },
+        "vm_before": {
+          "reactivated": 43272667,
+          "decompress": 163722307,
+          "compress": 174786663,
+          "pagein": 157001727,
+          "pageout": 294560,
+          "swapin": 1170542,
+          "swapout": 2147995
+        },
+        "vm_prefilled": {
+          "reactivated": 43910914,
+          "decompress": 168485955,
+          "compress": 179661705,
+          "pagein": 158931807,
+          "pageout": 294851,
+          "swapin": 1173279,
+          "swapout": 2147995
+        },
+        "vm_after": {
+          "reactivated": 43952460,
+          "decompress": 168690069,
+          "compress": 179788917,
+          "pagein": 159443894,
+          "pageout": 294881,
+          "swapin": 1173758,
+          "swapout": 2147995
+        },
+        "vm_counters": {
+          "reactivated": 41546,
+          "decompress": 204114,
+          "compress": 127212,
+          "pagein": 512087,
+          "pageout": 30,
+          "swapin": 479,
+          "swapout": 0
+        },
+        "prefill_vm_counters": {
+          "reactivated": 638247,
+          "decompress": 4763648,
+          "compress": 4875042,
+          "pagein": 1930080,
+          "pageout": 291,
+          "swapin": 2737,
+          "swapout": 0
+        },
+        "prefill_wall_s": 59.119070582999484,
+        "prefill_seconds": 59.11889295800029,
+        "prefill_read_bytes": 58909855744,
+        "decode_read_bytes": 15419297792,
+        "prompt_tokens": 2582,
+        "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+        "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+        "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+        "capable_layers": null,
+        "actual_path": [],
+        "free_mb_before": 110.96875,
+        "wall": 74.63851395799975,
+        "ids": [
+          46,
+          30970,
+          2128,
+          64,
+          201273,
+          401,
+          184574,
+          378,
+          82918,
+          635,
+          15135,
+          16753,
+          5666,
+          11,
+          69910,
+          4726,
+          1649,
+          194650,
+          14805,
+          459,
+          195129,
+          401,
+          192505,
+          178453,
+          401,
+          220,
+          20,
+          9341,
+          2600,
+          1067,
+          308,
+          945
+        ],
+        "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+        "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+        "source_fingerprints": {
+          "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+        },
+        "qsa": {
+          "cache_pooled_keys": true,
+          "scatter_decode": false,
+          "patch_installed": true,
+          "layers": [
+            {
+              "layer": 3,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 7,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 11,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 15,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 19,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 23,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 27,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 31,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 35,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 39,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 43,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 47,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            }
+          ],
+          "derived_bytes": 2006016
+        },
+        "qsa_derived_bytes": 2006016
+      },
+      {
+        "elapsed_s": 870.3118224999998,
+        "gen_tokens": 32,
+        "gen_rate": 1.9861358202433192,
+        "tail_rate": 2.1600805736877575,
+        "mb_per_token": 493.621376,
+        "pinned_gb": 4.50936832,
+        "rss_mb": 4730.421248,
+        "rss_process_peak_mb": 5264.408576,
+        "active_mb": 3394.652638,
+        "mlx_process_peak_mb": 7455.036027,
+        "mlx_cache_mb": 702.85392,
+        "memory_before": {
+          "rss_mb": 4733.878272,
+          "rss_process_peak_mb": 5264.408576,
+          "active_mb": 3198.39549,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 896.268426
+        },
+        "memory_prefilled": {
+          "rss_mb": 1019.543552,
+          "rss_process_peak_mb": 5264.408576,
+          "active_mb": 3425.33457,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 648.8064
+        },
+        "vm_before": {
+          "reactivated": 45801790,
+          "decompress": 179271958,
+          "compress": 190478794,
+          "pagein": 164434399,
+          "pageout": 295645,
+          "swapin": 1198749,
+          "swapout": 2168222
+        },
+        "vm_prefilled": {
+          "reactivated": 46659935,
+          "decompress": 184266951,
+          "compress": 195565182,
+          "pagein": 166376066,
+          "pageout": 295887,
+          "swapin": 1206241,
+          "swapout": 2174834
+        },
+        "vm_after": {
+          "reactivated": 46683331,
+          "decompress": 184485896,
+          "compress": 195713774,
+          "pagein": 166897806,
+          "pageout": 295935,
+          "swapin": 1208894,
+          "swapout": 2174834
+        },
+        "vm_counters": {
+          "reactivated": 23396,
+          "decompress": 218945,
+          "compress": 148592,
+          "pagein": 521740,
+          "pageout": 48,
+          "swapin": 2653,
+          "swapout": 0
+        },
+        "prefill_vm_counters": {
+          "reactivated": 858145,
+          "decompress": 4994993,
+          "compress": 5086388,
+          "pagein": 1941667,
+          "pageout": 242,
+          "swapin": 7492,
+          "swapout": 6612
+        },
+        "prefill_wall_s": 66.49156441600007,
+        "prefill_seconds": 66.49138583400054,
+        "prefill_read_bytes": 59144482816,
+        "decode_read_bytes": 15795884032,
+        "prompt_tokens": 2582,
+        "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+        "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+        "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+        "capable_layers": null,
+        "actual_path": [],
+        "free_mb_before": 107.78125,
+        "wall": 82.67786220800008,
+        "ids": [
+          46,
+          30970,
+          2128,
+          64,
+          201273,
+          401,
+          184574,
+          378,
+          82918,
+          635,
+          15135,
+          16753,
+          5666,
+          11,
+          69910,
+          4726,
+          1649,
+          194650,
+          14805,
+          459,
+          195129,
+          401,
+          192505,
+          178453,
+          401,
+          220,
+          20,
+          9341,
+          2600,
+          1067,
+          308,
+          945
+        ],
+        "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+        "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+        "source_fingerprints": {
+          "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+        },
+        "qsa": {
+          "cache_pooled_keys": true,
+          "scatter_decode": false,
+          "patch_installed": true,
+          "layers": [
+            {
+              "layer": 3,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 7,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 11,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 15,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 19,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 23,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 27,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 31,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 35,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 39,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 43,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            },
+            {
+              "layer": 47,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": [
+                1,
+                1,
+                653,
+                128
+              ],
+              "pooled_bytes": 167168,
+              "pool_reusable": true
+            }
+          ],
+          "derived_bytes": 2006016
+        },
+        "qsa_derived_bytes": 2006016
+      }
+    ],
+    "scatter-only": [
+      {
+        "elapsed_s": 237.91861166599938,
+        "gen_tokens": 32,
+        "gen_rate": 2.0813832730137016,
+        "tail_rate": 2.2606949454815886,
+        "mb_per_token": 485.975552,
+        "pinned_gb": 4.50936832,
+        "rss_mb": 4734.631936,
+        "rss_process_peak_mb": 5068.095488,
+        "active_mb": 3392.228566,
+        "mlx_process_peak_mb": 7455.036027,
+        "mlx_cache_mb": 702.43535,
+        "memory_before": {
+          "rss_mb": 4717.182976,
+          "rss_process_peak_mb": 4993.695744,
+          "active_mb": 3198.39549,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 899.111196
+        },
+        "memory_prefilled": {
+          "rss_mb": 893.616128,
+          "rss_process_peak_mb": 4993.695744,
+          "active_mb": 3423.139114,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 648.8064
+        },
+        "vm_before": {
+          "reactivated": 38625834,
+          "decompress": 137508051,
+          "compress": 148003711,
+          "pagein": 144431666,
+          "pageout": 273101,
+          "swapin": 1084142,
+          "swapout": 2023823
+        },
+        "vm_prefilled": {
+          "reactivated": 39516212,
+          "decompress": 142562612,
+          "compress": 153200764,
+          "pagein": 146415686,
+          "pageout": 273548,
+          "swapin": 1090987,
+          "swapout": 2049651
+        },
+        "vm_after": {
+          "reactivated": 39543107,
+          "decompress": 142795115,
+          "compress": 153364140,
+          "pagein": 146936745,
+          "pageout": 273626,
+          "swapin": 1091160,
+          "swapout": 2049651
+        },
+        "vm_counters": {
+          "reactivated": 26895,
+          "decompress": 232503,
+          "compress": 163376,
+          "pagein": 521059,
+          "pageout": 78,
+          "swapin": 173,
+          "swapout": 0
+        },
+        "prefill_vm_counters": {
+          "reactivated": 890378,
+          "decompress": 5054561,
+          "compress": 5197053,
+          "pagein": 1984020,
+          "pageout": 447,
+          "swapin": 6845,
+          "swapout": 25828
+        },
+        "prefill_wall_s": 66.44546925000031,
+        "prefill_seconds": 66.44530020899947,
+        "prefill_read_bytes": 59124363264,
+        "decode_read_bytes": 15551217664,
+        "prompt_tokens": 2582,
+        "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+        "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+        "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+        "capable_layers": null,
+        "actual_path": [],
+        "free_mb_before": 100.34375,
+        "wall": 81.89397016600014,
+        "ids": [
+          46,
+          30970,
+          2128,
+          64,
+          201273,
+          401,
+          184574,
+          378,
+          82918,
+          635,
+          15135,
+          16753,
+          5666,
+          11,
+          69910,
+          4726,
+          1649,
+          194650,
+          14805,
+          459,
+          195129,
+          401,
+          192505,
+          178453,
+          401,
+          220,
+          20,
+          9341,
+          2600,
+          1067,
+          308,
+          945
+        ],
+        "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+        "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+        "source_fingerprints": {
+          "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+        },
+        "qsa": {
+          "cache_pooled_keys": false,
+          "scatter_decode": true,
+          "patch_installed": true,
+          "layers": [
+            {
+              "layer": 3,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 7,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 11,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 15,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 19,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 23,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 27,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 31,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 35,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 39,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 43,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 47,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            }
+          ],
+          "derived_bytes": 0
+        },
+        "qsa_derived_bytes": 0
+      },
+      {
+        "elapsed_s": 320.2871504579998,
+        "gen_tokens": 32,
+        "gen_rate": 1.9972074047462687,
+        "tail_rate": 2.2213491444422107,
+        "mb_per_token": 497.842176,
+        "pinned_gb": 4.50936832,
+        "rss_mb": 4734.337024,
+        "rss_process_peak_mb": 5068.095488,
+        "active_mb": 3392.228566,
+        "mlx_process_peak_mb": 7455.036027,
+        "mlx_cache_mb": 702.43535,
+        "memory_before": {
+          "rss_mb": 4752.637952,
+          "rss_process_peak_mb": 5068.095488,
+          "active_mb": 3198.39549,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 896.268426
+        },
+        "memory_prefilled": {
+          "rss_mb": 900.562944,
+          "rss_process_peak_mb": 5068.095488,
+          "active_mb": 3423.139114,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 649.314304
+        },
+        "vm_before": {
+          "reactivated": 39543107,
+          "decompress": 142796723,
+          "compress": 153364140,
+          "pagein": 146936826,
+          "pageout": 273626,
+          "swapin": 1091160,
+          "swapout": 2049651
+        },
+        "vm_prefilled": {
+          "reactivated": 40475136,
+          "decompress": 147783850,
+          "compress": 158480982,
+          "pagein": 148907711,
+          "pageout": 274009,
+          "swapin": 1096676,
+          "swapout": 2076679
+        },
+        "vm_after": {
+          "reactivated": 40495841,
+          "decompress": 147996881,
+          "compress": 158627207,
+          "pagein": 149427683,
+          "pageout": 274027,
+          "swapin": 1104622,
+          "swapout": 2076679
+        },
+        "vm_counters": {
+          "reactivated": 20705,
+          "decompress": 213031,
+          "compress": 146225,
+          "pagein": 519972,
+          "pageout": 18,
+          "swapin": 7946,
+          "swapout": 0
+        },
+        "prefill_vm_counters": {
+          "reactivated": 932029,
+          "decompress": 4987127,
+          "compress": 5116842,
+          "pagein": 1970885,
+          "pageout": 383,
+          "swapin": 5516,
+          "swapout": 27028
+        },
+        "prefill_wall_s": 66.16696349999984,
+        "prefill_seconds": 66.16678587499973,
+        "prefill_read_bytes": 59143168000,
+        "decode_read_bytes": 15930949632,
+        "prompt_tokens": 2582,
+        "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+        "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+        "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+        "capable_layers": null,
+        "actual_path": [],
+        "free_mb_before": 108.53125,
+        "wall": 82.25894941699971,
+        "ids": [
+          46,
+          30970,
+          2128,
+          64,
+          201273,
+          401,
+          184574,
+          378,
+          82918,
+          635,
+          15135,
+          16753,
+          5666,
+          11,
+          69910,
+          4726,
+          1649,
+          194650,
+          14805,
+          459,
+          195129,
+          401,
+          192505,
+          178453,
+          401,
+          220,
+          20,
+          9341,
+          2600,
+          1067,
+          308,
+          945
+        ],
+        "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+        "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+        "source_fingerprints": {
+          "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+        },
+        "qsa": {
+          "cache_pooled_keys": false,
+          "scatter_decode": true,
+          "patch_installed": true,
+          "layers": [
+            {
+              "layer": 3,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 7,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 11,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 15,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 19,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 23,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 27,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 31,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 35,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 39,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 43,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 47,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            }
+          ],
+          "derived_bytes": 0
+        },
+        "qsa_derived_bytes": 0
+      },
+      {
+        "elapsed_s": 710.4841723330001,
+        "gen_tokens": 32,
+        "gen_rate": 2.0086314975482784,
+        "tail_rate": 2.151942559132773,
+        "mb_per_token": 491.558912,
+        "pinned_gb": 4.50936832,
+        "rss_mb": 4633.673728,
+        "rss_process_peak_mb": 5264.408576,
+        "active_mb": 3392.228566,
+        "mlx_process_peak_mb": 7455.036027,
+        "mlx_cache_mb": 702.43535,
+        "memory_before": {
+          "rss_mb": 4706.418688,
+          "rss_process_peak_mb": 5264.408576,
+          "active_mb": 3198.39549,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 899.111068
+        },
+        "memory_prefilled": {
+          "rss_mb": 105.709568,
+          "rss_process_peak_mb": 5264.408576,
+          "active_mb": 3423.139114,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 649.314304
+        },
+        "vm_before": {
+          "reactivated": 43952522,
+          "decompress": 168691794,
+          "compress": 179789589,
+          "pagein": 159443900,
+          "pageout": 294881,
+          "swapin": 1173758,
+          "swapout": 2147995
+        },
+        "vm_prefilled": {
+          "reactivated": 44733116,
+          "decompress": 173869458,
+          "compress": 185134944,
+          "pagein": 161397471,
+          "pageout": 295148,
+          "swapin": 1194304,
+          "swapout": 2160338
+        },
+        "vm_after": {
+          "reactivated": 44796412,
+          "decompress": 174133808,
+          "compress": 185293138,
+          "pagein": 161940094,
+          "pageout": 295229,
+          "swapin": 1196573,
+          "swapout": 2160338
+        },
+        "vm_counters": {
+          "reactivated": 63296,
+          "decompress": 264350,
+          "compress": 158194,
+          "pagein": 542623,
+          "pageout": 81,
+          "swapin": 2269,
+          "swapout": 0
+        },
+        "prefill_vm_counters": {
+          "reactivated": 780594,
+          "decompress": 5177664,
+          "compress": 5345355,
+          "pagein": 1953571,
+          "pageout": 267,
+          "swapin": 20546,
+          "swapout": 12343
+        },
+        "prefill_wall_s": 60.56299687499995,
+        "prefill_seconds": 60.562852209000084,
+        "prefill_read_bytes": 59054800896,
+        "decode_read_bytes": 15729885184,
+        "prompt_tokens": 2582,
+        "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+        "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+        "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+        "capable_layers": null,
+        "actual_path": [],
+        "free_mb_before": 108.203125,
+        "wall": 76.52014337499986,
+        "ids": [
+          46,
+          30970,
+          2128,
+          64,
+          201273,
+          401,
+          184574,
+          378,
+          82918,
+          635,
+          15135,
+          16753,
+          5666,
+          11,
+          69910,
+          4726,
+          1649,
+          194650,
+          14805,
+          459,
+          195129,
+          401,
+          192505,
+          178453,
+          401,
+          220,
+          20,
+          9341,
+          2600,
+          1067,
+          308,
+          945
+        ],
+        "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+        "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+        "source_fingerprints": {
+          "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+        },
+        "qsa": {
+          "cache_pooled_keys": false,
+          "scatter_decode": true,
+          "patch_installed": true,
+          "layers": [
+            {
+              "layer": 3,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 7,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 11,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 15,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 19,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 23,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 27,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 31,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 35,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 39,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 43,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 47,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            }
+          ],
+          "derived_bytes": 0
+        },
+        "qsa_derived_bytes": 0
+      },
+      {
+        "elapsed_s": 787.5274547499994,
+        "gen_tokens": 32,
+        "gen_rate": 2.1323030460104273,
+        "tail_rate": 2.3281840749155567,
+        "mb_per_token": 492.477568,
+        "pinned_gb": 4.50936832,
+        "rss_mb": 4716.78976,
+        "rss_process_peak_mb": 5264.408576,
+        "active_mb": 3392.228566,
+        "mlx_process_peak_mb": 7455.036027,
+        "mlx_cache_mb": 702.43535,
+        "memory_before": {
+          "rss_mb": 4657.39776,
+          "rss_process_peak_mb": 5264.408576,
+          "active_mb": 3198.39549,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 896.268426
+        },
+        "memory_prefilled": {
+          "rss_mb": 720.224256,
+          "rss_process_peak_mb": 5264.408576,
+          "active_mb": 3423.139114,
+          "mlx_process_peak_mb": 7455.036027,
+          "mlx_cache_mb": 648.8064
+        },
+        "vm_before": {
+          "reactivated": 44796798,
+          "decompress": 174135454,
+          "compress": 185293519,
+          "pagein": 161940222,
+          "pageout": 295229,
+          "swapin": 1196573,
+          "swapout": 2160338
+        },
+        "vm_prefilled": {
+          "reactivated": 45767600,
+          "decompress": 179040519,
+          "compress": 190330399,
+          "pagein": 163913110,
+          "pageout": 295614,
+          "swapin": 1197885,
+          "swapout": 2168222
+        },
+        "vm_after": {
+          "reactivated": 45801790,
+          "decompress": 179270898,
+          "compress": 190478794,
+          "pagein": 164434380,
+          "pageout": 295645,
+          "swapin": 1198749,
+          "swapout": 2168222
+        },
+        "vm_counters": {
+          "reactivated": 34190,
+          "decompress": 230379,
+          "compress": 148395,
+          "pagein": 521270,
+          "pageout": 31,
+          "swapin": 864,
+          "swapout": 0
+        },
+        "prefill_vm_counters": {
+          "reactivated": 970802,
+          "decompress": 4905065,
+          "compress": 5036880,
+          "pagein": 1972888,
+          "pageout": 385,
+          "swapin": 1312,
+          "swapout": 7884
+        },
+        "prefill_wall_s": 61.85338649999994,
+        "prefill_seconds": 61.85323608300041,
+        "prefill_read_bytes": 59074211840,
+        "decode_read_bytes": 15759282176,
+        "prompt_tokens": 2582,
+        "prompt_token_sha256": "ca0aa92627a26e7d9f31ba83bb2cd8da4d3a4db3822e4c86c78580202ce9ebed",
+        "prompt_sha256": "ddb6f71552e8056a13d5374e407d04406d852ede2289e10bf3a9ebe0aa4ad884",
+        "token_sha256": "794b3e8a36f4580a99d269e9d89306bd2af31c142a394a914e7e307f8c40c7cc",
+        "capable_layers": null,
+        "actual_path": [],
+        "free_mb_before": 103.8125,
+        "wall": 76.92103912499988,
+        "ids": [
+          46,
+          30970,
+          2128,
+          64,
+          201273,
+          401,
+          184574,
+          378,
+          82918,
+          635,
+          15135,
+          16753,
+          5666,
+          11,
+          69910,
+          4726,
+          1649,
+          194650,
+          14805,
+          459,
+          195129,
+          401,
+          192505,
+          178453,
+          401,
+          220,
+          20,
+          9341,
+          2600,
+          1067,
+          308,
+          945
+        ],
+        "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+        "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+        "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+        "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+        "source_fingerprints": {
+          "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+          "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+        },
+        "qsa": {
+          "cache_pooled_keys": false,
+          "scatter_decode": true,
+          "patch_installed": true,
+          "layers": [
+            {
+              "layer": 3,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 7,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 11,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 15,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 19,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 23,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 27,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 31,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 35,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 39,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 43,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            },
+            {
+              "layer": 47,
+              "context_tokens": 2614,
+              "sparse_active": true,
+              "pooled_shape": null,
+              "pooled_bytes": 0,
+              "pool_reusable": false
+            }
+          ],
+          "derived_bytes": 0
+        },
+        "qsa_derived_bytes": 0
+      }
+    ]
+  },
+  "resident_experts": 32,
+  "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+  "checkpoint_identity": "f27db1920a8dc9558f5f25c89c269c1608b904a7a216a13c5e291efc0def9c1c",
+  "runtime_source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+  "source_fingerprint": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+  "benchmark_source_fingerprint": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b",
+  "source_fingerprints": {
+    "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+    "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+  },
+  "runtime_source_fingerprints": {
+    "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+    "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+  },
+  "current_arm": {
+    "round": 4,
+    "condition": "baseline",
+    "environment": {
+      "FLASHNEXT_SLAB": "0",
+      "FLASHNEXT_FUSED_SHARED": "1",
+      "FLASHNEXT_PREAD_CHUNK": "2",
+      "FLASHNEXT_SLAB_GLOBAL": "0",
+      "FLASHNEXT_SLAB_MAX_SLOTS": "6",
+      "FLASHNEXT_STREAM_PACK": "0",
+      "FLASHNEXT_SLAB_MIN_SLOTS": "4",
+      "FLASHNEXT_READ": "pread",
+      "FLASHNEXT_SLAB_PROFILE": "frozen",
+      "FLASHNEXT_METAL_RUNTIME": "1",
+      "FLASHNEXT_METAL_G64": "0",
+      "FLASHNEXT_FUSED_UP_SWIGLU": "1",
+      "FLASHNEXT_SLAB_POLICY": "skew",
+      "FLASHNEXT_SLAB_PACK_REQUIRE_EXISTING": "0",
+      "FLASHNEXT_FUSED_SHARED_PARTS": "0",
+      "FLASHNEXT_PREWARM": "0",
+      "FLASHNEXT_PROFILE_IO": "0",
+      "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "0",
+      "FLASHNEXT_IO_WORKERS": "16",
+      "FLASHNEXT_SLAB_G64": "0",
+      "FLASHNEXT_SLAB_PACK": "0",
+      "FLASHNEXT_SLAB_NUM_LAYERS": "12",
+      "FLASHNEXT_QSA_SCATTER_DECODE": "0"
+    }
+  },
+  "source_fingerprints_at_completion": {
+    "runtime": "af1b510e53008f0e8354c689e6939cba23b43ef94eabe7c587241f9ac15fe262",
+    "benchmark": "9f72bf49099d338bc72d1de03f87a96b8bd1201c69f2aaeb58d310f2a1e21c2b"
+  },
+  "g64_preflight": null,
+  "g64_status": null,
+  "metal_preflight": null
+}

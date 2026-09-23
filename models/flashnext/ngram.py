@@ -106,6 +106,16 @@ class StreamingQuantizedEmbedding(nn.Module):
         return values.reshape(*indices.shape, self.dims)
 
 
+# Large lookups (prefill: 16 n-gram rows per prompt token across 128 shards)
+# read their rows on the I/O pool instead of serially on the main thread.
+# 0 disables it. Decode looks up 16 rows and stays serial.
+_PARALLEL_MIN_ROWS = [int(os.environ.get("FLASHNEXT_NGRAM_PARALLEL_MIN", "0"))]
+
+
+def set_parallel_min_rows(value: int) -> None:
+    _PARALLEL_MIN_ROWS[0] = int(value)
+
+
 class StreamingShardedEmbedding(nn.Module):
     """Read only shards that own at least one requested n-gram row."""
 
@@ -162,6 +172,29 @@ class StreamingShardedEmbedding(nn.Module):
             return result
         return self._direct_rows(flat)
 
+    def _parallel_blocks(self, groups):
+        """Read every shard's rows on the I/O pool, then dequantize in order."""
+        from models.flashnext.expert_cache import _submit_read
+
+        pending = []
+        for shard_index, (_, rows) in groups.items():
+            shard = self.shards[shard_index]
+            pending.append((shard, [
+                _submit_read(shard.store.rows_np, f"{shard.prefix}.{part}", rows)
+                for part in ("weight", "scales", "biases")
+            ]))
+        blocks = []
+        for shard, futures in pending:
+            weight, scales, biases = (
+                shard.store.to_mx(f"{shard.prefix}.{part}", future.result())
+                for part, future in zip(("weight", "scales", "biases"), futures)
+            )
+            blocks.append(mx.dequantize(
+                weight, scales, biases,
+                group_size=shard.group_size, bits=shard.bits, mode=shard.mode,
+            ))
+        return blocks
+
     def _direct_rows(self, flat):
         mx.eval(flat)
         global_rows = [int(value) for value in flat.tolist()]
@@ -169,8 +202,15 @@ class StreamingShardedEmbedding(nn.Module):
 
         blocks = []
         packed_positions = []
-        for shard_index, (_, rows) in groups.items():
-            blocks.append(self.shards[shard_index]._rows(rows))
+        if (
+            _PARALLEL_MIN_ROWS[0] > 0
+            and len(global_rows) >= _PARALLEL_MIN_ROWS[0]
+            and all(self.shards[i].capacity <= 0 for i in groups)
+        ):
+            blocks = self._parallel_blocks(groups)
+        else:
+            for shard_index, (_, rows) in groups.items():
+                blocks.append(self.shards[shard_index]._rows(rows))
         for positions, _ in groups.values():
             packed_positions.extend(positions)
         packed = blocks[0] if len(blocks) == 1 else mx.concatenate(blocks, axis=0)

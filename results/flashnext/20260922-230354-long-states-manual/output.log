@@ -1,0 +1,25 @@
+== off: free 85 MB
+  off          tok   64  2.50 tok/s   354.3 MB/tok  gpu state  3.25  pcpu state 18.42
+  off          tok  128  2.36 tok/s   396.6 MB/tok  gpu state  3.53  pcpu state 18.05
+  off: gen 2.408 tok/s, digest e19af44d5268e9d1
+== keepwarm: free 97 MB
+  keepwarm     tok   64  3.06 tok/s   350.5 MB/tok  gpu state 14.99  pcpu state 18.87
+  keepwarm     tok  128  2.85 tok/s   403.5 MB/tok  gpu state 14.99  pcpu state 18.98
+  keepwarm: gen 2.924 tok/s, digest e19af44d5268e9d1
+== keepwarm: free 96 MB
+  keepwarm     tok   64  3.00 tok/s   359.3 MB/tok  gpu state 14.99  pcpu state 18.92
+  keepwarm     tok  128  2.78 tok/s   411.0 MB/tok  gpu state 14.99  pcpu state 19.04
+  keepwarm: gen 2.862 tok/s, digest e19af44d5268e9d1
+== off: free 93 MB
+  off          tok   64  2.43 tok/s   369.1 MB/tok  gpu state  1.99  pcpu state 18.31
+  off          tok  128  2.30 tok/s   414.6 MB/tok  gpu state  2.86  pcpu state 18.10
+  off: gen 2.34 tok/s, digest e19af44d5268e9d1
+== off: free 95 MB
+  off          tok   64  2.39 tok/s   368.1 MB/tok  gpu state  2.18  pcpu state 17.91
+  off          tok  128  2.32 tok/s   416.6 MB/tok  gpu state  2.63  pcpu state 18.10
+  off: gen 2.331 tok/s, digest e19af44d5268e9d1
+== keepwarm: free 93 MB
+  keepwarm     tok   64  3.03 tok/s   351.0 MB/tok  gpu state 14.98  pcpu state 18.88
+  keepwarm     tok  128  2.88 tok/s   395.0 MB/tok  gpu state 14.99  pcpu state 18.95
+  keepwarm: gen 2.926 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260922-230354-long-states-manual/long-states.json

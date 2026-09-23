@@ -1,0 +1,60 @@
+{
+ "measured_mb_per_token": [
+  433.729104,
+  482.229792,
+  462.77632
+ ],
+ "mb_per_token": {
+  "1.0": {
+   "lru": 914.9,
+   "slru": 914.9,
+   "lfu": 905.1,
+   "lru-admit": 914.0,
+   "opt": 897.1
+  },
+  "2.0": {
+   "lru": 879.7,
+   "slru": 854.9,
+   "lfu": 750.6,
+   "lru-admit": 859.1,
+   "opt": 399.9
+  },
+  "3.0": {
+   "lru": 524.9,
+   "slru": 799.0,
+   "lfu": 651.4,
+   "lru-admit": 522.8,
+   "opt": 319.1
+  },
+  "4.0": {
+   "lru": 441.0,
+   "slru": 741.5,
+   "lfu": 582.6,
+   "lru-admit": 444.0,
+   "opt": 261.7
+  },
+  "5.0": {
+   "lru": 384.5,
+   "slru": 666.0,
+   "lfu": 527.8,
+   "lru-admit": 388.3,
+   "opt": 219.6
+  },
+  "6.0": {
+   "lru": 343.3,
+   "slru": 625.3,
+   "lfu": 482.1,
+   "lru-admit": 349.6,
+   "opt": 188.4
+  },
+  "8.0": {
+   "lru": 288.2,
+   "slru": 469.1,
+   "lfu": 405.8,
+   "lru-admit": 298.1,
+   "opt": 144.7
+  }
+ },
+ "record_bytes": 3211264,
+ "trace": "results/flashnext/20260922-221213-route-trace-manual/route-trace.json.gz"
+}

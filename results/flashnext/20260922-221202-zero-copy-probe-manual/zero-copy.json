@@ -1,0 +1,17 @@
+{
+ "shard": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP/model-00012-of-00022.safetensors",
+ "region_bytes": 1999994880,
+ "rows": 24,
+ "resident_before": 0.03585647579257803,
+ "resident_after_gather": 1.0,
+ "wrap_seconds": 0.00010425000004943286,
+ "wrap_physical_bytes": 0,
+ "gather_cold_seconds": 1.2385456250000288,
+ "gather_cold_physical_bytes": 1929183232,
+ "touched_bytes": 19660800,
+ "gather_warm_seconds": 0.0028926250001859444,
+ "value_matches_host": true,
+ "pread_seconds": 0.0083828330000415,
+ "pread_physical_bytes": 0,
+ "pread_value_matches": true
+}

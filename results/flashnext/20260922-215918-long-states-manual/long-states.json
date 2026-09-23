@@ -1,0 +1,1663 @@
+{
+ "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+ "resident_experts": 8,
+ "tokens": 384,
+ "window": 32,
+ "conditions": [
+  "off",
+  "keepwarm",
+  "qos",
+  "qos-keepwarm"
+ ],
+ "arms": [
+  {
+   "condition": "off",
+   "free_mb_before": 86.28125,
+   "therm_before": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_before": [
+    7.64013671875,
+    18.72900390625,
+    10.43896484375
+   ],
+   "gen_rate": 1.912,
+   "tail_rate": 1.94,
+   "tokens": 384,
+   "digest": "3edafe06a771eaa3",
+   "windows": [
+    {
+     "end_token": 32,
+     "tok_s": 1.511,
+     "mb_per_token": 581.1,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.5854,
+       "mean_active_state": 1.45
+      },
+      "ECPU": {
+       "active_share": 0.9989,
+       "mean_active_state": 6.644
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 6.036
+      },
+      "PCPU": {
+       "active_share": 0.7456,
+       "mean_active_state": 19.245
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.274
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 64,
+     "tok_s": 2.113,
+     "mb_per_token": 424.3,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.5176,
+       "mean_active_state": 1.598
+      },
+      "ECPU": {
+       "active_share": 0.9996,
+       "mean_active_state": 4.842
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.605
+      },
+      "PCPU": {
+       "active_share": 0.5977,
+       "mean_active_state": 18.952
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.48
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 96,
+     "tok_s": 2.186,
+     "mb_per_token": 413.4,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.5581,
+       "mean_active_state": 1.922
+      },
+      "ECPU": {
+       "active_share": 0.9952,
+       "mean_active_state": 3.364
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.29
+      },
+      "PCPU": {
+       "active_share": 0.4799,
+       "mean_active_state": 18.282
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.329
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 128,
+     "tok_s": 1.922,
+     "mb_per_token": 505.2,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.5157,
+       "mean_active_state": 1.084
+      },
+      "ECPU": {
+       "active_share": 0.9882,
+       "mean_active_state": 3.194
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.136
+      },
+      "PCPU": {
+       "active_share": 0.4572,
+       "mean_active_state": 18.416
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.565
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 160,
+     "tok_s": 1.879,
+     "mb_per_token": 519.9,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.4965,
+       "mean_active_state": 1.036
+      },
+      "ECPU": {
+       "active_share": 0.984,
+       "mean_active_state": 3.247
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.158
+      },
+      "PCPU": {
+       "active_share": 0.4937,
+       "mean_active_state": 18.65
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.706
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 192,
+     "tok_s": 2.337,
+     "mb_per_token": 400.2,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.5345,
+       "mean_active_state": 2.638
+      },
+      "ECPU": {
+       "active_share": 0.9928,
+       "mean_active_state": 5.663
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 5.233
+      },
+      "PCPU": {
+       "active_share": 0.4631,
+       "mean_active_state": 18.321
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.53
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 224,
+     "tok_s": 1.941,
+     "mb_per_token": 467.2,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.4919,
+       "mean_active_state": 1.357
+      },
+      "ECPU": {
+       "active_share": 0.9887,
+       "mean_active_state": 3.48
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.353
+      },
+      "PCPU": {
+       "active_share": 0.4885,
+       "mean_active_state": 18.583
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.639
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 256,
+     "tok_s": 2.014,
+     "mb_per_token": 446.7,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.5366,
+       "mean_active_state": 1.232
+      },
+      "ECPU": {
+       "active_share": 0.9972,
+       "mean_active_state": 3.502
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.414
+      },
+      "PCPU": {
+       "active_share": 0.4872,
+       "mean_active_state": 18.355
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.304
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 288,
+     "tok_s": 1.914,
+     "mb_per_token": 463.5,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.632,
+       "mean_active_state": 2.166
+      },
+      "ECPU": {
+       "active_share": 0.9744,
+       "mean_active_state": 4.377
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.256
+      },
+      "PCPU": {
+       "active_share": 0.5401,
+       "mean_active_state": 18.336
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.248
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 320,
+     "tok_s": 1.817,
+     "mb_per_token": 517.6,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.6195,
+       "mean_active_state": 1.953
+      },
+      "ECPU": {
+       "active_share": 0.9997,
+       "mean_active_state": 3.872
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.786
+      },
+      "PCPU": {
+       "active_share": 0.4918,
+       "mean_active_state": 17.978
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.792
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 352,
+     "tok_s": 2.017,
+     "mb_per_token": 467.6,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.7143,
+       "mean_active_state": 3.69
+      },
+      "ECPU": {
+       "active_share": 0.9972,
+       "mean_active_state": 4.032
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.935
+      },
+      "PCPU": {
+       "active_share": 0.5213,
+       "mean_active_state": 18.437
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.033
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 384,
+     "tok_s": 1.654,
+     "mb_per_token": 526.3,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.6784,
+       "mean_active_state": 1.997
+      },
+      "ECPU": {
+       "active_share": 0.9621,
+       "mean_active_state": 3.911
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.821
+      },
+      "PCPU": {
+       "active_share": 0.5437,
+       "mean_active_state": 18.434
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.719
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    }
+   ],
+   "therm_after": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_after": [
+    3.99267578125,
+    11.408203125,
+    9.0908203125
+   ],
+   "vm": {
+    "reactivated": 1767054,
+    "decompress": 3736050,
+    "compress": 3983357,
+    "pagein": 7219162,
+    "pageout": 138906,
+    "swapin": 32,
+    "swapout": 2232
+   },
+   "pinned_bytes": 1236418560
+  },
+  {
+   "condition": "keepwarm",
+   "free_mb_before": 114.21875,
+   "therm_before": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_before": [
+    3.99267578125,
+    11.408203125,
+    9.0908203125
+   ],
+   "gen_rate": 2.466,
+   "tail_rate": 2.474,
+   "tokens": 384,
+   "digest": "3edafe06a771eaa3",
+   "windows": [
+    {
+     "end_token": 32,
+     "tok_s": 2.39,
+     "mb_per_token": 469.7,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9761,
+       "mean_active_state": 14.77
+      },
+      "ECPU": {
+       "active_share": 0.9753,
+       "mean_active_state": 3.586
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.453
+      },
+      "PCPU": {
+       "active_share": 0.6885,
+       "mean_active_state": 19.099
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.152
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 64,
+     "tok_s": 2.642,
+     "mb_per_token": 421.4,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9844,
+       "mean_active_state": 14.984
+      },
+      "ECPU": {
+       "active_share": 0.9876,
+       "mean_active_state": 3.664
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.567
+      },
+      "PCPU": {
+       "active_share": 0.6691,
+       "mean_active_state": 19.026
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.1
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 96,
+     "tok_s": 2.447,
+     "mb_per_token": 418.6,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9814,
+       "mean_active_state": 14.982
+      },
+      "ECPU": {
+       "active_share": 0.964,
+       "mean_active_state": 3.935
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.787
+      },
+      "PCPU": {
+       "active_share": 0.7834,
+       "mean_active_state": 19.41
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.879
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 128,
+     "tok_s": 2.048,
+     "mb_per_token": 513.0,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9768,
+       "mean_active_state": 14.981
+      },
+      "ECPU": {
+       "active_share": 0.9335,
+       "mean_active_state": 3.8
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.667
+      },
+      "PCPU": {
+       "active_share": 0.7221,
+       "mean_active_state": 19.474
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.019
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 160,
+     "tok_s": 2.356,
+     "mb_per_token": 511.6,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9875,
+       "mean_active_state": 14.984
+      },
+      "ECPU": {
+       "active_share": 0.9392,
+       "mean_active_state": 3.547
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.441
+      },
+      "PCPU": {
+       "active_share": 0.6364,
+       "mean_active_state": 18.972
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.061
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 192,
+     "tok_s": 2.75,
+     "mb_per_token": 385.1,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9863,
+       "mean_active_state": 14.955
+      },
+      "ECPU": {
+       "active_share": 0.9851,
+       "mean_active_state": 3.724
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.631
+      },
+      "PCPU": {
+       "active_share": 0.6903,
+       "mean_active_state": 19.079
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.869
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 224,
+     "tok_s": 2.599,
+     "mb_per_token": 441.4,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.987,
+       "mean_active_state": 14.985
+      },
+      "ECPU": {
+       "active_share": 0.9996,
+       "mean_active_state": 3.556
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.478
+      },
+      "PCPU": {
+       "active_share": 0.6515,
+       "mean_active_state": 19.067
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.931
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 256,
+     "tok_s": 2.669,
+     "mb_per_token": 415.0,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9798,
+       "mean_active_state": 14.981
+      },
+      "ECPU": {
+       "active_share": 0.9615,
+       "mean_active_state": 3.67
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.584
+      },
+      "PCPU": {
+       "active_share": 0.6583,
+       "mean_active_state": 19.089
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.963
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 288,
+     "tok_s": 2.729,
+     "mb_per_token": 414.6,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9878,
+       "mean_active_state": 14.985
+      },
+      "ECPU": {
+       "active_share": 0.9999,
+       "mean_active_state": 3.768
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.673
+      },
+      "PCPU": {
+       "active_share": 0.6411,
+       "mean_active_state": 18.949
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.988
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 320,
+     "tok_s": 2.494,
+     "mb_per_token": 490.7,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9884,
+       "mean_active_state": 14.985
+      },
+      "ECPU": {
+       "active_share": 0.9986,
+       "mean_active_state": 3.469
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.378
+      },
+      "PCPU": {
+       "active_share": 0.6184,
+       "mean_active_state": 18.979
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.142
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 352,
+     "tok_s": 2.406,
+     "mb_per_token": 467.8,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9827,
+       "mean_active_state": 14.983
+      },
+      "ECPU": {
+       "active_share": 0.9993,
+       "mean_active_state": 4.093
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.897
+      },
+      "PCPU": {
+       "active_share": 0.7068,
+       "mean_active_state": 19.214
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.081
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 384,
+     "tok_s": 2.358,
+     "mb_per_token": 521.6,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9884,
+       "mean_active_state": 14.986
+      },
+      "ECPU": {
+       "active_share": 0.8747,
+       "mean_active_state": 3.749
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.607
+      },
+      "PCPU": {
+       "active_share": 0.7097,
+       "mean_active_state": 19.184
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.01
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    }
+   ],
+   "therm_after": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_after": [
+    3.630859375,
+    8.0908203125,
+    8.123046875
+   ],
+   "vm": {
+    "reactivated": 1107958,
+    "decompress": 2151597,
+    "compress": 2337295,
+    "pagein": 6552536,
+    "pageout": 29924,
+    "swapin": 116,
+    "swapout": 1856
+   },
+   "pinned_bytes": 1236418560
+  },
+  {
+   "condition": "qos",
+   "free_mb_before": 119.53125,
+   "therm_before": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_before": [
+    3.630859375,
+    8.0908203125,
+    8.123046875
+   ],
+   "gen_rate": 1.908,
+   "tail_rate": 1.909,
+   "tokens": 384,
+   "digest": "3edafe06a771eaa3",
+   "windows": [
+    {
+     "end_token": 32,
+     "tok_s": 1.97,
+     "mb_per_token": 467.8,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.4819,
+       "mean_active_state": 1.22
+      },
+      "ECPU": {
+       "active_share": 0.8547,
+       "mean_active_state": 3.211
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.14
+      },
+      "PCPU": {
+       "active_share": 0.4664,
+       "mean_active_state": 18.509
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.895
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 64,
+     "tok_s": 1.971,
+     "mb_per_token": 426.4,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.5537,
+       "mean_active_state": 1.045
+      },
+      "ECPU": {
+       "active_share": 0.6213,
+       "mean_active_state": 3.986
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.854
+      },
+      "PCPU": {
+       "active_share": 0.53,
+       "mean_active_state": 18.487
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.114
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 96,
+     "tok_s": 1.967,
+     "mb_per_token": 432.1,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.5704,
+       "mean_active_state": 1.031
+      },
+      "ECPU": {
+       "active_share": 0.6022,
+       "mean_active_state": 4.575
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.334
+      },
+      "PCPU": {
+       "active_share": 0.6762,
+       "mean_active_state": 18.93
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.079
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 128,
+     "tok_s": 1.747,
+     "mb_per_token": 524.9,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.6282,
+       "mean_active_state": 2.095
+      },
+      "ECPU": {
+       "active_share": 0.6718,
+       "mean_active_state": 4.63
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.393
+      },
+      "PCPU": {
+       "active_share": 0.7008,
+       "mean_active_state": 19.069
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.882
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 160,
+     "tok_s": 1.78,
+     "mb_per_token": 522.9,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.7043,
+       "mean_active_state": 2.758
+      },
+      "ECPU": {
+       "active_share": 0.7532,
+       "mean_active_state": 4.55
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.409
+      },
+      "PCPU": {
+       "active_share": 0.6754,
+       "mean_active_state": 18.93
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.589
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 192,
+     "tok_s": 1.981,
+     "mb_per_token": 413.7,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.6035,
+       "mean_active_state": 1.361
+      },
+      "ECPU": {
+       "active_share": 0.653,
+       "mean_active_state": 4.807
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.481
+      },
+      "PCPU": {
+       "active_share": 0.7187,
+       "mean_active_state": 19.076
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.466
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 224,
+     "tok_s": 1.666,
+     "mb_per_token": 468.1,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.4738,
+       "mean_active_state": 1.278
+      },
+      "ECPU": {
+       "active_share": 0.5456,
+       "mean_active_state": 4.279
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.072
+      },
+      "PCPU": {
+       "active_share": 0.5796,
+       "mean_active_state": 18.743
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.332
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 256,
+     "tok_s": 2.176,
+     "mb_per_token": 421.6,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.6117,
+       "mean_active_state": 4.84
+      },
+      "ECPU": {
+       "active_share": 0.5773,
+       "mean_active_state": 4.496
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.265
+      },
+      "PCPU": {
+       "active_share": 0.5461,
+       "mean_active_state": 18.387
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.992
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 288,
+     "tok_s": 2.121,
+     "mb_per_token": 431.5,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.704,
+       "mean_active_state": 5.343
+      },
+      "ECPU": {
+       "active_share": 0.6416,
+       "mean_active_state": 5.125
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.864
+      },
+      "PCPU": {
+       "active_share": 0.6078,
+       "mean_active_state": 18.322
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.395
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 320,
+     "tok_s": 1.856,
+     "mb_per_token": 507.1,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.6223,
+       "mean_active_state": 3.818
+      },
+      "ECPU": {
+       "active_share": 0.5555,
+       "mean_active_state": 4.611
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.356
+      },
+      "PCPU": {
+       "active_share": 0.563,
+       "mean_active_state": 18.303
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.706
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 352,
+     "tok_s": 1.958,
+     "mb_per_token": 453.4,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.5571,
+       "mean_active_state": 1.08
+      },
+      "ECPU": {
+       "active_share": 0.529,
+       "mean_active_state": 3.673
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.556
+      },
+      "PCPU": {
+       "active_share": 0.5772,
+       "mean_active_state": 18.664
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.979
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 384,
+     "tok_s": 1.901,
+     "mb_per_token": 507.3,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.555,
+       "mean_active_state": 1.182
+      },
+      "ECPU": {
+       "active_share": 0.4834,
+       "mean_active_state": 3.473
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.359
+      },
+      "PCPU": {
+       "active_share": 0.4725,
+       "mean_active_state": 18.36
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.321
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    }
+   ],
+   "therm_after": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_after": [
+    3.22119140625,
+    5.7099609375,
+    7.08203125
+   ],
+   "vm": {
+    "reactivated": 1495866,
+    "decompress": 2942533,
+    "compress": 3261555,
+    "pagein": 6657510,
+    "pageout": 9564,
+    "swapin": 72,
+    "swapout": 48
+   },
+   "pinned_bytes": 1236418560
+  },
+  {
+   "condition": "qos-keepwarm",
+   "free_mb_before": 125.328125,
+   "therm_before": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_before": [
+    3.22119140625,
+    5.7099609375,
+    7.08203125
+   ],
+   "gen_rate": 2.591,
+   "tail_rate": 2.591,
+   "tokens": 384,
+   "digest": "3edafe06a771eaa3",
+   "windows": [
+    {
+     "end_token": 32,
+     "tok_s": 2.617,
+     "mb_per_token": 420.9,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9847,
+       "mean_active_state": 14.931
+      },
+      "ECPU": {
+       "active_share": 0.5386,
+       "mean_active_state": 3.985
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.821
+      },
+      "PCPU": {
+       "active_share": 0.6364,
+       "mean_active_state": 18.91
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.144
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 64,
+     "tok_s": 2.694,
+     "mb_per_token": 399.0,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9874,
+       "mean_active_state": 14.983
+      },
+      "ECPU": {
+       "active_share": 0.581,
+       "mean_active_state": 5.048
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.769
+      },
+      "PCPU": {
+       "active_share": 0.689,
+       "mean_active_state": 18.881
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 15.935
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 96,
+     "tok_s": 2.765,
+     "mb_per_token": 389.3,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9886,
+       "mean_active_state": 14.985
+      },
+      "ECPU": {
+       "active_share": 0.5394,
+       "mean_active_state": 4.347
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.218
+      },
+      "PCPU": {
+       "active_share": 0.6421,
+       "mean_active_state": 18.872
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.038
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 128,
+     "tok_s": 2.422,
+     "mb_per_token": 499.8,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9899,
+       "mean_active_state": 14.986
+      },
+      "ECPU": {
+       "active_share": 0.519,
+       "mean_active_state": 3.995
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.88
+      },
+      "PCPU": {
+       "active_share": 0.6255,
+       "mean_active_state": 18.925
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.116
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 160,
+     "tok_s": 2.41,
+     "mb_per_token": 507.1,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9902,
+       "mean_active_state": 14.986
+      },
+      "ECPU": {
+       "active_share": 0.5148,
+       "mean_active_state": 4.273
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.129
+      },
+      "PCPU": {
+       "active_share": 0.6327,
+       "mean_active_state": 18.896
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.098
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 192,
+     "tok_s": 2.823,
+     "mb_per_token": 385.1,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9875,
+       "mean_active_state": 14.985
+      },
+      "ECPU": {
+       "active_share": 0.5497,
+       "mean_active_state": 4.054
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.908
+      },
+      "PCPU": {
+       "active_share": 0.6243,
+       "mean_active_state": 18.861
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.039
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 224,
+     "tok_s": 2.632,
+     "mb_per_token": 444.9,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9883,
+       "mean_active_state": 14.986
+      },
+      "ECPU": {
+       "active_share": 0.5145,
+       "mean_active_state": 3.717
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.665
+      },
+      "PCPU": {
+       "active_share": 0.6013,
+       "mean_active_state": 18.883
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.108
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 256,
+     "tok_s": 2.741,
+     "mb_per_token": 406.6,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9878,
+       "mean_active_state": 14.985
+      },
+      "ECPU": {
+       "active_share": 0.5149,
+       "mean_active_state": 3.89
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.819
+      },
+      "PCPU": {
+       "active_share": 0.6198,
+       "mean_active_state": 18.861
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.042
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 288,
+     "tok_s": 2.691,
+     "mb_per_token": 414.7,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9861,
+       "mean_active_state": 14.984
+      },
+      "ECPU": {
+       "active_share": 0.5181,
+       "mean_active_state": 3.77
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.732
+      },
+      "PCPU": {
+       "active_share": 0.6096,
+       "mean_active_state": 18.9
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.08
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 320,
+     "tok_s": 2.507,
+     "mb_per_token": 487.1,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9898,
+       "mean_active_state": 14.985
+      },
+      "ECPU": {
+       "active_share": 0.4986,
+       "mean_active_state": 3.576
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.541
+      },
+      "PCPU": {
+       "active_share": 0.5935,
+       "mean_active_state": 18.948
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.135
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 352,
+     "tok_s": 2.58,
+     "mb_per_token": 452.3,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9873,
+       "mean_active_state": 14.985
+      },
+      "ECPU": {
+       "active_share": 0.7028,
+       "mean_active_state": 3.856
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.758
+      },
+      "PCPU": {
+       "active_share": 0.6266,
+       "mean_active_state": 18.971
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.149
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 384,
+     "tok_s": 2.408,
+     "mb_per_token": 518.6,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9905,
+       "mean_active_state": 14.986
+      },
+      "ECPU": {
+       "active_share": 0.8441,
+       "mean_active_state": 3.713
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.612
+      },
+      "PCPU": {
+       "active_share": 0.5891,
+       "mean_active_state": 18.968
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.259
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    }
+   ],
+   "therm_after": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_after": [
+    2.6650390625,
+    4.4765625,
+    6.3359375
+   ],
+   "vm": {
+    "reactivated": 598162,
+    "decompress": 1339453,
+    "compress": 1435579,
+    "pagein": 6198451,
+    "pageout": 643,
+    "swapin": 44,
+    "swapout": 0
+   },
+   "pinned_bytes": 1236418560
+  }
+ ],
+ "status": "completed"
+}

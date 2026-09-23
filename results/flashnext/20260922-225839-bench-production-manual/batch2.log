@@ -1,0 +1,66 @@
+=== keepwarm at 8 pins
+  system load average before: (5.19140625, 5.86474609375, 5.63720703125)
+
+  baseline     gen median  2.25  range 2.08-2.49  sd 0.187  tail  2.32   383.8 MB/tok  n=4
+    token digest (baseline): ceff6fd656310be6
+  keepwarm     gen median  2.33  range 1.80-2.76  sd 0.416  tail  2.28   388.3 MB/tok  n=4
+    token digest (keepwarm): ceff6fd656310be6
+  system load average after: (3.0341796875, 4.73876953125, 5.22412109375)
+
+  paired over 4 arms: mean +3.0 percent, median +3.6
+  keepwarm improved in 2 of 4 non-tied pairs and regressed in 2; ties: 0
+  two-sided sign test p = 1.000
+  fewer bytes in 2 of 4 pairs
+  The improvement versus regression direction is not statistically resolved at p = 1.000; collect more matched pairs.
+
+  keepwarm vs baseline: +3.5% gen median
+  matched paired two-SE band is 25.2%, too wide for a small-effect decision (mean +3.0%).
+
+  wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260922-223051-bench-production-manual/production.json
+=== glue at P15
+  system load average before: (3.19140625, 4.74267578125, 5.22265625)
+  !! round 1 of compiled produced different tokens; exact comparison rejected
+=== io qos at P15
+  system load average before: (2.779296875, 4.443359375, 5.08984375)
+  every median settled after 5 rounds
+
+  default      gen median  2.81  range 2.58-2.87  sd 0.131  tail  2.82   374.2 MB/tok  n=4
+    token digest (default): ceff6fd656310be6
+  interactive  gen median  2.81  range 2.69-2.88  sd 0.081  tail  2.85   370.3 MB/tok  n=4
+    token digest (interactive): ceff6fd656310be6
+  system load average after: (2.71826171875, 3.8720703125, 4.74951171875)
+
+  paired over 4 arms: mean +1.2 percent, median +0.4
+  interactive improved in 3 of 4 non-tied pairs and regressed in 1; ties: 0
+  two-sided sign test p = 0.625
+  fewer bytes in 4 of 4 pairs
+  The improvement versus regression direction is not statistically resolved at p = 0.625; collect more matched pairs.
+
+  interactive vs default: +0.0% gen median
+  paired mean effect +1.2% is inside the matched paired two-SE band of 2.1 percent, so this remains unresolved.
+
+  wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260922-223458-bench-production-manual/production.json
+=== stream embed
+  every fresh median settled after 5 rounds
+
+  resident     gen median  2.77  range 2.75-2.81  sd 0.024  tail  2.78   362.1 MB/tok  n=4
+    token digest (resident): ceff6fd656310be6
+  streamed     gen median  2.78  range 2.76-2.81  sd 0.025  tail  2.80   338.2 MB/tok  n=4
+    token digest (streamed): ceff6fd656310be6
+  system load average after: (3.23193359375, 3.35400390625, 4.32958984375)
+
+  paired over 4 arms: mean +0.3 percent, median +0.0
+  streamed improved in 2 of 4 non-tied pairs and regressed in 2; ties: 0
+  two-sided sign test p = 1.000
+  fewer bytes in 4 of 4 pairs
+  The improvement versus regression direction is not statistically resolved at p = 1.000; collect more matched pairs.
+
+  streamed vs resident: +0.3% gen median
+  paired mean effect +0.3% is inside the matched paired two-SE band of 1.0 percent, so this remains unresolved.
+
+  resident has a negative elapsed-time correlation (r=-0.69) while streamed does not.
+  This is a diagnostic association, not a causal conclusion;
+  inspect the environment before interpreting the arm effect.
+
+  wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260922-223751-bench-production-manual/production.json
+=== BATCH DONE

@@ -1,0 +1,30 @@
+  system load average before: (2.03857421875, 3.04296875, 4.64404296875)
+
+  baseline     gen median  2.06  range 1.81-2.10  sd 0.155  tail  2.21   494.4 MB/tok  n=3
+    token digest (baseline): 794b3e8a36f4580a
+  cache-only   gen median  1.99  range 1.90-2.07  sd 0.082  tail  2.19   493.6 MB/tok  n=3
+    token digest (cache-only): 794b3e8a36f4580a
+  scatter-only gen median  2.01  range 2.00-2.13  sd 0.075  tail  2.22   492.5 MB/tok  n=3
+    token digest (scatter-only): 794b3e8a36f4580a
+  system load average after: (6.25341796875, 4.423828125, 4.27978515625)
+
+  paired over 3 arms: mean +0.1 percent, median -1.5
+  cache-only improved in 1 of 3 non-tied pairs and regressed in 2; ties: 0
+  two-sided sign test p = 1.000
+  fewer bytes in 2 of 3 pairs
+  The improvement versus regression direction is not statistically resolved at p = 1.000; collect more matched pairs.
+
+  cache-only vs baseline: -3.6% gen median
+  matched paired two-SE band is 10.0%, too wide for a small-effect decision (mean +0.1%).
+
+  paired over 3 arms: mean +3.4 percent, median -3.1
+  scatter-only improved in 1 of 3 non-tied pairs and regressed in 2; ties: 0
+  two-sided sign test p = 1.000
+  fewer bytes in 1 of 3 pairs
+  The improvement versus regression direction is not statistically resolved at p = 1.000; collect more matched pairs.
+
+  scatter-only vs baseline: -2.5% gen median
+  matched paired two-SE band is 14.2%, too wide for a small-effect decision (mean +3.4%).
+
+  wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260922-231017-bench-production-manual/production.json
+exit=0

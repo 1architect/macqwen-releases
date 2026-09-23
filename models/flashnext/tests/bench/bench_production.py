@@ -285,6 +285,30 @@ COMPARISONS = {
         "baseline": {"FLASHNEXT_GPU_KEEPWARM": "0"},
         "keepwarm": {"FLASHNEXT_GPU_KEEPWARM": "1"},
     },
+    # Glue compilation at the top GPU clock. Both arms keep the GPU warm, so
+    # dispatch savings are measured at P15 rather than at a collapsed clock.
+    "glue-p15": {
+        "baseline": {
+            "FLASHNEXT_GPU_KEEPWARM": "1", "FLASHNEXT_COMPILE_HC": "0",
+            "FLASHNEXT_COMPILE_NORM": "0", "FLASHNEXT_NORM_WEIGHT_CACHE": "0",
+        },
+        "compiled": {
+            "FLASHNEXT_GPU_KEEPWARM": "1", "FLASHNEXT_COMPILE_HC": "1",
+            "FLASHNEXT_COMPILE_NORM": "1", "FLASHNEXT_NORM_WEIGHT_CACHE": "1",
+        },
+    },
+    # The input embedding streamed from the checkpoint instead of resident.
+    # Load-time, so it needs --fresh-arms.
+    "stream-embed": {
+        "resident": {"FLASHNEXT_GPU_KEEPWARM": "1", "FLASHNEXT_STREAM_EMBED": "0"},
+        "streamed": {"FLASHNEXT_GPU_KEEPWARM": "1", "FLASHNEXT_STREAM_EMBED": "1"},
+    },
+    "io-qos": {
+        "default": {"FLASHNEXT_GPU_KEEPWARM": "1", "FLASHNEXT_IO_QOS": "default"},
+        "interactive": {
+            "FLASHNEXT_GPU_KEEPWARM": "1", "FLASHNEXT_IO_QOS": "user-interactive",
+        },
+    },
     "ngram-nocache": {
         "baseline": {"FLASHNEXT_NGRAM_NOCACHE": "0"},
         "nocache": {"FLASHNEXT_NGRAM_NOCACHE": "1"},
@@ -523,6 +547,42 @@ LIVE_SETTINGS = {
         ).gpu_keepwarm(),
         lambda value: value == "1",
     ),
+    "FLASHNEXT_COMPILE_HC": (
+        lambda backend, value: __import__(
+            "models.flashnext.compile_glue", fromlist=["set_enabled"]
+        ).set_enabled(value == "1"),
+        lambda backend: __import__(
+            "models.flashnext.compile_glue", fromlist=["ENABLED"]
+        ).ENABLED[0],
+        lambda value: value == "1",
+    ),
+    "FLASHNEXT_COMPILE_NORM": (
+        lambda backend, value: __import__(
+            "models.flashnext.patch_rmsnorm", fromlist=["set_compile_norm"]
+        ).set_compile_norm(value == "1"),
+        lambda backend: __import__(
+            "models.flashnext.patch_rmsnorm", fromlist=["compile_norm"]
+        ).compile_norm(),
+        lambda value: value == "1",
+    ),
+    "FLASHNEXT_NORM_WEIGHT_CACHE": (
+        lambda backend, value: __import__(
+            "models.flashnext.patch_rmsnorm", fromlist=["set_weight_cache"]
+        ).set_weight_cache(value == "1"),
+        lambda backend: __import__(
+            "models.flashnext.patch_rmsnorm", fromlist=["_WEIGHT_CACHE"]
+        )._WEIGHT_CACHE[0],
+        lambda value: value == "1",
+    ),
+    "FLASHNEXT_IO_QOS": (
+        lambda backend, value: __import__(
+            "models.flashnext.expert_cache", fromlist=["set_io_qos"]
+        ).set_io_qos(value),
+        lambda backend: __import__(
+            "models.flashnext.expert_cache", fromlist=["io_qos"]
+        ).io_qos(),
+        str,
+    ),
     "FLASHNEXT_BUFFER_ARENA": (
         # Read at call time from a list, so a live flip is enough and the
         # setting is read back before either arm reports.
@@ -646,6 +706,7 @@ LIVE_SETTINGS = {
 # Settings that only take effect while the backend is built. A condition using
 # one of these needs --fresh-arms; applying it to a live backend is a no-op.
 LOAD_TIME_SETTINGS = {
+    "FLASHNEXT_STREAM_EMBED",
     "FLASHNEXT_PREWARM",
     "FLASHNEXT_SLAB",
     "FLASHNEXT_SLAB_LAYERS",
@@ -1318,6 +1379,11 @@ def main() -> None:
                              "needed for settings that take effect at load")
     parser.add_argument("--json", default="", help="write the summary here")
     parser.add_argument(
+        "--resident-experts", default="32",
+        help="exact-quality pins per layer: an integer, or 'policy' for the "
+             "checkpoint policy that normal chat applies (8 on Vontra)",
+    )
+    parser.add_argument(
         "--record", default="",
         help="write canonical append-only JSONL evidence under FlashNext measurements",
     )
@@ -1374,6 +1440,13 @@ def main() -> None:
     from macqwen.checkpoints import resolve_flashnext
 
     checkpoint = resolve_flashnext(os.environ.get("MACQWEN_FLASHNEXT_MODEL"))
+    if args.resident_experts == "policy":
+        from models.flashnext.checkpoint_policy import resolve_resident_experts
+
+        resident_experts = resolve_resident_experts(None, str(checkpoint)) or 32
+    else:
+        resident_experts = int(args.resident_experts)
+    evidence["resident_experts"] = resident_experts
     provenance = benchmark_provenance(checkpoint)
     evidence.update(provenance)
     evidence["runtime_source_fingerprints"] = provenance["source_fingerprints"]
@@ -1531,7 +1604,7 @@ def main() -> None:
                     # Import after the first condition environment is active.
                     from macqwen.backends.flashnext import FlashNextBackend
                     require_source_freeze(provenance)
-                    backend = FlashNextBackend()
+                    backend = FlashNextBackend(resident_experts=resident_experts)
                     def preserve_raw(row, arm_name=name, arm_round=round_index):
                         collected[arm_name].append(row)
                         publish_measurement_arm(arm_round, arm_name, row)
@@ -1587,7 +1660,7 @@ def main() -> None:
         from macqwen.backends.flashnext import FlashNextBackend
 
         require_source_freeze(provenance)
-        backend = FlashNextBackend()
+        backend = FlashNextBackend(resident_experts=resident_experts)
         cond_keys = list(conditions.keys())
         print(f"  system load average before: {os.getloadavg()}", flush=True)
 

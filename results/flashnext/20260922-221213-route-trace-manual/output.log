@@ -1,0 +1,4 @@
+photosynthesis: 256 tok at 2.14 tok/s, 433.7 MB/token physical, 12336 events
+sketchup: 256 tok at 1.90 tok/s, 482.2 MB/token physical, 24672 events
+open: 256 tok at 2.11 tok/s, 462.8 MB/token physical, 37008 events
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260922-221213-route-trace-manual/route-trace.json.gz

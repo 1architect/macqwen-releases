@@ -103,12 +103,76 @@ def _physical_bytes_read() -> int:
     return disk_bytes_read()
 
 
+# Thread QoS for the read workers and the calling thread. macOS schedules
+# threads with an unspecified or default QoS class on either core type and may
+# wake them late; decode measured about 80 ms/token between submitting a read
+# and a worker starting it. `user-interactive` asks for the performance cores
+# and the shortest wake latency. The pool threads apply the requested class
+# lazily on their next task. Off ("default") leaves submission unchanged.
+_QOS_CLASSES = {
+    "user-interactive": 0x21,
+    "user-initiated": 0x19,
+    "default": 0x15,
+    "utility": 0x11,
+}
+_QOS = [None]          # requested class value, or None when never enabled
+_QOS_ROUTE = [False]   # route tasks through _qos_call (enabled once, or dirty)
+_QOS_LOCAL = threading.local()
+try:
+    import ctypes as _ctypes
+
+    _LIBPTHREAD = _ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+    _LIBPTHREAD.pthread_set_qos_class_self_np.argtypes = [
+        _ctypes.c_uint, _ctypes.c_int,
+    ]
+    _LIBPTHREAD.pthread_set_qos_class_self_np.restype = _ctypes.c_int
+except (OSError, AttributeError):  # pragma: no cover - macOS only
+    _LIBPTHREAD = None
+
+
+def _apply_thread_qos(value: int) -> None:
+    if getattr(_QOS_LOCAL, "value", None) == value or _LIBPTHREAD is None:
+        return
+    if _LIBPTHREAD.pthread_set_qos_class_self_np(value, 0) != 0:
+        raise OSError(f"pthread_set_qos_class_self_np({value:#x}) failed")
+    _QOS_LOCAL.value = value
+
+
+def _qos_call(function, *args):
+    value = _QOS[0]
+    if value is not None:
+        _apply_thread_qos(value)
+    return function(*args)
+
+
+def set_io_qos(name: str) -> None:
+    """Request a QoS class for read workers and the calling thread."""
+    if name not in _QOS_CLASSES:
+        raise ValueError(f"unknown QoS class {name!r}")
+    if name == "default" and _QOS[0] is None:
+        return
+    value = _QOS_CLASSES[name]
+    _QOS[0] = value
+    _QOS_ROUTE[0] = True
+    _apply_thread_qos(value)
+
+
+def io_qos() -> str:
+    value = _QOS[0]
+    for name, known in _QOS_CLASSES.items():
+        if known == value:
+            return name
+    return "default"
+
+
 def _submit_read(*args):
     """Hand one read to the pool, counted while `hostwindow` is on.
 
     The counter is what lets a host window claim the drive was idle. Without
     it the claim is an argument about the code rather than a measurement.
     """
+    if _QOS_ROUTE[0]:
+        args = (_qos_call, *args)
     track_pool = _SCORE_SYNC_PROFILE
     if track_pool:
         _pool_submit()
@@ -185,6 +249,15 @@ _TIMERS = {
     "layer_completion_sum": 0.0,
     "layer_completion_count": 0,
 }
+
+
+# Diagnostic route trace: callback(layer_id, routed_expert_ids) for every
+# streamed MoE call, prefill included. None disables it.
+_ROUTE_TRACE = [None]
+
+
+def set_route_trace(callback=None) -> None:
+    _ROUTE_TRACE[0] = callback
 
 
 def set_prefill_progress(callback) -> None:
@@ -464,6 +537,24 @@ def buffer_arena() -> int:
 
 def set_buffer_arena(depth) -> None:
     _ARENA[0] = int(depth)
+
+
+# Prefill MoE pipeline (E1). Off by default. A layer that needs at least
+# _PIPELINE_MIN_EXPERTS distinct experts splits them into chunks and computes
+# each chunk while the next chunk's reads are in flight.
+_PREFILL_PIPELINE = [os.environ.get("FLASHNEXT_PREFILL_PIPELINE", "0") == "1"]
+_PIPELINE_CHUNKS = int(os.environ.get("FLASHNEXT_PREFILL_PIPELINE_CHUNKS", "4"))
+_PIPELINE_MIN_EXPERTS = int(os.environ.get("FLASHNEXT_PREFILL_PIPELINE_MIN", "32"))
+
+
+def set_prefill_pipeline(enabled: bool) -> None:
+    _PREFILL_PIPELINE[0] = bool(enabled)
+
+
+# Read coalescing applies to gathers at least this large (prefill), split
+# into this many file-ordered tasks per tensor part.
+_COALESCE_MIN_ROWS = int(os.environ.get("FLASHNEXT_COALESCE_MIN_ROWS", "32"))
+_COALESCE_TASKS = int(os.environ.get("FLASHNEXT_COALESCE_TASKS", "16"))
 
 
 def shared_buffer(mode: str = "pread") -> bool:
@@ -754,6 +845,24 @@ class ExpertLRU:
                 self._reused_rows(name, len(experts), depth) if depth
                 else self.store.empty_rows(name, len(experts))
             )
+            if (
+                getattr(self.store, "_coalesce_gap", -1) >= 0
+                and len(experts) >= _COALESCE_MIN_ROWS
+                and part_mode in ("pread", "preadv")
+            ):
+                # Large gathers only: tasks follow file order so adjacent rows
+                # share one preadv. Every row keeps its destination slot.
+                pairs = sorted((expert, slot) for slot, expert in enumerate(experts))
+                size = max(1, -(-len(pairs) // _COALESCE_TASKS))
+                futures = [
+                    _submit_read(
+                        self.store.rows_into_slots, name,
+                        pairs[start : start + size], buffer,
+                    )
+                    for start in range(0, len(pairs), size)
+                ]
+                pending.append(_SharedRead(buffer, futures))
+                continue
             futures = [
                 _submit_read(
                     self.store.rows_into,
@@ -1836,6 +1945,8 @@ class StreamingSwitchGLU(nn.Module):
         observer = _PREFILL_PROGRESS
         if observer is not None and self.layer_id >= 0:
             observer(self.layer_id)
+        if _ROUTE_TRACE[0] is not None:
+            _ROUTE_TRACE[0](self.layer_id, routed)
 
         pack = getattr(self, "slab_pack", None)
         expert_to_slot = getattr(self, "slab_expert_to_slot", {})
@@ -2104,6 +2215,22 @@ class StreamingSwitchGLU(nn.Module):
                 local = mx.array(
                     [order.get(e, 0) for e in routed], dtype=mx.uint32
                 ).reshape(indices.shape)
+            if (
+                _PREFILL_PIPELINE[0]
+                and mask is None
+                and allow_sort
+                and indices.size >= 64
+                and len(wanted) >= _PIPELINE_MIN_EXPERTS
+                and not (
+                    self.metal_combines_scores
+                    and scores is not None
+                    and flat_input is not None
+                    and flat_input.shape[0] <= 8
+                )
+            ):
+                return self._pipelined_pass(
+                    x, indices, projections, routed, wanted, order, local,
+                )
             prefetched = getattr(self, "_prefetch", None)
             self._prefetch = None
             if prefetched is not None and prefetched[0] == wanted:
@@ -2246,6 +2373,59 @@ class StreamingSwitchGLU(nn.Module):
                 allow_sort, issue_began,
             )
 
+    def _pipelined_pass(self, x, indices, projections, routed, wanted, order, local):
+        """Prefill MoE in expert chunks: compute chunk k while k+1 reads.
+
+        Reads for every chunk are submitted at once, in chunk order. The
+        routed rows are sorted by local expert index as in ``_issue``, so each
+        chunk owns one contiguous segment of the sorted rows; the host knows
+        the segment bounds from the routed list without a sync. Each chunk's
+        matmuls go to the GPU with ``async_eval`` before the next chunk's reads
+        are awaited. Rows keep the same expert weights and the same sorted
+        gather_qmm path; the results are concatenated and unsorted once.
+        """
+        count = len(wanted)
+        chunks = max(1, min(_PIPELINE_CHUNKS, count))
+        size = -(-count // chunks)
+        bounds = [(start, min(count, start + size)) for start in range(0, count, size)]
+        pending = [
+            submit_projection_tasks(projections, wanted[start:end])
+            for start, end in bounds
+        ]
+        per_local = [0] * count
+        for expert in routed:
+            per_local[order[expert]] += 1
+        xs, sorted_local, inverse = _gather_sort(x, local)
+        outputs = []
+        row = 0
+        for (start, end), reads in zip(bounds, pending):
+            rows = sum(per_local[start:end])
+            began = time.perf_counter() if _PROFILE else 0.0
+            raw = _await_projection_tasks(reads)
+            if _PROFILE:
+                _TIMERS["io_wait"] += time.perf_counter() - began
+                _TIMERS["io_calls"] += 1
+            weights = [
+                projection.cache.to_mx(chunk)
+                for projection, chunk in zip(projections, raw)
+            ]
+            if rows == 0:
+                continue
+            segment_x = xs[row : row + rows]
+            segment_local = sorted_local[row : row + rows] - start
+            plan = (None, segment_local)
+            gate = projections[0](segment_x, segment_local, plan=plan,
+                                  weights=weights[0], sorted_indices=True)
+            up = projections[1](segment_x, segment_local, plan=plan,
+                                weights=weights[1], sorted_indices=True)
+            out = projections[2](self.activation(up, gate), segment_local,
+                                 plan=plan, weights=weights[2], sorted_indices=True)
+            mx.async_eval(out)
+            outputs.append(out)
+            row += rows
+        combined = outputs[0] if len(outputs) == 1 else mx.concatenate(outputs, axis=0)
+        return _scatter_unsort(combined, inverse, indices.shape).squeeze(-2)
+
     def _issue(
         self, x, indices, projections, local, weights, mask, routed,
         allow_sort, issue_began,
@@ -2275,3 +2455,7 @@ class StreamingSwitchGLU(nn.Module):
         if _PROFILE:
             _TIMERS["moe_issue"] += time.perf_counter() - issue_began
         return o
+
+
+if os.environ.get("FLASHNEXT_IO_QOS", "default") != "default":
+    set_io_qos(os.environ["FLASHNEXT_IO_QOS"])

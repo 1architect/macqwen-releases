@@ -1,0 +1,15 @@
+{
+ "measured_mb_per_token": [
+  433.729104,
+  482.229792,
+  462.77632
+ ],
+ "mb_per_token": {
+  "4.0": {
+   "slru": 428.8,
+   "lfu": 447.2
+  }
+ },
+ "record_bytes": 3211264,
+ "trace": "results/flashnext/20260922-221213-route-trace-manual/route-trace.json.gz"
+}

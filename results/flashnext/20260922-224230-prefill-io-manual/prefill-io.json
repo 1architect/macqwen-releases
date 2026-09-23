@@ -1,0 +1,49 @@
+{
+ "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+ "tokens": 300,
+ "conditions": [
+  "baseline",
+  "pipeline"
+ ],
+ "arms": [
+  {
+   "round": 1,
+   "condition": "baseline",
+   "prompt_tokens": 283,
+   "prefill_s": 25.271,
+   "prefill_tok_s": 11.2,
+   "prefill_gb": 38.655,
+   "drive_gb_s": 1.53,
+   "free_mb_before": 126.359375,
+   "digest": "8ff98feeb81afdc1",
+   "profile": null
+  },
+  {
+   "round": 1,
+   "condition": "pipeline",
+   "prompt_tokens": 283,
+   "prefill_s": 22.974,
+   "prefill_tok_s": 12.32,
+   "prefill_gb": 38.361,
+   "drive_gb_s": 1.67,
+   "free_mb_before": 99.125,
+   "digest": "8ff98feeb81afdc1",
+   "profile": null
+  }
+ ],
+ "status": "completed",
+ "summary": {
+  "baseline": {
+   "median_tok_s": 11.2,
+   "arms": [
+    11.2
+   ]
+  },
+  "pipeline": {
+   "median_tok_s": 12.32,
+   "arms": [
+    12.32
+   ]
+  }
+ }
+}

@@ -1,0 +1,18 @@
+=== keepwarm at 8 pins
+/Users/gioma/models/.venv-qwen4exp/bin/python: Error while finding module specification for ' models.flashnext.tests.bench.bench_production --tokens 32 --arms 5 --min-arms 5 --drop 1 --resident-experts policy' (ModuleNotFoundError: No module named ' models')
+=== glue at P15
+/Users/gioma/models/.venv-qwen4exp/bin/python: Error while finding module specification for ' models.flashnext.tests.bench.bench_production --tokens 32 --arms 5 --min-arms 5 --drop 1 --resident-experts policy' (ModuleNotFoundError: No module named ' models')
+=== io qos at P15
+/Users/gioma/models/.venv-qwen4exp/bin/python: Error while finding module specification for ' models.flashnext.tests.bench.bench_production --tokens 32 --arms 5 --min-arms 5 --drop 1 --resident-experts policy' (ModuleNotFoundError: No module named ' models')
+=== stream embed
+/Users/gioma/models/.venv-qwen4exp/bin/python: Error while finding module specification for ' models.flashnext.tests.bench.bench_production --tokens 32 --arms 5 --min-arms 5 --drop 1 --resident-experts policy' (ModuleNotFoundError: No module named ' models')
+=== prefill io
+round 1 baseline           2031 tok   58.27 s   34.85 tok/s   58.96 GB  1.01 GB/s  digest 5f0dc6e722ecfd9a
+round 1 coalesce0          2031 tok   74.85 s   27.13 tok/s   60.66 GB  0.81 GB/s  digest 5f0dc6e722ecfd9a
+=== last row
+{"tokens": 128, "equal": false, "max_abs_difference": 0.125, "argmax_equal": true, "full_seconds": 25.149, "last_row_seconds": 21.646, "full_peak_gb": 4.243, "last_row_peak_gb": 4.307}
+{"tokens": 512, "equal": false, "max_abs_difference": 0.125, "argmax_equal": true, "full_seconds": 31.48, "last_row_seconds": 33.93, "full_peak_gb": 5.098, "last_row_peak_gb": 5.097}
+{"tokens": 1024, "equal": false, "max_abs_difference": 0.125, "argmax_equal": true, "full_seconds": 39.356, "last_row_seconds": 38.623, "full_peak_gb": 6.128, "last_row_peak_gb": 6.593}
+{"tokens": 2000, "equal": false, "max_abs_difference": 0.125, "argmax_equal": true, "full_seconds": 57.677, "last_row_seconds": 57.466, "full_peak_gb": 7.875, "last_row_peak_gb": 7.174}
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260922-222525-prefill-last-row-manual/prefill-last-row.json
+=== BATCH DONE

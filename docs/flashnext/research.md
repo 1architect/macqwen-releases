@@ -4679,3 +4679,169 @@ speculation and MTP, in-process prefetch and overlap without a new premise,
 repacking and blob layouts, one-sync, worker-count sweeps, pin-depth sweeps,
 cache-aware routing, mapping resident rows with a copy, the wired limit, the
 ops-per-buffer cap, the buffer arena, and keep-warm tuning.
+
+## Next-path results, 2026-09-22
+
+We ran the paths listed in the previous section on the installed Vontra
+4-bit MTP checkpoint. Every model run used greedy decoding, the normal chat
+environment, the checkpoint pin policy (8 resident experts) unless stated,
+and private copies of the pin history and frozen slab snapshot. The machine
+was busy for much of the session: the Claude app renderer used up to 134% CPU,
+`mediaanalysisd` up to 82%, swap held about 0.9 GB, and free memory sat between
+15 and 125 MB. Short 32-token comparisons were noisy under those conditions;
+the longer paired arms were not.
+
+### Keep-warm thermal check and 8-pin comparison
+
+`bench_long_states` (new) generates one long answer per condition in one
+process and records the rate, physical MB/token, GPU and CPU-complex
+performance-state residency and `pmset -g therm` every window. Evidence:
+`results/flashnext/20260922-215918-long-states-manual/`.
+
+| 384 tokens, 8 pins | Gen tok/s | Mean GPU state | Thermal or performance warning |
+|---|---:|---:|---|
+| keep-warm off | 1.91 | 1.0 to 3.7 | none |
+| keep-warm on | 2.47 | 14.8 to 15.0 | none |
+| QoS user-interactive | 1.91 | 1.0 to 5.3 | none |
+| QoS + keep-warm | 2.59 | 14.9 to 15.0 | none |
+
+All four answers kept digest `3edafe06a771eaa3`. With keep-warm the GPU held
+P15 for the whole answer and the per-window rate did not fall over the 384
+tokens. `pmset` recorded no thermal or performance warning in any window.
+
+The 32-token production harness did not resolve keep-warm at 8 pins on the
+loaded machine: +3.0% mean over 4 pairs inside a 25.2% band, and -3.3% over 6
+pairs inside a 19.0% band, with keep-warm arms ranging from 1.55 to 3.10 tok/s.
+A paired run with 128-token arms in one process, order
+off/on/on/off/off/on, resolved it (`20260922-230354-long-states-manual`):
+
+| Pair | Off | Keep-warm | Gain |
+|---:|---:|---:|---:|
+| 1 | 2.408 | 2.924 | +21.4% |
+| 2 | 2.340 | 2.862 | +22.3% |
+| 3 | 2.331 | 2.926 | +25.5% |
+
+Keep-warm won 3 of 3 pairs, mean +23.1%, two-SE band about 2.5%, with the
+same digest in all six arms (`e19af44d5268e9d1`). Keep-warm stays off by
+default until we decide the promotion.
+
+### A: CPU states and thread QoS
+
+The PCPU complex sat at state 18 to 19 of 20 in every window of every arm,
+so the CPU clock does not collapse the way the GPU clock does (A2).
+`FLASHNEXT_IO_QOS=user-interactive` (new, off) sets the QoS class of the read
+workers and the calling thread. It was neutral in the long run and measured
++1.2% mean over 4 pairs with keep-warm on in both arms, inside a 2.1% band,
+with 4 of 4 pairs reading slightly fewer bytes (374.2 against 370.3 MB/token).
+Unresolved; it stays off.
+
+### B: cache policy and memory
+
+`bench_route_trace` recorded every streamed MoE read of three 256-token turns
+(photosynthesis, the SketchUp request and an open-ended story) with the slab
+contents and pinned sets. `cache_sim` replays the trace through cache policies
+at a given capacity, counting one expert record (3.21 MB) per miss. Evidence:
+`20260922-221213-route-trace-manual/` and the `*-cache-sim-manual/` folders.
+
+| Cache | LRU | SLRU 0.3 | LFU 0.9 | LRU-2 | ARC | Admit on 2nd use | Belady |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 3 GB | 524.9 | | | 538.8 | 634.2 | 522.8 | 319.1 |
+| 4 GB | 441.0 | 428.8 | 447.2 | 474.6 | 527.8 | 444.0 | 261.7 |
+| 5 GB | 384.5 | | | 427.0 | 462.7 | 388.3 | 219.6 |
+
+Values are physical MB per decode token. The measured turns read 434, 482 and
+463 MB/token, which matches LRU at an effective cache of about 3.5 to 4 GB.
+Belady's optimum reads 41% fewer bytes at 4 GB, but it needs the future route.
+The best realizable policy, segmented LRU with a 30% protected share, is 2.8%
+below LRU. Admission on second use ties LRU. Recency already captures what a
+history-based policy can use here, so B2 (cache admission) and B3 (an
+app-owned expert cache) are rejected. The curve does price memory: near 4 GB
+each extra GB of page cache removes about 13% of the reads.
+
+D1 closed first. `probe_zero_copy_shard` wrapped a 2 GB page-aligned region
+of a mapped shard as a no-copy MLX array and gathered 24 rows (19.7 MB).
+Metal made the whole region resident at the first commit: the process read
+1.93 GB and `mincore` went from 3.6% to 100% resident
+(`20260922-221202-zero-copy-probe-manual/`). A no-copy buffer over checkpoint
+files therefore reads everything it spans, which also rules out serving
+cold dense tensors from no-copy file mappings.
+
+A footprint of the running benchmark showed 4.17 GB, of which 3.39 GB was MLX
+Metal memory, and 1.0 GB of the process's anonymous memory already in swap
+(398 MB of it Metal buffers). The only large cold resident tensor is the
+397 MB quantized input embedding; every other dense tensor is read each token.
+`FLASHNEXT_STREAM_EMBED=1` (new, off, load time) serves embedding rows from the
+checkpoint through the same `mx.dequantize` as `QuantizedEmbedding`, so its
+values are identical (unit test). Four fresh-arm pairs with keep-warm on
+measured 362.1 against 338.2 MB/token, fewer bytes in 4 of 4 pairs (-6.6%),
+and +0.3% generation inside a 1.0% band, with the same digest
+(`20260922-223751-bench-production-manual/`). The byte saving matches the
+simulator's price of memory; the rate effect is unresolved. It stays off.
+
+### C: GPU glue at P15
+
+`FLASHNEXT_COMPILE_HC=1` (new, off) first compiled each layer's
+hyper-connections and injections for decode. It changed the token digest.
+A per-module check on captured real inputs found the compiled attention
+hyper-connection differed on 1 of 48 layers, only in the injection weights
+`2 * sigmoid(x / hc_count)`: the fused kernel rounds differently from the
+separate kernels. The compiled RMSNorm (`FLASHNEXT_COMPILE_NORM`) and the
+cached float32 norm gain (`FLASHNEXT_NORM_WEIGHT_CACHE`) were exact on all 48
+layers. The switch now compiles only the two injections (multiply, reshape,
+add). With keep-warm on in both arms, the stack of compiled injections,
+compiled norm and cached gain kept the digest and measured +0.9% mean over 4
+pairs inside a 1.6% band, fewer bytes in 4 of 4 pairs
+(`20260922-225410-bench-production-manual/`). Unresolved; all three stay off.
+
+C3 (compute slab hits before cold experts) was closed without a run. The
+fused down projection accumulates the routed slots in float32 in slot order,
+and hits and misses interleave in that order, so two partial sums cannot
+reproduce the single accumulation. Keep-warm already keeps the GPU busy
+during the reads.
+
+### E: prefill
+
+A profiled 1,007-token prefill took 49.3 s: 25.6 s waiting for expert reads
+(49.3 GB, about 1.9 GB/s while waiting), 14.9 s in the score sync that drains
+the GPU work, and 5.6 s reading n-gram rows serially on the main thread
+(`20260922-224718-prefill-io-manual/`). A 2,031-token prefill read 59 GB at
+1.0 GB/s overall.
+
+- E1, `FLASHNEXT_PREFILL_PIPELINE=1` (new, off): computes each prefill MoE
+  layer in expert chunks while the next chunk reads. Segmenting the sorted
+  `gather_qmm` rows is exact in a 96-token unit test and kept the digest at
+  300 tokens (12.3 against 11.2 tok/s, one pair), but changed the digest at
+  1,007 tokens with no speed gain (17.87 against 18.06 tok/s), and the
+  2,031-token arm was killed by the kernel twice (exit 137) at 15 to 80 MB
+  free. Rejected.
+- E2, `FLASHNEXT_COALESCE_GAP` (new, off): reads runs of file-adjacent rows
+  with one `preadv` per run, keeping every destination slot. 2,031 tokens
+  with 16 tasks per part: 27.1 against 34.9 tok/s. 1,007 tokens with 64
+  tasks: -9.7% and +2.1% in two pairs. Fewer, larger tasks lower the queue
+  depth. Rejected.
+- `FLASHNEXT_NGRAM_PARALLEL_MIN` (new, off): n-gram lookups of at least this
+  many rows read on the I/O pool. Exact (unit test and digest). Two pairs at
+  1,007 tokens: +0.8% and +4.5%. Directional only.
+- E3 depends on B2 and was not built.
+- QSA flags: on a 2,582-token prompt, where sparse block selection is active,
+  `FLASHNEXT_QSA_CACHE_POOLED_KEYS=1` and `FLASHNEXT_QSA_SCATTER_DECODE=1`
+  each kept the digest (`794b3e8a36f4580a`, 32 pins, three kept pairs). Both
+  pass the exactness gate. Their rates are unresolved (+0.1% inside 10.0%,
+  +3.4% inside 14.2%), as expected at 2.6K context; the work they remove grows
+  with context length (`20260922-231017-bench-production-manual/`).
+- E4, `FLASHNEXT_PREFILL_LAST_ROW`: fails its exact gate. The last-row logits
+  differ from the full-path last row by up to 0.125 at 128, 512, 1,024 and
+  2,000 tokens, although the argmax matched. Prefill time showed no consistent
+  change; MLX peak memory fell only at 2,000 tokens (7.17 against 7.88 GB)
+  (`20260922-222525-prefill-last-row-manual/`). It stays off.
+
+### Decisions
+
+- Keep-warm: resolved at 8 pins (+23.1%, 3 of 3, band about 2.5%) with no
+  thermal warning over 384 tokens. Ready for a default decision.
+- Rejected: B2, B3, D1, C3, E1, E2, E4 last-row, compiled hyper-connections.
+- Unresolved and off: thread QoS, streamed embedding (fewer bytes, same
+  rate), compiled injections with compiled norm and cached gain, parallel
+  n-gram prefill reads.
+- Exact but unmeasured at long context: the two QSA flags. A comparison at 16K
+  to 32K context is the remaining gate.

@@ -144,6 +144,11 @@ class SafeTensorStore:
         self._pread_chunk = int(os.environ.get("FLASHNEXT_PREAD_CHUNK", "2"))
         self._hybrid_cutoff = int(os.environ.get("FLASHNEXT_HYBRID_CUTOFF", "2"))
         self._sort_reads = os.environ.get("FLASHNEXT_SORT_READS") == "1"
+        # Large gathers (prefill) can read runs of file-adjacent rows with one
+        # preadv each. The destination slot of every row is unchanged, so the
+        # arithmetic is unchanged. -1 disables it; 0 merges only adjacent
+        # rows; N also reads gaps of up to N rows into a scratch buffer.
+        self._coalesce_gap = int(os.environ.get("FLASHNEXT_COALESCE_GAP", "-1"))
         self._no_cache = os.environ.get("FLASHNEXT_F_NOCACHE") == "1"
         # Kernel read-ahead on the shard descriptors. It was measured once,
         # at 13 percent slower when off, and the code was removed. The
@@ -599,6 +604,49 @@ class SafeTensorStore:
                 view._mmap.madvise(mmap.MADV_DONTNEED)
             except (AttributeError, OSError):
                 pass
+
+    def rows_into_slots(
+        self, name: str, pairs: Sequence[tuple[int, int]], out: np.ndarray,
+    ) -> None:
+        """Read (row, slot) pairs into ``out[slot]``, merging file-adjacent rows.
+
+        ``pairs`` must be sorted by row. A run of rows whose file gaps are at
+        most ``_coalesce_gap`` rows becomes one ``preadv`` whose iovecs point
+        at each row's own destination slot, with gap rows landing in a
+        scratch buffer. Destination layout matches ``rows_into`` exactly.
+        """
+        ref = self.refs[name]
+        fd = self._fd(ref.shard)
+        row_bytes = ref.row_bytes
+        gap = max(0, self._coalesce_gap)
+        scratch = None
+        index = 0
+        count = len(pairs)
+        while index < count:
+            end = index + 1
+            while (
+                end < count
+                and 0 < pairs[end][0] - pairs[end - 1][0] <= gap + 1
+            ):
+                end += 1
+            vectors = []
+            previous = None
+            for row, slot in pairs[index:end]:
+                if previous is not None and row - previous > 1:
+                    missing = (row - previous - 1) * row_bytes
+                    if scratch is None or len(scratch) < missing:
+                        scratch = bytearray(max(missing, row_bytes))
+                    vectors.append(memoryview(scratch)[:missing])
+                vectors.append(memoryview(out[slot]).cast("B"))
+                previous = row
+            first = pairs[index][0]
+            expected = (pairs[end - 1][0] - first + 1) * row_bytes
+            read = _profiled_preadv(fd, vectors, ref.start + first * row_bytes)
+            if read != expected:
+                raise OSError(f"short preadv for {name} rows {first}..")
+            index = end
+        if self._track_residency:
+            self._mark_read(name, [row for row, _slot in pairs])
 
     def to_mx(self, name: str, out: np.ndarray) -> mx.array:
         """Wrap a numpy gather as mx. Call from the main thread only."""

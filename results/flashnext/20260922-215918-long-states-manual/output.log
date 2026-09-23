@@ -1,0 +1,57 @@
+== off: free 86 MB
+  off          tok   32  1.51 tok/s   581.1 MB/tok  gpu state  1.45  pcpu state 19.25
+  off          tok   64  2.11 tok/s   424.3 MB/tok  gpu state  1.60  pcpu state 18.95
+  off          tok   96  2.19 tok/s   413.4 MB/tok  gpu state  1.92  pcpu state 18.28
+  off          tok  128  1.92 tok/s   505.2 MB/tok  gpu state  1.08  pcpu state 18.42
+  off          tok  160  1.88 tok/s   519.9 MB/tok  gpu state  1.04  pcpu state 18.65
+  off          tok  192  2.34 tok/s   400.2 MB/tok  gpu state  2.64  pcpu state 18.32
+  off          tok  224  1.94 tok/s   467.2 MB/tok  gpu state  1.36  pcpu state 18.58
+  off          tok  256  2.01 tok/s   446.7 MB/tok  gpu state  1.23  pcpu state 18.36
+  off          tok  288  1.91 tok/s   463.5 MB/tok  gpu state  2.17  pcpu state 18.34
+  off          tok  320  1.82 tok/s   517.6 MB/tok  gpu state  1.95  pcpu state 17.98
+  off          tok  352  2.02 tok/s   467.6 MB/tok  gpu state  3.69  pcpu state 18.44
+  off          tok  384  1.65 tok/s   526.3 MB/tok  gpu state  2.00  pcpu state 18.43
+  off: gen 1.912 tok/s, digest 3edafe06a771eaa3
+== keepwarm: free 114 MB
+  keepwarm     tok   32  2.39 tok/s   469.7 MB/tok  gpu state 14.77  pcpu state 19.10
+  keepwarm     tok   64  2.64 tok/s   421.4 MB/tok  gpu state 14.98  pcpu state 19.03
+  keepwarm     tok   96  2.45 tok/s   418.6 MB/tok  gpu state 14.98  pcpu state 19.41
+  keepwarm     tok  128  2.05 tok/s   513.0 MB/tok  gpu state 14.98  pcpu state 19.47
+  keepwarm     tok  160  2.36 tok/s   511.6 MB/tok  gpu state 14.98  pcpu state 18.97
+  keepwarm     tok  192  2.75 tok/s   385.1 MB/tok  gpu state 14.96  pcpu state 19.08
+  keepwarm     tok  224  2.60 tok/s   441.4 MB/tok  gpu state 14.98  pcpu state 19.07
+  keepwarm     tok  256  2.67 tok/s   415.0 MB/tok  gpu state 14.98  pcpu state 19.09
+  keepwarm     tok  288  2.73 tok/s   414.6 MB/tok  gpu state 14.98  pcpu state 18.95
+  keepwarm     tok  320  2.49 tok/s   490.7 MB/tok  gpu state 14.98  pcpu state 18.98
+  keepwarm     tok  352  2.41 tok/s   467.8 MB/tok  gpu state 14.98  pcpu state 19.21
+  keepwarm     tok  384  2.36 tok/s   521.6 MB/tok  gpu state 14.99  pcpu state 19.18
+  keepwarm: gen 2.466 tok/s, digest 3edafe06a771eaa3
+== qos: free 120 MB
+  qos          tok   32  1.97 tok/s   467.8 MB/tok  gpu state  1.22  pcpu state 18.51
+  qos          tok   64  1.97 tok/s   426.4 MB/tok  gpu state  1.04  pcpu state 18.49
+  qos          tok   96  1.97 tok/s   432.1 MB/tok  gpu state  1.03  pcpu state 18.93
+  qos          tok  128  1.75 tok/s   524.9 MB/tok  gpu state  2.10  pcpu state 19.07
+  qos          tok  160  1.78 tok/s   522.9 MB/tok  gpu state  2.76  pcpu state 18.93
+  qos          tok  192  1.98 tok/s   413.7 MB/tok  gpu state  1.36  pcpu state 19.08
+  qos          tok  224  1.67 tok/s   468.1 MB/tok  gpu state  1.28  pcpu state 18.74
+  qos          tok  256  2.18 tok/s   421.6 MB/tok  gpu state  4.84  pcpu state 18.39
+  qos          tok  288  2.12 tok/s   431.5 MB/tok  gpu state  5.34  pcpu state 18.32
+  qos          tok  320  1.86 tok/s   507.1 MB/tok  gpu state  3.82  pcpu state 18.30
+  qos          tok  352  1.96 tok/s   453.4 MB/tok  gpu state  1.08  pcpu state 18.66
+  qos          tok  384  1.90 tok/s   507.3 MB/tok  gpu state  1.18  pcpu state 18.36
+  qos: gen 1.908 tok/s, digest 3edafe06a771eaa3
+== qos-keepwarm: free 125 MB
+  qos-keepwarm tok   32  2.62 tok/s   420.9 MB/tok  gpu state 14.93  pcpu state 18.91
+  qos-keepwarm tok   64  2.69 tok/s   399.0 MB/tok  gpu state 14.98  pcpu state 18.88
+  qos-keepwarm tok   96  2.77 tok/s   389.3 MB/tok  gpu state 14.98  pcpu state 18.87
+  qos-keepwarm tok  128  2.42 tok/s   499.8 MB/tok  gpu state 14.99  pcpu state 18.93
+  qos-keepwarm tok  160  2.41 tok/s   507.1 MB/tok  gpu state 14.99  pcpu state 18.90
+  qos-keepwarm tok  192  2.82 tok/s   385.1 MB/tok  gpu state 14.98  pcpu state 18.86
+  qos-keepwarm tok  224  2.63 tok/s   444.9 MB/tok  gpu state 14.99  pcpu state 18.88
+  qos-keepwarm tok  256  2.74 tok/s   406.6 MB/tok  gpu state 14.98  pcpu state 18.86
+  qos-keepwarm tok  288  2.69 tok/s   414.7 MB/tok  gpu state 14.98  pcpu state 18.90
+  qos-keepwarm tok  320  2.51 tok/s   487.1 MB/tok  gpu state 14.98  pcpu state 18.95
+  qos-keepwarm tok  352  2.58 tok/s   452.3 MB/tok  gpu state 14.98  pcpu state 18.97
+  qos-keepwarm tok  384  2.41 tok/s   518.6 MB/tok  gpu state 14.99  pcpu state 18.97
+  qos-keepwarm: gen 2.591 tok/s, digest 3edafe06a771eaa3
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260922-215918-long-states-manual/long-states.json

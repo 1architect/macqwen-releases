@@ -30,6 +30,7 @@ from .adaptive_topk import apply as apply_adaptive_topk
 from .patch_rmsnorm import apply as apply_rmsnorm_fix
 from .patch_rmsnorm import configure as configure_rmsnorm
 from .qsa_chunk import apply as apply_qsa_chunk
+from .compile_glue import apply as apply_compile_glue
 from .ngram import (
     StreamingQuantizedEmbedding,
     StreamingShardedEmbedding,
@@ -122,6 +123,7 @@ def load_streaming(
     apply_rmsnorm_fix()
     apply_adaptive_topk()
     apply_qsa_chunk()
+    apply_compile_glue()
     path = Path(os.path.expanduser(model_dir))
     store = SafeTensorStore(str(path))
     mtp_path = path / "model-mtp.safetensors"
@@ -207,6 +209,7 @@ def load_streaming(
         class_predicate=class_predicate,
     )
 
+    stream_embed = _swap_embedding(model, store, mode, use_mtp)
     swapped_experts = _swap_experts(model, store, expert_capacity, mode)
     swapped_ngram = _swap_ngram(model, store, ngram_capacity, mode)
     if use_mtp:
@@ -218,6 +221,7 @@ def load_streaming(
         k: v
         for k, v in weights.items()
         if not _is_streamed(k) and (use_mtp or not is_mtp_key(k))
+        and not (stream_embed and k.startswith(_EMBED_PREFIX + "."))
     }
     if not keep_vision:
         # Decode speed tracks how much of the expert pool the page cache can
@@ -247,6 +251,41 @@ def load_streaming(
             print(f"  MTP       : off (source: {mtp_source})")
 
     return model, config, store
+
+
+_EMBED_PREFIX = "language_model.model.embed_tokens"
+
+
+def _swap_embedding(model, store, mode, use_mtp) -> bool:
+    """Serve input-embedding rows from the checkpoint (FLASHNEXT_STREAM_EMBED=1).
+
+    Decode looks up one row per token, so the 397 MB quantized table is almost
+    entirely cold. Resident, it is anonymous Metal memory that macOS
+    compresses or swaps under pressure. Streamed, its rows stay in the page
+    cache and can be dropped. The rows go through the same ``mx.dequantize``
+    as ``QuantizedEmbedding``, so the values are identical. MTP needs the
+    whole table as its tied head, so it keeps the resident table.
+    """
+    if os.environ.get("FLASHNEXT_STREAM_EMBED", "0") != "1" or use_mtp:
+        return False
+    if f"{_EMBED_PREFIX}.scales" not in store.refs:
+        return False
+    inner = model.language_model.model
+    dims = int(store.shape(f"{_EMBED_PREFIX}.weight")[-1]) * 32
+    dims //= infer_embed_bits(store)
+    inner.embed_tokens = StreamingQuantizedEmbedding(store, _EMBED_PREFIX, dims, mode, 0)
+    return True
+
+
+def infer_embed_bits(store) -> int:
+    """Bits of the quantized embedding from its packed and scale shapes."""
+    packed = int(store.shape(f"{_EMBED_PREFIX}.weight")[-1])
+    groups = int(store.shape(f"{_EMBED_PREFIX}.scales")[-1])
+    for bits in (4, 8, 2, 3, 5, 6):
+        logical = packed * 32 // bits
+        if logical % groups == 0 and logical // groups in (32, 64, 128):
+            return bits
+    raise ValueError("cannot infer embedding quantization")
 
 
 def _sanitize_conv1d_weights(model: nn.Module, weights: dict) -> None:

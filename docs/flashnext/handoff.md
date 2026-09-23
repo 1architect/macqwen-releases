@@ -24,6 +24,8 @@ period; keep them as history and trust this section where they disagree.
 | Chat, 8 pins (policy), 72 tokens | about 2.14 tok/s, about 350 MB/token |
 | Historical 60-slot protocol, 32 pins, 32 tokens, 4 arms | 2.28 tok/s median, 402 MB/token |
 | `bench_production`, 96 tokens, keep-warm off / on | 2.19 / 2.55 tok/s |
+| 128-token paired arms, 8 pins, keep-warm off / on | 2.33-2.41 / 2.86-2.93 tok/s |
+| 384-token answer, 8 pins, keep-warm off / on | 1.91 / 2.47 tok/s |
 
 3 tok/s is 333 ms/token. The best measured state (keep-warm, 96 tokens) is
 about 392 ms/token.
@@ -47,31 +49,35 @@ production harness, both inside bands near 15%. Full record: the last
 
 ### Next steps, in order
 
-1. Thermal check on the fanless machine: one 256-512 token answer with
-   keep-warm off and one on, recording GPU state residency
-   (`tests/bench/gpu_pstates.py`) and `pmset -g therm`. The 96-token keep-warm
-   arms slowed over the run (r = -0.80). Do not promote keep-warm before this.
-2. Paired A/B of keep-warm in the real chat configuration: 8 pins (the Vontra
-   policy), not the harness default of 32. `bench_production` builds
-   `FlashNextBackend()` directly and therefore uses 32 pins.
-3. Run the checkpoint-free and low-cost paths from "Next decode and prefill
-   paths" in `research.md`, in its order: CPU state residency and thread QoS
-   for the read workers (A2, A1), then the offline cache simulator on recorded
-   routes (B1).
-4. With the clock held at P15, try glue fusion and a compiled dense segment
-   between host syncs (C1, C2), then the file-backed dense core and RAM audit
-   (B4).
-5. Prefill: pipeline expert reads inside each layer and coalesce adjacent row
-   reads (E1, E2).
-6. Cache admission or an app-owned expert cache (B2, B3) only if B1 shows a
-   policy that beats LRU. The zero-copy shard probe (D1) and the hit-first
-   split (C3) come last.
-7. Opt-in candidates that still need their gates:
-   `FLASHNEXT_PREFILL_LAST_ROW=1` (exact final-logit check),
-   `FLASHNEXT_NORM_WEIGHT_CACHE=1` (digest run),
-   `FLASHNEXT_SLAB_COUNTS=cumulative` with
-   `FLASHNEXT_SLAB_PROFILE=rolling` (paired hit-rate run), and the QSA flags
-   `FLASHNEXT_QSA_CACHE_POOLED_KEYS` and `FLASHNEXT_QSA_SCATTER_DECODE`.
+The paths in "Next decode and prefill paths" were run on 2026-09-22; the
+results are in "Next-path results" in `research.md`.
+
+1. Decide the keep-warm default. At 8 pins it measured +23.1% over three
+   paired 128-token arms (3 of 3, band about 2.5%, identical digests), and a
+   384-token answer held P15 with no thermal or performance warning. To
+   promote it, set `FLASHNEXT_GPU_KEEPWARM=1` in
+   `models/flashnext/settings/launch.py`.
+2. The remaining lever with a measured premise is memory for the page cache:
+   the cache simulator prices each extra GB near 4 GB at about 13% fewer
+   reads. `FLASHNEXT_STREAM_EMBED=1` frees the 397 MB input embedding and read
+   6.6% fewer bytes in 4 of 4 pairs, with no resolved rate change. A longer
+   paired run would settle it.
+3. Unresolved and off, each needs longer paired arms on a quiet machine:
+   `FLASHNEXT_IO_QOS=user-interactive`, the compiled-glue stack
+   (`FLASHNEXT_COMPILE_HC=1`, `FLASHNEXT_COMPILE_NORM=1`,
+   `FLASHNEXT_NORM_WEIGHT_CACHE=1`), and
+   `FLASHNEXT_NGRAM_PARALLEL_MIN=64` for prefill.
+4. The QSA flags passed their exact-digest gate at 2.6K context. Their speed
+   needs a 16K to 32K context comparison.
+5. Rejected, do not retry without a new premise: cache admission or an
+   app-owned expert cache (realizable policies stay within 3% of LRU), no-copy
+   Metal buffers over checkpoint mappings (Metal makes the whole region
+   resident), the prefill MoE pipeline, prefill read coalescing, last-row
+   prefill logits (not exact), compiled hyper-connections (not exact), and
+   the hit-first MoE split.
+6. Use 128-token paired arms in one process (`bench_long_states` with repeated
+   conditions) for small decode effects. The 32-token harness gave bands of
+   19% to 25% on a busy machine.
 
 ### Rules the user set this session
 
