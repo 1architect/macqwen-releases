@@ -25,7 +25,7 @@ OUTPUT_OPTIONS = {"--json", "--jsonl", "--out", "--output", "--log", "--record"}
 # Machine state that later runs read back. These are caches, not results.
 STATE_FILES = (
     "pins.json", "physical-misses.json", "capacity-sweep-manifest.json",
-    "capacity-sweep-", "slab-pack", "sessions", "native",
+    "capacity-sweep-", "slab-pack", "small-sidecar-", "sessions", "native",
 )
 FORBIDDEN = (
     (re.compile(r"""["']/tmp\b"""), "writes to /tmp"),
