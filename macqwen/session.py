@@ -135,6 +135,17 @@ def _run_generation(call):
     return result, error, presses
 
 
+def _on_model_thread(call, *args):
+    """Run model-state work on the generation thread and wait for it.
+
+    Arrays left lazy by an interrupted answer belong to the generation
+    thread's GPU stream; evaluating them from the terminal thread fails with
+    "There is no Stream(gpu, N) in current thread". Saving and loading a
+    session therefore run where generation runs.
+    """
+    return _GENERATION_EXECUTOR.submit(call, *args).result()
+
+
 def _backend_generate(backend, kwargs, should_cancel):
     """Pass cancellation only to backends that implement the shared hook."""
     try:
@@ -306,10 +317,10 @@ class Session:
         self.opened = False
 
     def save_session(self, name):
-        return self.backend.save_session(name)
+        return _on_model_thread(self.backend.save_session, name)
 
     def load_session(self, name):
-        result = self.backend.load_session(name)
+        result = _on_model_thread(self.backend.load_session, name)
         self.opened = bool(self.backend.tape or self.backend.pending)
         return result
 
