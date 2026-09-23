@@ -1,0 +1,25 @@
+=== arm 1: baseline
+== keepwarm: free 69 MB
+  keepwarm     tok   64  2.65 tok/s   436.8 MB/tok  gpu state 14.92  pcpu state 18.84
+  keepwarm     tok  128  2.67 tok/s   438.5 MB/tok  gpu state 14.99  pcpu state 18.81
+  keepwarm: gen 2.638 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-030140-exact-bundle/arm-1-baseline.json
+=== arm 2: bundle
+== bundle: free 82 MB
+  bundle       tok   64  2.85 tok/s   398.0 MB/tok  gpu state 14.98  pcpu state 18.81
+  bundle       tok  128  2.72 tok/s   437.7 MB/tok  gpu state 14.98  pcpu state 18.80
+  bundle: gen 2.759 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-030140-exact-bundle/arm-2-bundle.json
+=== arm 3: bundle
+== bundle: free 82 MB
+  bundle       tok   64  2.84 tok/s   401.8 MB/tok  gpu state 14.98  pcpu state 18.80
+  bundle       tok  128  2.72 tok/s   443.5 MB/tok  gpu state 14.98  pcpu state 18.79
+  bundle: gen 2.755 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-030140-exact-bundle/arm-3-bundle.json
+=== arm 4: baseline
+== keepwarm: free 82 MB
+  keepwarm     tok   64  2.72 tok/s   420.2 MB/tok  gpu state 14.94  pcpu state 18.81
+  keepwarm     tok  128  2.58 tok/s   470.3 MB/tok  gpu state 14.99  pcpu state 18.81
+  keepwarm: gen 2.624 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-030140-exact-bundle/arm-4-baseline.json
+=== done

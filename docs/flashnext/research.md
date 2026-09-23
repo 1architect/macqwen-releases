@@ -4914,3 +4914,33 @@ Absolute rates were 2.61 to 2.67 tok/s against 2.86 to 2.93 recorded on
 411 MB/token with identical routes, so page-cache state differs between the
 two days. At about 0.57 ms/MB the extra reads account for most of the gap.
 This run does not compare the old and new runtime in one machine state.
+
+## Exact opt-in bundle, 2026-09-23
+
+Every exact opt-in whose latest measurement was positive, enabled together:
+`FLASHNEXT_STREAM_EMBED=1`, `FLASHNEXT_COMPILE_HC=1`,
+`FLASHNEXT_COMPILE_NORM=1`, `FLASHNEXT_NORM_WEIGHT_CACHE=1`,
+`FLASHNEXT_IO_QOS=user-interactive`, `FLASHNEXT_NGRAM_PARALLEL_MIN=64`,
+`FLASHNEXT_QSA_CACHE_POOLED_KEYS=1`, `FLASHNEXT_QSA_SCATTER_DECODE=1`,
+`FLASHNEXT_OVERLAP=0`, `FLASHNEXT_RDAHEAD=0`, `FLASHNEXT_IO_WORKERS=8` and
+`FLASHNEXT_STREAM_PACK=1` with chunk 2. Left out: Frontier 8B (latest median
+-3.5%), cache-aware routing (changes tokens), scales-only pins and prewarm
+(lost when stacked) and `FLASHNEXT_COMPILE` (-0.6%).
+
+`bench_long_states`, 128 greedy tokens, 8 pins, keep-warm on in both arms,
+one fresh process per arm, order baseline/bundle/bundle/baseline. Swap held
+440 MB before the run. Evidence:
+`results/flashnext/20260923-030140-exact-bundle/`.
+
+| Pair | Baseline | Bundle | Change |
+|---:|---:|---:|---:|
+| 1 | 2.638 | 2.759 | +4.6% |
+| 2 | 2.624 | 2.755 | +5.0% |
+
+All four arms kept digest `e19af44d5268e9d1`. The bundle read 398 to
+402 MB/token in its first 64 tokens against 420 to 437 for the baseline, and
+438 to 444 against 439 to 470 over the second 64. Two pairs cannot give a
+resolution band or a sign test below p = 0.5, so the +4.8% mean is
+directional. The effect is consistent in both pairs and in the byte counts,
+and it matches the sum of the members' earlier point estimates. The bundle is
+not a default.

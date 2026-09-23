@@ -40,21 +40,27 @@ PROMPT = (
 )
 
 # Each condition maps to live setters. Keep the list short and explicit.
-CONDITIONS = ("off", "keepwarm", "qos", "qos-keepwarm", "keepwarm-nooverlap")
+CONDITIONS = ("off", "keepwarm", "qos", "qos-keepwarm", "keepwarm-nooverlap", "bundle")
+# ``bundle``: keep-warm, QoS user-interactive and shared-expert overlap off.
+# Its load-time members come from the process environment, so compare it
+# against ``keepwarm`` in separate processes.
 
 
 def apply_condition(name: str) -> None:
     from models.flashnext import adaptive_topk, expert_cache
 
     expert_cache.set_gpu_keepwarm(
-        name in ("keepwarm", "qos-keepwarm", "keepwarm-nooverlap")
+        name in ("keepwarm", "qos-keepwarm", "keepwarm-nooverlap", "bundle")
     )
     # Submit the shared expert early (FLASHNEXT_OVERLAP, default on) or not.
-    adaptive_topk.set_overlap(name != "keepwarm-nooverlap")
+    adaptive_topk.set_overlap(name not in ("keepwarm-nooverlap", "bundle"))
     setter = getattr(expert_cache, "set_io_qos", None)
     if setter is not None:
-        setter("user-interactive" if name in ("qos", "qos-keepwarm") else "default")
-    elif name in ("qos", "qos-keepwarm"):
+        setter(
+            "user-interactive" if name in ("qos", "qos-keepwarm", "bundle")
+            else "default"
+        )
+    elif name in ("qos", "qos-keepwarm", "bundle"):
         raise SystemExit("this runtime has no set_io_qos; cannot run a QoS arm")
 
 
@@ -144,6 +150,10 @@ def main() -> int:
         "checkpoint": checkpoint, "resident_experts": resident,
         "tokens": args.tokens, "window": args.window,
         "conditions": args.conditions, "arms": [], "status": "running",
+        "environment": {
+            key: value for key, value in sorted(os.environ.items())
+            if key.startswith("FLASHNEXT_")
+        },
     }
 
     def save():
