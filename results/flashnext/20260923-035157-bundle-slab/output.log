@@ -1,0 +1,37 @@
+=== arm 1: prior
+== defaults: free 86 MB
+  defaults     tok   64  2.99 tok/s   336.2 MB/tok  gpu state 14.57  pcpu state 18.87
+  defaults     tok  128  2.94 tok/s   372.1 MB/tok  gpu state 14.98  pcpu state 18.82
+  defaults: gen 2.943 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-035157-bundle-slab/arm-1-prior.json
+=== arm 2: bundle
+== defaults: free 82 MB
+  defaults     tok   64  3.12 tok/s   325.7 MB/tok  gpu state 13.13  pcpu state 18.80
+  defaults     tok  128  3.01 tok/s   358.6 MB/tok  gpu state 13.77  pcpu state 18.80
+  defaults: gen 3.041 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-035157-bundle-slab/arm-2-bundle.json
+=== arm 3: bundle
+== defaults: free 85 MB
+  defaults     tok   64  3.10 tok/s   328.3 MB/tok  gpu state 13.02  pcpu state 18.82
+  defaults     tok  128  2.99 tok/s   357.2 MB/tok  gpu state 13.10  pcpu state 18.81
+  defaults: gen 3.02 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-035157-bundle-slab/arm-3-bundle.json
+=== arm 4: prior
+== defaults: free 86 MB
+  defaults     tok   64  3.05 tok/s   337.6 MB/tok  gpu state 14.95  pcpu state 18.83
+  defaults     tok  128  2.92 tok/s   374.8 MB/tok  gpu state 14.98  pcpu state 18.84
+  defaults: gen 2.957 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-035157-bundle-slab/arm-4-prior.json
+=== arm 5: prior
+== defaults: free 82 MB
+  defaults     tok   64  3.06 tok/s   331.9 MB/tok  gpu state 14.95  pcpu state 18.83
+  defaults     tok  128  2.94 tok/s   366.2 MB/tok  gpu state 14.98  pcpu state 18.91
+  defaults: gen 2.973 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-035157-bundle-slab/arm-5-prior.json
+=== arm 6: bundle
+== defaults: free 81 MB
+  defaults     tok   64  3.12 tok/s   330.5 MB/tok  gpu state 12.91  pcpu state 18.82
+  defaults     tok  128  2.98 tok/s   363.6 MB/tok  gpu state 13.62  pcpu state 18.80
+  defaults: gen 3.024 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-035157-bundle-slab/arm-6-bundle.json
+=== done

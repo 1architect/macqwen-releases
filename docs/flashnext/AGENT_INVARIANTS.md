@@ -30,7 +30,7 @@ The shared measurement rules are in [`../measurement-standard.md`](../measuremen
   streamed embedding, compiled injections and norm, cached norm gain, QoS
   user-interactive, parallel n-gram prefill, both QSA flags, overlap off,
   read-ahead off, 8 I/O workers and stream-pack. It rests on two paired runs
-  (+4.6%, +5.0%, identical digest) without a resolution band; the list is in
+  (+4.6%, +5.0%, identical digest) (+2.4% inside 1.0% with the slab on); the list is in
   `settings/launch.py`. Any member rolls back with an explicit environment
   value at launch. The existing QSA allocation guard remains active.
 - Preserve the exact token digest. Any digest change rejects the optimization.

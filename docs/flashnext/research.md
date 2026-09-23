@@ -5022,3 +5022,25 @@ All nine arms kept digest `e19af44d5268e9d1`.
 - Prewarm: lost in both arms and read 12 to 30 MB/token more. Rejected.
 
 The defaults measured 3.05 to 3.09 tok/s over 128 tokens with the slab on.
+
+## Exact bundle with the slab on, 2026-09-23
+
+The bundle (the chat default since earlier today) against the pre-bundle
+settings, slab on in both arms. The control sets every bundle variable back
+explicitly. Fresh process per arm, 128 greedy tokens, 8 pins, order
+prior/bundle/bundle/prior/prior/bundle. Evidence:
+`results/flashnext/20260923-035157-bundle-slab/`.
+
+| Pair | Prior | Bundle | Change |
+|---:|---:|---:|---:|
+| 1 | 2.943 | 3.041 | +3.3% |
+| 2 | 2.957 | 3.020 | +2.1% |
+| 3 | 2.973 | 3.024 | +1.7% |
+
+All six arms kept digest `e19af44d5268e9d1`. The bundle won 3 of 3 pairs,
+mean +2.4% with a two-SE band of 1.0%, so the gain resolves. Over tokens 65 to
+128 the bundle read 357 to 364 MB/token against 366 to 375. The slab-off
+estimate of +4.8% was larger; with the slab on the resolved gain is +2.4%.
+Its mean GPU performance state was 13.1 to 13.8 against 15.0 for the prior
+settings, which keep-warm and overlap on hold at P15. The bundle stays the
+default.

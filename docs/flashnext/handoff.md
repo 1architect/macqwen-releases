@@ -104,10 +104,10 @@ last `research.md` section); their names now do nothing, and an unknown
 
 The exact opt-in bundle became the chat default at the user's request on
 2026-09-23 after two fresh-process pairs (+4.6%, +5.0%, digest
-`e19af44d5268e9d1`); see the last `research.md` section. The bundle has no
-resolution band yet. Six reversed fresh-process pairs with
-`bench_long_states --conditions bundle` against `keepwarm`, bundle variables
-set explicitly to `0`/defaults in the control arm, would resolve it.
+`e19af44d5268e9d1`); see the last `research.md` section. With the slab on,
+three reversed fresh-process pairs measured +2.4% mean inside a 1.0% two-SE
+band, 3 of 3 pairs (`results/flashnext/20260923-035157-bundle-slab/`), so the
+gain resolves.
 
 ### Checkpoint identity fix, 2026-09-23
 
