@@ -224,7 +224,7 @@ def _hash_relocated_engine_file(digest: Any, path: Path) -> None:
 
 
 def _model_fingerprint(model_dir: Path) -> str:
-    digest = hashlib.sha256(b"flashnext-model-v2")
+    digest = hashlib.sha256(b"flashnext-model-v3")
     digest.update(str(model_dir).encode())
     found = False
     for name in (
@@ -235,20 +235,16 @@ def _model_fingerprint(model_dir: Path) -> str:
         path = model_dir / name
         if path.is_file():
             stat = path.stat()
-            digest.update(
-                f"{stat.st_dev}:{stat.st_ino}:{stat.st_mtime_ns}:"
-                f"{stat.st_ctime_ns}".encode()
-            )
+            # Not st_dev, st_ino or ctime: the device number changes at
+            # every boot, which invalidated every saved session.
+            digest.update(str(stat.st_mtime_ns).encode())
             _hash_file(digest, path, name)
             found = True
     for path in sorted(model_dir.glob("*.safetensors")):
         if path.name == "model-mtp.safetensors":
             continue
         stat = path.stat()
-        digest.update(
-            f"{stat.st_dev}:{stat.st_ino}:{stat.st_mtime_ns}:"
-            f"{stat.st_ctime_ns}".encode()
-        )
+        digest.update(str(stat.st_mtime_ns).encode())
         _hash_file(digest, path, path.name, full=False)
         found = True
     if not found:

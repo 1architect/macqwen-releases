@@ -55,7 +55,7 @@ RECORD_STRIDE = 3072000
 DIRECTORY_OFFSET = 32
 DIRECTORY_ENTRY_SIZE = 8
 MAX_DIRECTORY_ENTRIES = (HEADER_SIZE - DIRECTORY_OFFSET) // DIRECTORY_ENTRY_SIZE
-_IDENTITY_VERSION = b"flashnext-slab-model-v1"
+_IDENTITY_VERSION = b"flashnext-slab-model-v2"
 
 # Projections and sub-component offsets
 GATE_WEIGHT_OFFSET = 0
@@ -373,10 +373,15 @@ def canonical_path(path: str | Path) -> Path:
 def checkpoint_identity(model_dir: str | Path) -> str:
     """Return a cheap identity for the checkpoint used by a slab pack.
 
-    The config and index are hashed by content. Referenced shard metadata uses
-    file identity and size, so this never reads the checkpoint payload. The
-    path is included in its on-disk spelling, so cache files never cross
-    checkpoint locations but one location has one identity.
+    The config and index are hashed by content. Each referenced shard adds
+    its name, size and modification time, so this never reads the checkpoint
+    payload. The path is included in its on-disk spelling, so cache files
+    never cross checkpoint locations but one location has one identity.
+
+    Device number, inode and ctime are left out. macOS assigns the volume a
+    new device number at every boot, and a chmod or extended attribute moves
+    ctime; either used to give the same files a new identity, which orphaned
+    the pin history and turned the slab pack off after each reboot.
     """
     model_path = Path(model_dir).expanduser()
     digest = hashlib.sha256(_IDENTITY_VERSION)
@@ -399,8 +404,7 @@ def checkpoint_identity(model_dir: str | Path) -> str:
         stat = shard_path.stat()
         digest.update(str(shard_name).encode("utf-8"))
         digest.update(
-            f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:"
-            f"{stat.st_mtime_ns}:{stat.st_ctime_ns}".encode("utf-8")
+            f"{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")
         )
     return digest.hexdigest()
 

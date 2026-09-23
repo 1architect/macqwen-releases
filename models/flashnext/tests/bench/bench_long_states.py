@@ -40,13 +40,23 @@ PROMPT = (
 )
 
 # Each condition maps to live setters. Keep the list short and explicit.
-CONDITIONS = ("off", "keepwarm", "qos", "qos-keepwarm", "keepwarm-nooverlap", "bundle")
+CONDITIONS = (
+    "off", "keepwarm", "qos", "qos-keepwarm", "keepwarm-nooverlap", "bundle",
+    "defaults",
+)
 # ``bundle``: keep-warm, QoS user-interactive and shared-expert overlap off.
 # Its load-time members come from the process environment, so compare it
 # against ``keepwarm`` in separate processes.
+# ``defaults``: change nothing, so every switch keeps the chat launch value.
 
 
 def apply_condition(name: str) -> None:
+    if name == "defaults":
+        from models.flashnext import adaptive_topk, expert_cache
+
+        expert_cache.set_gpu_keepwarm(os.environ.get("FLASHNEXT_GPU_KEEPWARM") == "1")
+        adaptive_topk.set_overlap(os.environ.get("FLASHNEXT_OVERLAP", "1") == "1")
+        return
     from models.flashnext import adaptive_topk, expert_cache
 
     expert_cache.set_gpu_keepwarm(
@@ -120,8 +130,12 @@ def main() -> int:
 
     from models.flashnext.settings.launch import apply_chat_environment
 
+    keepwarm = os.environ.get("FLASHNEXT_GPU_KEEPWARM")
     apply_chat_environment(os.environ)
-    os.environ["FLASHNEXT_GPU_KEEPWARM"] = "0"
+    # Conditions set keep-warm themselves; ``defaults`` keeps the chat value.
+    os.environ["FLASHNEXT_GPU_KEEPWARM"] = (
+        keepwarm or ("1" if "defaults" in args.conditions else "0")
+    )
 
     # Private copies of the pin history and the frozen slab snapshots keep
     # the user's profile unchanged while the slab matches normal chat.

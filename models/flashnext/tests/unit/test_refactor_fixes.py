@@ -115,5 +115,34 @@ class FrozenSnapshotPruneTests(unittest.TestCase):
             self.assertTrue(pack.exists())
 
 
+class CheckpointIdentityTests(unittest.TestCase):
+    def test_identity_ignores_metadata_that_changes_across_boots(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            (root / "model.safetensors.index.json").write_text(
+                json.dumps({"weight_map": {"a": "model-00001.safetensors"}})
+            )
+            (root / "config.json").write_text("{}")
+            shard = root / "model-00001.safetensors"
+            shard.write_bytes(b"x" * 64)
+            before = slab_pack.checkpoint_identity(root)
+            os.chmod(shard, 0o600)          # moves ctime only
+            self.assertEqual(slab_pack.checkpoint_identity(root), before)
+            real_stat = os.stat
+            with patch("pathlib.Path.stat", lambda path, **kw: _moved_device(real_stat(path))):
+                self.assertEqual(slab_pack.checkpoint_identity(root), before)
+            os.utime(shard, (1, 1))         # a content-style change moves mtime
+            self.assertNotEqual(slab_pack.checkpoint_identity(root), before)
+
+
+def _moved_device(result):
+    """The same file after a reboot: new device number and inode."""
+    return SimpleNamespace(
+        st_mode=result.st_mode, st_size=result.st_size,
+        st_mtime_ns=result.st_mtime_ns, st_ctime_ns=result.st_ctime_ns + 1,
+        st_dev=result.st_dev + 1, st_ino=result.st_ino + 1,
+    )
+
+
 if __name__ == "__main__":
     unittest.main()
