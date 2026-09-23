@@ -5411,3 +5411,6 @@ The stack won 3 of 3 pairs, mean +6.6% inside a two-SE band of 8.0%, so the
 rate gain is unresolved. Pair 1's defaults arm was the cold first arm. On the
 byte-adjusted residual the stack removes about 13 ms/token in pairs 2 and 3.
 The three switches stay off.
+
+We made the stack the chat default on 2026-09-23 at the user's request, with
+the rate gain unresolved (+6.6% inside 8.0%). Every member keeps the digest.

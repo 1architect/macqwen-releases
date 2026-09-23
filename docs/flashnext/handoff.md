@@ -110,6 +110,14 @@ three reversed fresh-process pairs measured +2.4% mean inside a 1.0% two-SE
 band, 3 of 3 pairs (`results/flashnext/20260923-035157-bundle-slab/`), so the
 gain resolves.
 
+### Host and GPU-glue stack default, 2026-09-23
+
+At the user's request the chat now also sets `FLASHNEXT_ONE_SYNC=1`,
+`FLASHNEXT_COMPILE_GDN=1` and `FLASHNEXT_NGRAM_PARALLEL_MIN=16` (was 64).
+All three are exact (digest `e19af44d5268e9d1`); stacked they won 3 of 3
+pairs, +6.6% inside an 8.0% band, about 13 ms/token after adjusting for read
+volume. Roll back any of them with an explicit value at launch.
+
 ### 5 tok/s path, phases 0 to 2, 2026-09-23
 
 At P15 a token is about 232 ms of read wait plus 138 ms of everything else
@@ -270,10 +278,12 @@ The exact opt-in bundle is also on by default since 2026-09-23 (full list in
 `models/flashnext/settings/launch.py`): `FLASHNEXT_STREAM_EMBED=1`,
 `FLASHNEXT_COMPILE_HC=1`, `FLASHNEXT_COMPILE_NORM=1`,
 `FLASHNEXT_NORM_WEIGHT_CACHE=1`, `FLASHNEXT_IO_QOS=user-interactive`,
-`FLASHNEXT_NGRAM_PARALLEL_MIN=64`, `FLASHNEXT_QSA_CACHE_POOLED_KEYS=1`,
+`FLASHNEXT_NGRAM_PARALLEL_MIN=16`, `FLASHNEXT_QSA_CACHE_POOLED_KEYS=1`,
 `FLASHNEXT_QSA_SCATTER_DECODE=1`, `FLASHNEXT_OVERLAP=0`,
 `FLASHNEXT_RDAHEAD=0`, `FLASHNEXT_IO_WORKERS=8`, `FLASHNEXT_STREAM_PACK=1`
-and `FLASHNEXT_STREAM_PACK_CHUNK=2`. The launcher only fills unset
+and `FLASHNEXT_STREAM_PACK_CHUNK=2`. Since 2026-09-23 it also sets
+`FLASHNEXT_ONE_SYNC=1` and `FLASHNEXT_COMPILE_GDN=1`, and
+`FLASHNEXT_NGRAM_PARALLEL_MIN` is 16. The launcher only fills unset
 variables, so any member rolls back with an explicit value, for example
 `FLASHNEXT_IO_WORKERS=16 ./chat.sh`.
 

@@ -35,7 +35,9 @@ CHAT_ENV = {
     "FLASHNEXT_COMPILE_NORM": "1",
     "FLASHNEXT_NORM_WEIGHT_CACHE": "1",
     "FLASHNEXT_IO_QOS": "user-interactive",
-    "FLASHNEXT_NGRAM_PARALLEL_MIN": "64",
+    # 16 since 2026-09-23: a decode token's 16 n-gram rows go to the read
+    # pool too (part of the host and GPU-glue stack below).
+    "FLASHNEXT_NGRAM_PARALLEL_MIN": "16",
     "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "1",
     "FLASHNEXT_QSA_SCATTER_DECODE": "1",
     "FLASHNEXT_OVERLAP": "0",
@@ -43,6 +45,13 @@ CHAT_ENV = {
     "FLASHNEXT_IO_WORKERS": "8",
     "FLASHNEXT_STREAM_PACK": "1",
     "FLASHNEXT_STREAM_PACK_CHUNK": "2",
+    # Host and GPU-glue stack, promoted on 2026-09-23 at the user's request:
+    # one sync per decode layer and compiled GDN q/k normalization and gated
+    # norm (0 mismatches on 144 captured calls each). With the n-gram change
+    # above it won 3 of 3 fresh-process pairs at 128 tokens, +6.6% inside an
+    # 8.0% band, identical digest e19af44d5268e9d1.
+    "FLASHNEXT_ONE_SYNC": "1",
+    "FLASHNEXT_COMPILE_GDN": "1",
 }
 
 

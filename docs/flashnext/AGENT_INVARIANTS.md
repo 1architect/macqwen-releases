@@ -29,7 +29,10 @@ The shared measurement rules are in [`../measurement-standard.md`](../measuremen
 - The exact opt-in bundle is the chat default since 2026-09-23 at our request:
   streamed embedding, compiled injections and norm, cached norm gain, QoS
   user-interactive, parallel n-gram prefill, both QSA flags, overlap off,
-  read-ahead off, 8 I/O workers and stream-pack. With the slab on it measured
+  read-ahead off, 8 I/O workers and stream-pack. Since 2026-09-23 the
+  chat also defaults to one sync per decode layer, compiled GDN q/k
+  normalization and gated norm, and decode n-gram rows on the read pool
+  (+6.6% inside an 8.0% band over three pairs, identical digest). With the slab on it measured
   +2.4% inside a 1.0% two-SE band over three pairs, identical digest; the list
   is in `settings/launch.py`. Any member rolls back with an explicit environment
   value at launch. The existing QSA allocation guard remains active.
