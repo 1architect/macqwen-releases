@@ -1350,7 +1350,15 @@ class StreamingSwitchGLU(nn.Module):
         self.slab_pack = None
         self.slab_expert_to_slot = {}
         self._slab_pack_disabled_reason = None
-        self._attach_slab_pack(store, group_size, slab_g64)
+        # Research expert pool (FLASHNEXT_EXPERT_POOL_GB, off). It holds hot
+        # experts itself, so the static slab pack stays off beside it.
+        from . import expert_pool as _expert_pool
+
+        self._expert_pool_on = _expert_pool.enabled() and self._metal_runtime_capable
+        if self._expert_pool_on:
+            self._slab_pack_disabled_reason = "expert pool enabled"
+        else:
+            self._attach_slab_pack(store, group_size, slab_g64)
         # Research sidecar with each expert's scale and bias rows in one
         # record (FLASHNEXT_SMALL_SIDECAR, off). Stream-pack path only.
         from .small_sidecar import for_store as _small_sidecar_for_store
@@ -1608,6 +1616,10 @@ class StreamingSwitchGLU(nn.Module):
             and flat_input.shape[0] <= 8
             and self.metal_combines_scores
         )
+        if custom and self._expert_pool_on:
+            return self._pool_pass(
+                indices, routed, flat_input, scores, shared_y, shared, shared_gate,
+            )
         if custom and self.slab_expert_to_slot:
             return self._packed_pass(
                 indices, routed, flat_input, scores, shared_y, shared, shared_gate,
@@ -1670,6 +1682,55 @@ class StreamingSwitchGLU(nn.Module):
             scores=routed_scores,
             slab_pack=self.slab_pack.buffer_mx,
             stream_pack=streamed_record,
+            shared_y=shared_y,
+            shared=shared,
+            shared_gate=shared_gate,
+        )
+        if shared_y is not None or (shared is not None and shared_gate is not None):
+            self._last_fused_shared = True
+        output = output.reshape(*indices.shape[:-1], output.shape[-1])
+        return output if self.gate_proj.group_size == 64 else output.astype(mx.bfloat16)
+
+    def _pool_pass(
+        self, indices, routed, flat_input, scores, shared_y, shared, shared_gate,
+    ):
+        """Custom Metal decode with every routed expert addressed in the pool."""
+        from .expert_pool import SLOT_BIT, for_store
+
+        store = self.gate_proj.cache.store
+        pool = for_store(store, self.gate_proj.group_size)
+        slots, misses = pool.assign(self.layer_id, list(dict.fromkeys(routed)))
+        self.hits += len(routed) - len(misses)
+        self.misses += len(misses)
+        if misses:
+            prefix = self.gate_proj.cache.prefix.rsplit(".", 1)[0]
+            chunk = int(os.environ.get("FLASHNEXT_STREAM_PACK_CHUNK", "2")) or 2
+            began = time.perf_counter()
+            futures = pool.fill(prefix, misses, _submit_read, chunk)
+            if _KEEPWARM[0]:
+                _keep_gpu_warm_until(futures)
+            timings = [] if _PROFILE else None
+            for future in futures:
+                _resolve_future(future, timings)
+            if _PROFILE:
+                ended = time.perf_counter()
+                _TIMERS["io_wait"] += ended - began
+                _TIMERS["io_calls"] += 1
+                _record_read_timing(timings, began, ended)
+        hidden_size = flat_input.shape[-1]
+        width = indices.shape[-1]
+        tokens = flat_input.shape[0]
+        local = mx.array(
+            [SLOT_BIT | slots[e] for e in routed], dtype=mx.uint32,
+        ).reshape(tokens, width)
+        weights = self._get_dummy_streamed_weights(hidden_size)
+        executor = self._executor(("pool", hidden_size, width), width, hidden_size, width)
+        output = executor.execute(
+            flat_input, local,
+            {"gate_proj": weights[0], "up_proj": weights[1], "down_proj": weights[2]},
+            scores=scores.reshape(tokens, width),
+            slab_pack=pool.buffer_mx,
+            stream_pack=None,
             shared_y=shared_y,
             shared=shared,
             shared_gate=shared_gate,

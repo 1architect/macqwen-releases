@@ -1,0 +1,37 @@
+=== arm 1: defaults  swap 1398.12M
+== defaults: free 3513 MB
+  defaults     tok   64  3.51 tok/s   299.0 MB/tok  gpu state 14.99  pcpu state 18.77
+  defaults     tok  128  3.40 tok/s   309.7 MB/tok  gpu state 14.99  pcpu state 18.81
+  defaults: gen 3.421 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-1-defaults.json
+=== arm 2: pool6  swap 1358.12M
+== defaults: free 80 MB
+  defaults     tok   64  3.79 tok/s   316.5 MB/tok  gpu state 14.85  pcpu state 18.85
+  defaults     tok  128  3.86 tok/s   327.1 MB/tok  gpu state 14.99  pcpu state 18.88
+  defaults: gen 3.791 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-2-pool6.json
+=== arm 3: pool6  swap 1453.56M
+== defaults: free 4253 MB
+  defaults     tok   64  3.72 tok/s   332.6 MB/tok  gpu state 14.93  pcpu state 18.73
+  defaults     tok  128  3.95 tok/s   323.3 MB/tok  gpu state 14.99  pcpu state 18.69
+  defaults: gen 3.797 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-3-pool6.json
+=== arm 4: defaults  swap 1421.56M
+== defaults: free 3356 MB
+  defaults     tok   64  3.50 tok/s   297.3 MB/tok  gpu state 14.99  pcpu state 18.73
+  defaults     tok  128  3.47 tok/s   296.6 MB/tok  gpu state 14.99  pcpu state 18.74
+  defaults: gen 3.455 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-4-defaults.json
+=== arm 5: defaults  swap 1405.56M
+== defaults: free 88 MB
+  defaults     tok   64  3.56 tok/s   281.6 MB/tok  gpu state 14.98  pcpu state 18.73
+  defaults     tok  128  3.45 tok/s   293.9 MB/tok  gpu state 14.99  pcpu state 18.79
+  defaults: gen 3.471 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-5-defaults.json
+=== arm 6: pool6  swap 1397.56M
+== defaults: free 75 MB
+  defaults     tok   64  3.84 tok/s   311.3 MB/tok  gpu state 14.89  pcpu state 18.73
+  defaults     tok  128  4.09 tok/s   306.5 MB/tok  gpu state 14.99  pcpu state 18.68
+  defaults: gen 3.925 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-6-pool6.json
+=== done  swap 1389.56M

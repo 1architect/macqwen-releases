@@ -40,6 +40,7 @@ _ENGINE_FILES = (
     "compile_glue.py",
     "compiled.py",
     "expert_cache.py",
+    "expert_pool.py",
     "loader.py",
     # The custom executor computes every routed MoE output on the default
     # path, so its arithmetic is part of the saved cache state.

@@ -1,0 +1,90 @@
+exactness gate: defaults vs FLASHNEXT_EXPERT_POOL_GB=6, 32 tokens, one process each
+=== gate-defaults
+== defaults: free 88 MB
+  defaults     tok   32  2.31 tok/s   458.6 MB/tok  gpu state 14.39  pcpu state 19.07
+  defaults: gen 2.223 tok/s, digest 6f1ec5a039fca178
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/gate-defaults.json
+=== gate-pool6
+== defaults: free 84 MB
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/tests/bench/bench_long_states.py", line 255, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/tests/bench/bench_long_states.py", line 223, in main
+    text, stats = backend.generate(
+                  ^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/macqwen/backends/flashnext.py", line 717, in generate
+    for index, value in enumerate(tokens):
+                        ^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/macqwen/backends/flashnext.py", line 706, in standard_tokens
+    step = self.language(token[None], cache=self.cache)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/models/.venv-qwen4exp/lib/python3.12/site-packages/mlx_vlm/models/qwen3_5/language.py", line 2072, in __call__
+    out = self.model(
+          ^^^^^^^^^^^
+  File "/Users/gioma/models/.venv-qwen4exp/lib/python3.12/site-packages/mlx_vlm/models/qwen4_exp/language.py", line 819, in __call__
+    hidden_states = layer(
+                    ^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/compile_glue.py", line 54, in _decoder_call
+    branch = self.mlp(mixed)
+             ^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/adaptive_topk.py", line 289, in _moe_call
+    y = self.switch_mlp(x, inds, scores=scores, shared_y=shared_y)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/expert_cache.py", line 1620, in __call__
+    return self._pool_pass(
+           ^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/expert_cache.py", line 1701, in _pool_pass
+    pool = for_store(store, self.gate_proj.group_size)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/expert_pool.py", line 152, in for_store
+    pool = ExpertPool(
+           ^^^^^^^^^^^
+  File "/Users/gioma/Developer/MACQWEN/models/flashnext/expert_pool.py", line 75, in __init__
+    self.buffer_mx = mx.from_dlpack(self.array, copy=False)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+OverflowError: Shape dimension 5999624192 is outside the supported range [-2147483648, 2147483647]. MLX currently uses 32-bit integers for shape dimensions.
+=== gate-pool6 (uint32 view)
+== defaults: free 86 MB
+  defaults     tok   32  3.09 tok/s   359.7 MB/tok  gpu state 14.31  pcpu state 19.05
+  defaults: gen 2.967 tok/s, digest 6f1ec5a039fca178
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/gate-pool6.json
+=== arm 1: defaults  swap 1398.12M
+== defaults: free 3513 MB
+  defaults     tok   64  3.51 tok/s   299.0 MB/tok  gpu state 14.99  pcpu state 18.77
+  defaults     tok  128  3.40 tok/s   309.7 MB/tok  gpu state 14.99  pcpu state 18.81
+  defaults: gen 3.421 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-1-defaults.json
+=== arm 2: pool6  swap 1358.12M
+== defaults: free 80 MB
+  defaults     tok   64  3.79 tok/s   316.5 MB/tok  gpu state 14.85  pcpu state 18.85
+  defaults     tok  128  3.86 tok/s   327.1 MB/tok  gpu state 14.99  pcpu state 18.88
+  defaults: gen 3.791 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-2-pool6.json
+=== arm 3: pool6  swap 1453.56M
+== defaults: free 4253 MB
+  defaults     tok   64  3.72 tok/s   332.6 MB/tok  gpu state 14.93  pcpu state 18.73
+  defaults     tok  128  3.95 tok/s   323.3 MB/tok  gpu state 14.99  pcpu state 18.69
+  defaults: gen 3.797 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-3-pool6.json
+=== arm 4: defaults  swap 1421.56M
+== defaults: free 3356 MB
+  defaults     tok   64  3.50 tok/s   297.3 MB/tok  gpu state 14.99  pcpu state 18.73
+  defaults     tok  128  3.47 tok/s   296.6 MB/tok  gpu state 14.99  pcpu state 18.74
+  defaults: gen 3.455 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-4-defaults.json
+=== arm 5: defaults  swap 1405.56M
+== defaults: free 88 MB
+  defaults     tok   64  3.56 tok/s   281.6 MB/tok  gpu state 14.98  pcpu state 18.73
+  defaults     tok  128  3.45 tok/s   293.9 MB/tok  gpu state 14.99  pcpu state 18.79
+  defaults: gen 3.471 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-5-defaults.json
+=== arm 6: pool6  swap 1397.56M
+== defaults: free 75 MB
+  defaults     tok   64  3.84 tok/s   311.3 MB/tok  gpu state 14.89  pcpu state 18.73
+  defaults     tok  128  4.09 tok/s   306.5 MB/tok  gpu state 14.99  pcpu state 18.68
+  defaults: gen 3.925 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-6-pool6.json
+=== done  swap 1389.56M

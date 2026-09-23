@@ -110,6 +110,63 @@ three reversed fresh-process pairs measured +2.4% mean inside a 1.0% two-SE
 band, 3 of 3 pairs (`results/flashnext/20260923-035157-bundle-slab/`), so the
 gain resolves.
 
+### Expert pool, 2026-09-23
+
+`FLASHNEXT_EXPERT_POOL_GB=6 ./chat.sh` enables an application-owned 6 GB pool
+of expert records addressed in place by the Metal kernels (pins and the static
+slab pack switch off with it). Three fresh-process pairs at 128 tokens: +11.3%
+inside a 1.9% band, identical digest, 3.79 to 3.93 tok/s against 3.42 to 3.47
+on a quiet machine, and 4.09 tok/s over tokens 65 to 128 in one arm. Off by
+default: it needs about 6 GB free, and a machine under memory load was not
+tested. Next gates before a default: a loaded-machine pair (the
+`memory_load` helper, as in the wired-memory test), a 384-token answer, and a
+pool size taken from free memory at launch instead of a fixed value.
+
+### Next possible step: the full small-row sidecar
+
+Status: measured on 12 layers only; not built for all 48, not wired beyond the
+stream-pack path, off by default. The 12-layer files were deleted to free disk.
+
+What it is: `models/flashnext/small_sidecar.py` stores each expert's six
+102,400-byte scale and bias rows as one 614,400-byte record, in stream-record
+order, so a cold expert costs four positioned reads instead of nine. On the 12
+slab layers it cut their read wait from 52.2 to 47.7 ms/token (-8.8%, every
+arm separated, digest `e19af44d5268e9d1`). Scaled to 48 layers the estimate is
+about 18 ms/token (about 5%).
+
+What it needs:
+
+1. Disk: 15.1 GB for all 48 layers (48 x 512 x 614,400 bytes), plus headroom.
+   Check `df -h ~` first; keep at least 5 GB free afterwards.
+2. Build coverage: `build_small_sidecar` takes the layers from the chat's
+   frozen slab allocation. Add an `--all-layers` option that passes
+   `range(48)`; keep the byte check of every record.
+3. Read coverage: today only `_submit_stream_pack` (slab layers) reads the
+   sidecar. The other 36 layers read per projection into separate part
+   buffers (`_read_weights` -> `ExpertLRU.submit`). Give `SmallSidecar` a
+   second reader that scatters one record into the six part buffers of an
+   expert with one `preadv` (six iovecs, row k of each buffer), and skip the
+   scale and bias tasks in `ExpertLRU.submit` for sidecar layers.
+4. Keep `FLASHNEXT_SMALL_SIDECAR` off by default and the manifest's
+   checkpoint-identity check; add the new reader to the unit test.
+
+How to measure (no model first):
+
+1. Add a `production-sidecar` engine to `bench_read_replay` that uses the
+   sidecar for every layer, and compare it with `production` in fresh
+   processes with `--evict`, order P S S P. The replay reproduces the model's
+   read wait within a few percent and repeats within 1 to 2%.
+2. If the replay gain is at least 10 ms/token, run `bench_split_p15` per fresh
+   process, order off/side/side/off/off/side, as in
+   `results/flashnext/20260923-120412-small-sidecar/`. The digest must stay
+   `e19af44d5268e9d1`.
+
+Optional follow-up: write the sidecar rows page-aligned and store each bias
+row as a lossless one-byte code (zero point plus a -1/0/+1 correction, see the
+2026-08-29 sidecar record) reconstructed in the Metal kernel; that removes
+about 5% of expert bytes and the partial-page reads, at the cost of a kernel
+change and its exactness gate.
+
 ### Read path re-examined, 2026-09-23
 
 `bench_read_replay` replays recorded routes through the read path without a

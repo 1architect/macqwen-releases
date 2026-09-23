@@ -372,6 +372,12 @@ class RoutingProfile:
         self.tail_experts = int(tail_experts)
         self.warmup = int(warmup)
         self.pin_budget = float(pin_budget_gb) * 1e9
+        from .expert_pool import enabled as _expert_pool_enabled
+
+        if _expert_pool_enabled():
+            # Pins lock file-cache pages; with the expert pool on, decode
+            # reads through F_NOCACHE into the pool and never uses them.
+            self.pin_budget = 0.0
         self.swap_epsilon = float(swap_epsilon_value)
         self.default_renorm = float(os.environ.get(
             "FLASHNEXT_RENORM_BLEND",

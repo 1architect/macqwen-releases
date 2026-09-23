@@ -192,7 +192,8 @@ def weighted_combine(expert_outputs: Any, routes: Any, scores: Any) -> Any:
 
 
 # Expert row pointers. A packed slab route sets bit 31 and addresses the
-# expert-major record in the slab pack; anything else indexes the streamed
+# expert-major record in the slab pack (or the expert pool, which shares its
+# layout); anything else indexes the streamed
 # weight arrays, or the expert-major stream pack when it is enabled.
 _POINTERS = r"""
 #if SLAB_PACK_ENABLED
@@ -200,13 +201,14 @@ bool in_slab = ((raw_expert & 0x80000000u) != 0);
 uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
 #if STREAM_PACK_ENABLED
 const device char* record_base = in_slab
-    ? ((const device char*)slab_pack) + SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE
-    : ((const device char*)stream_pack) + expert * SLAB_RECORD_STRIDE;
+    ? ((const device char*)slab_pack) + SLAB_HEADER_SIZE + (ulong)expert * SLAB_RECORD_STRIDE
+    : ((const device char*)stream_pack) + (ulong)expert * SLAB_RECORD_STRIDE;
 decltype(weight) w_ptr = (decltype(weight))(record_base + W_OFFSET);
 decltype(scales) s_ptr = (decltype(scales))(record_base + S_OFFSET);
 decltype(biases) b_ptr = (decltype(biases))(record_base + B_OFFSET);
 #else
-uint expert_offset = SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE;
+// 64-bit: an expert pool can exceed 4 GiB of records.
+ulong expert_offset = SLAB_HEADER_SIZE + (ulong)expert * SLAB_RECORD_STRIDE;
 decltype(weight) w_ptr = in_slab
     ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + W_OFFSET)
     : (weight + expert * OUT_WIDTH * (IN_WIDTH / 8));

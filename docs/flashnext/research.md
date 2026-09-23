@@ -5502,3 +5502,44 @@ about 18, drive keep-alive at most 9, dispatch at most 5), against the about
 3.16 tok/s. Free memory is the larger variable: the recorded turns read 390 to
 480 MB/token on a busy machine and the same routes read 280 to 325 MB/token in
 today's quieter state.
+
+## Expert pool, 2026-09-23
+
+`FLASHNEXT_EXPERT_POOL_GB` (new, off at 0) builds the application-owned pool
+the replay priced (`models/flashnext/expert_pool.py`). One anonymous region,
+laid out like the slab pack (4 KiB header, 3,072,000-byte records), is wrapped
+once as a Metal buffer through a uint32 view (MLX shape dimensions are 32-bit,
+so a byte view above 2 GiB cannot be wrapped). Decode rows on custom-kernel
+layers address every routed expert in the pool through the packed-slab kernels
+(bit 31 plus the slot); misses are read into least recently used slots through
+`F_NOCACHE` descriptors on the read pool, with keep-warm covering the wait.
+The static slab pack and the expert pins are off while the pool is on: the
+pool holds hot experts itself, and pins would lock file-cache pages that decode
+no longer reads. The kernels' slab record offsets are now 64-bit, since 6 GB
+of records passes 4 GiB. `FLASHNEXT_EXPERT_POOL_LOCK=1` mlocks the pool
+(untested). Prefill and layer 0 keep the normal read path.
+
+Exactness: a 32-token arm with a 6 GB pool matched the defaults' digest
+`6f1ec5a039fca178`. Unit tests cover slot assignment and eviction and
+byte-exact record fills.
+
+Speed: chat defaults against defaults plus `FLASHNEXT_EXPERT_POOL_GB=6`,
+fresh process per arm, 128 greedy tokens, order D P P D D P, quiet machine
+(Xcode and chat closed), swap 1.36 to 1.45 GB throughout with no growth.
+Evidence: `results/flashnext/20260923-153742-expert-pool/`.
+
+| Pair | Defaults | Pool 6 GB | Change |
+|---:|---:|---:|---:|
+| 1 | 3.421 | 3.791 | +10.8% |
+| 2 | 3.455 | 3.797 | +9.9% |
+| 3 | 3.471 | 3.925 | +13.1% |
+
+All arms kept digest `e19af44d5268e9d1` and a mean GPU state of 14.99. The
+pool won 3 of 3 pairs, mean +11.3% with a two-SE band of 1.9%, so the gain
+resolves. Pool arms read 306 to 327 MB/token against 294 to 310 for defaults,
+the extra misses the replay predicted, and still ran faster because hits cost
+no copy. Over tokens 65 to 128 the last pool arm ran at 4.09 tok/s. The
+measured gain exceeds the replay's estimate (15 to 24 ms/token); dropping the
+8 pins (about 1.2 GB of locked file cache) is part of the difference. The pool
+holds 6 GB of anonymous memory, so the result applies to a machine with that
+memory free; a busy machine was not tested. It stays off by default.

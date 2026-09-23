@@ -1,0 +1,158 @@
+{
+ "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+ "resident_experts": 8,
+ "tokens": 128,
+ "window": 64,
+ "conditions": [
+  "defaults"
+ ],
+ "arms": [
+  {
+   "condition": "defaults",
+   "free_mb_before": 80.015625,
+   "therm_before": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_before": [
+    2.6015625,
+    2.41015625,
+    2.46484375
+   ],
+   "gen_rate": 3.791,
+   "tail_rate": 3.919,
+   "tokens": 128,
+   "digest": "e19af44d5268e9d1",
+   "windows": [
+    {
+     "end_token": 64,
+     "tok_s": 3.793,
+     "mb_per_token": 316.5,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9866,
+       "mean_active_state": 14.851
+      },
+      "ECPU": {
+       "active_share": 0.4354,
+       "mean_active_state": 3.086
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.065
+      },
+      "PCPU": {
+       "active_share": 0.4987,
+       "mean_active_state": 18.846
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 18.121
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 128,
+     "tok_s": 3.858,
+     "mb_per_token": 327.1,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9979,
+       "mean_active_state": 14.987
+      },
+      "ECPU": {
+       "active_share": 0.5437,
+       "mean_active_state": 3.328
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.218
+      },
+      "PCPU": {
+       "active_share": 0.4835,
+       "mean_active_state": 18.881
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 18.082
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    }
+   ],
+   "therm_after": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_after": [
+    2.40576171875,
+    2.3955078125,
+    2.4560546875
+   ],
+   "vm": {
+    "reactivated": 284705,
+    "decompress": 612288,
+    "compress": 723679,
+    "pagein": 611410,
+    "pageout": 214,
+    "swapin": 11510,
+    "swapout": 17372
+   },
+   "pinned_bytes": 0,
+   "expert_lock": {
+    "budget_bytes": 0,
+    "locked_bytes": 0,
+    "locked_rows": 0,
+    "failed": false
+   }
+  }
+ ],
+ "status": "completed",
+ "environment": {
+  "FLASHNEXT_COMPILE_GDN": "1",
+  "FLASHNEXT_COMPILE_HC": "1",
+  "FLASHNEXT_COMPILE_NORM": "1",
+  "FLASHNEXT_EXPERT_POOL_GB": "6",
+  "FLASHNEXT_FUSED_SHARED": "1",
+  "FLASHNEXT_FUSED_SHARED_PARTS": "0",
+  "FLASHNEXT_FUSED_UP_SWIGLU": "1",
+  "FLASHNEXT_GPU_KEEPWARM": "1",
+  "FLASHNEXT_IO_QOS": "user-interactive",
+  "FLASHNEXT_IO_WORKERS": "8",
+  "FLASHNEXT_METAL_G64": "1",
+  "FLASHNEXT_METAL_RUNTIME": "1",
+  "FLASHNEXT_NGRAM_PARALLEL_MIN": "16",
+  "FLASHNEXT_NORM_WEIGHT_CACHE": "1",
+  "FLASHNEXT_ONE_SYNC": "1",
+  "FLASHNEXT_OVERLAP": "0",
+  "FLASHNEXT_PIN_CACHE": "/var/folders/58/86027c3j0tvc1gkm43k28c180000gn/T/flashnext-long-states-cbi2ok2p/pins.json",
+  "FLASHNEXT_PREAD_CHUNK": "2",
+  "FLASHNEXT_PROFILE_IO": "0",
+  "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "1",
+  "FLASHNEXT_QSA_SCATTER_DECODE": "1",
+  "FLASHNEXT_RDAHEAD": "0",
+  "FLASHNEXT_READ": "pread",
+  "FLASHNEXT_SLAB_G64": "0",
+  "FLASHNEXT_SLAB_GLOBAL": "60",
+  "FLASHNEXT_SLAB_MAX_SLOTS": "6",
+  "FLASHNEXT_SLAB_MIN_SLOTS": "4",
+  "FLASHNEXT_SLAB_NUM_LAYERS": "12",
+  "FLASHNEXT_SLAB_PACK": "1",
+  "FLASHNEXT_SLAB_PACK_REQUIRE_EXISTING": "0",
+  "FLASHNEXT_SLAB_POLICY": "skew",
+  "FLASHNEXT_SLAB_PROFILE": "frozen",
+  "FLASHNEXT_STREAM_EMBED": "1",
+  "FLASHNEXT_STREAM_PACK": "1",
+  "FLASHNEXT_STREAM_PACK_CHUNK": "2",
+  "FLASHNEXT_TOPK_THRESHOLD": "0.85"
+ }
+}
