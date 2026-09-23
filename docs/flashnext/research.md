@@ -5414,3 +5414,27 @@ The three switches stay off.
 
 We made the stack the chat default on 2026-09-23 at the user's request, with
 the rate gain unresolved (+6.6% inside 8.0%). Every member keeps the digest.
+
+## One-token GPU capture and the RMSNorm chain, 2026-09-23
+
+`capture_dispatches --tokens 1` with the chat defaults of `fd5e398` (keep-warm
+off so its spins do not enter the trace) wrote a 4.6 GB `.gputrace`
+(`results/flashnext/20260923-125843-capture-one-token/`, the trace itself is
+not committed). Xcode replayed the token at 77.52 ms of GPU time. Per-pipeline
+cost stayed at 0.00% and the Counters tab was unavailable, so SIMD groups are
+the only per-kernel measure (`shaders-simd-groups.md` in that folder). The
+dense Q4 matvecs (7,619 + 4,839) and the GDN recurrence (3,024) lead. The
+float32 RMSNorm chain's casts, square and sum add up to about 7,900.
+
+About 150 RMSNorm calls run per token (97 hyper-connection norms at 2,560
+per group, 48 attention and indexer head norms, three PLE norms), each as
+about five kernels. `mx.mean` is the sum times float32(1/n) (dividing by n
+differs at n = 2,560), so a three-kernel form is exact: cast and square
+fused, MLX's own sum, and one fused kernel for the mean, rsqrt, gain and cast
+back. A unit test matched it bit for bit with the plain and compiled paths on
+grouped and head norms, both gain conventions. A checkpoint-free timing of
+148 chained norms at production shapes measured 5.0 ms median for both paths
+(best 4.5 against 3.8 ms). The whole norm chain costs about 5 ms per token, so
+the SIMD-group share overstates its time; the split was not kept. Glue fusion
+has no large block left: the GPU work at P15 is mostly the Q4 matvecs and the
+recurrence.

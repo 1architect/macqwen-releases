@@ -1,0 +1,4 @@
+chat defaults (fd5e398) with FLASHNEXT_GPU_KEEPWARM=0; 6 warm tokens, 1 captured
+warm done, capturing 1 tokens
+captured 1 tokens in 4701.2 ms/token
+trace: /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-125843-capture-one-token/decode.gputrace  (4.6G)
