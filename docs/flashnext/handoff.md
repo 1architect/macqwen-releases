@@ -52,11 +52,12 @@ production harness, both inside bands near 15%. Full record: the last
 The paths in "Next decode and prefill paths" were run on 2026-09-22; the
 results are in "Next-path results" in `research.md`.
 
-1. Decide the keep-warm default. At 8 pins it measured +23.1% over three
-   paired 128-token arms (3 of 3, band about 2.5%, identical digests), and a
-   384-token answer held P15 with no thermal or performance warning. To
-   promote it, set `FLASHNEXT_GPU_KEEPWARM=1` in
-   `models/flashnext/settings/launch.py`.
+1. Keep-warm is the chat default since 2026-09-22 (`FLASHNEXT_GPU_KEEPWARM=1`
+   in `settings/launch.py`). `/config model gpu-keepwarm off` turns it off
+   live and saves `flashnext_gpu_keepwarm` in preferences, so the choice
+   holds across launches. Evidence: +23.1% over three paired 128-token arms
+   at 8 pins (3 of 3, band about 2.5%, identical digests), and a 384-token
+   answer held P15 with no thermal or performance warning.
 2. The remaining lever with a measured premise is memory for the page cache:
    the cache simulator prices each extra GB near 4 GB at about 13% fewer
    reads. `FLASHNEXT_STREAM_EMBED=1` frees the 397 MB input embedding and read

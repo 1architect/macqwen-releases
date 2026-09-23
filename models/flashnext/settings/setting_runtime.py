@@ -52,6 +52,29 @@ def env_setter(key, attribute=None):
     return setter
 
 
+def _on_off(raw):
+    value = str(raw).strip().lower()
+    if value in {"on", "1", "true", "yes"}:
+        return "on"
+    if value in {"off", "0", "false", "no"}:
+        return "off"
+    raise ValueError("gpu-keepwarm must be on or off")
+
+
+def _keepwarm_reader(_backend):
+    from models.flashnext.expert_cache import gpu_keepwarm
+
+    return "on" if gpu_keepwarm() else "off"
+
+
+def _keepwarm_setter(_backend, value):
+    from models.flashnext.expert_cache import set_gpu_keepwarm
+
+    enabled = _on_off(value) == "on"
+    set_gpu_keepwarm(enabled)
+    os.environ["FLASHNEXT_GPU_KEEPWARM"] = "1" if enabled else "0"
+
+
 def choice(options, name):
     def parse(raw):
         if raw not in options:
@@ -80,6 +103,7 @@ def read_mode(raw):
 
 
 SETTINGS = (
+    Setting("gpu-keepwarm", ("keepwarm", "FLASHNEXT_GPU_KEEPWARM"), "on", _on_off, "live", "runtime", "public", "flashnext", _keepwarm_reader, _keepwarm_setter, lambda _b: True, None, "FLASHNEXT_GPU_KEEPWARM", __file__),
     Setting("metal-runtime", ("FLASHNEXT_METAL_RUNTIME",), "0", choice(("0", "1"), "metal-runtime"), "live", "runtime", "public", "flashnext", live_env_reader("FLASHNEXT_METAL_RUNTIME", "0"), env_setter("FLASHNEXT_METAL_RUNTIME"), lambda _b: os.environ.get("FLASHNEXT_METAL_RUNTIME", "0") == "1", None, "FLASHNEXT_METAL_RUNTIME", __file__),
     Setting("slab-global", ("FLASHNEXT_SLAB_GLOBAL",), 0, integer, "startup", "storage", "public", "flashnext", env_reader("FLASHNEXT_SLAB_GLOBAL", 0, integer), None, lambda _b: True, None, "FLASHNEXT_SLAB_GLOBAL", __file__),
     Setting("slab-pack", ("FLASHNEXT_SLAB_PACK",), "0", choice(("0", "1"), "slab-pack"), "startup", "storage", "public", "flashnext", env_reader("FLASHNEXT_SLAB_PACK", "0"), None, env_active("FLASHNEXT_SLAB_PACK"), None, "FLASHNEXT_SLAB_PACK", __file__),

@@ -452,6 +452,35 @@ class SessionTests(unittest.TestCase):
             self.assertFalse(preferences_path.exists())
 
 
+    def test_gpu_keepwarm_toggle_is_saved(self):
+        from models.flashnext import expert_cache
+
+        previous = expert_cache.gpu_keepwarm()
+
+        class KeepWarmBackend(FakeBackend):
+            def configure(self, argument):
+                _name, value = argument.split()
+                expert_cache.set_gpu_keepwarm(value == "on")
+                return f"gpu-keepwarm: {value}"
+
+        try:
+            expert_cache.set_gpu_keepwarm(True)
+            with tempfile.TemporaryDirectory() as root:
+                preferences_path = Path(root) / "preferences.json"
+                session = Session(
+                    KeepWarmBackend(), "plain", dict(preferences.DEFAULTS),
+                    preferences_path, Path(root) / "keys.json",
+                )
+                session.model_settings("gpu-keepwarm off")
+                self.assertFalse(session.preferences["flashnext_gpu_keepwarm"])
+                saved = preferences.load(preferences_path)
+                self.assertFalse(saved["flashnext_gpu_keepwarm"])
+                session.model_settings("gpu-keepwarm on")
+                self.assertTrue(preferences.load(preferences_path)["flashnext_gpu_keepwarm"])
+        finally:
+            expert_cache.set_gpu_keepwarm(previous)
+
+
 class PreparedQmmSessionTests(unittest.TestCase):
     def _bonsai_args(self, **overrides):
         args = SimpleNamespace(

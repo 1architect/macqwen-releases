@@ -344,9 +344,25 @@ class Session:
                     f"  token-budget        {budget}"
                 )
                 return shared + "\n\n" + configure(text)
-            return configure(argument)
+            result = configure(argument)
+            self._remember_backend_preferences(text)
+            return result
         except ValueError as exc:
             return f"could not change settings: {exc}"
+
+    def _remember_backend_preferences(self, argument: str):
+        """Save the model settings that preferences own after a /config change."""
+        name = argument.split(maxsplit=1)[0].lower() if argument else ""
+        if name not in {"gpu-keepwarm", "keepwarm", "flashnext_gpu_keepwarm"}:
+            return
+        try:
+            from models.flashnext.expert_cache import gpu_keepwarm
+        except ImportError:
+            return
+        enabled = bool(gpu_keepwarm())
+        if self.preferences.get("flashnext_gpu_keepwarm") != enabled:
+            self.preferences["flashnext_gpu_keepwarm"] = enabled
+            self.save_preferences()
 
     def status(self):
         prefs = self.preferences
@@ -474,6 +490,10 @@ def build_backend(name: str, args, prefs: dict):
             backend._setting_sources["resident-experts"] = "CLI"
         elif policy_source is not None:
             backend._setting_sources["resident-experts"] = policy_source
+        from models.flashnext.expert_cache import set_gpu_keepwarm
+
+        set_gpu_keepwarm(bool(prefs.get("flashnext_gpu_keepwarm", True)))
+        backend._setting_sources["gpu-keepwarm"] = "preferences"
         mirror_preferences(backend, prefs, prefs["profile"])
         return backend
     if name == "qwen27b":

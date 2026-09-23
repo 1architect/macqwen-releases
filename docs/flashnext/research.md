@@ -4838,7 +4838,9 @@ the GPU work, and 5.6 s reading n-gram rows serially on the main thread
 ### Decisions
 
 - Keep-warm: resolved at 8 pins (+23.1%, 3 of 3, band about 2.5%) with no
-  thermal warning over 384 tokens. Ready for a default decision.
+  thermal warning over 384 tokens. We made it the chat default on
+  2026-09-22. `/config model gpu-keepwarm off` turns it off and the choice is
+  saved in preferences.
 - Rejected: B2, B3, D1, C3, E1, E2, E4 last-row, compiled hyper-connections.
 - Unresolved and off: thread QoS, streamed embedding (fewer bytes, same
   rate), compiled injections with compiled norm and cached gain, parallel

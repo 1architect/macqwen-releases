@@ -85,7 +85,6 @@ SETTINGS = (
     research("physical-miss-profile", "FLASHNEXT_PHYSICAL_MISS_PROFILE", "~/.cache/flashnext/physical-misses.json", "startup"),
     research("physical-miss-min-samples", "FLASHNEXT_PHYSICAL_MISS_MIN_SAMPLES", "1", "startup", integer),
     research("io-task-topology", "FLASHNEXT_IO_TASK_TOPOLOGY", "projection", "startup"),
-    research("gpu-keepwarm", "FLASHNEXT_GPU_KEEPWARM", parser=choice(("0", "1"), "gpu-keepwarm")),
     research("gpu-keepwarm-iters", "FLASHNEXT_GPU_KEEPWARM_ITERS", "60000", "startup", integer),
     research("gpu-keepwarm-period-ms", "FLASHNEXT_GPU_KEEPWARM_PERIOD_MS", "0.5", "startup", float),
     research("coalesce-gap", "FLASHNEXT_COALESCE_GAP", "-1", "startup", integer),

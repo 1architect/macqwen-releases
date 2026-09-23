@@ -12,13 +12,15 @@ from models.flashnext.tests.bench.gpu_pstates import summarize
 
 
 class KeepWarmTests(unittest.TestCase):
-    def test_off_by_default_and_toggles(self):
-        self.assertFalse(expert_cache.gpu_keepwarm())
-        expert_cache.set_gpu_keepwarm(True)
+    def test_toggles(self):
+        previous = expert_cache.gpu_keepwarm()
         try:
+            expert_cache.set_gpu_keepwarm(True)
             self.assertTrue(expert_cache.gpu_keepwarm())
-        finally:
             expert_cache.set_gpu_keepwarm(False)
+            self.assertFalse(expert_cache.gpu_keepwarm())
+        finally:
+            expert_cache.set_gpu_keepwarm(previous)
 
     def test_finished_reads_submit_no_spin(self):
         done = Future()

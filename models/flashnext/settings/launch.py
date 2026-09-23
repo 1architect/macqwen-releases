@@ -25,6 +25,10 @@ CHAT_ENV = {
     "FLASHNEXT_PREAD_CHUNK": "2",
     "FLASHNEXT_IO_WORKERS": "16",
     "FLASHNEXT_READ": "pread",
+    # Hold the GPU clock during expert reads. 2026-09-22: +23.1% decode over
+    # three paired 128-token arms at 8 pins, identical digests, and no thermal
+    # warning over a 384-token answer. Preferences can turn it off.
+    "FLASHNEXT_GPU_KEEPWARM": "1",
 }
 
 

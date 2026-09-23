@@ -95,6 +95,10 @@ SCHEMA = {
     # what to start with
     "model": _text("flashnext"),
     "flashnext_checkpoint": _string(""),
+    # Flash-Next GPU keep-warm: short spin kernels hold the GPU clock while a
+    # layer waits for expert reads. +23% decode at 8 pins with identical
+    # tokens. `/config model gpu-keepwarm off` turns it off and saves it.
+    "flashnext_gpu_keepwarm": _boolean(True),
     "profile": _choice("plain", ("plain", "agent")),
 }
 
