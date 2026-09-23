@@ -40,13 +40,17 @@ PROMPT = (
 )
 
 # Each condition maps to live setters. Keep the list short and explicit.
-CONDITIONS = ("off", "keepwarm", "qos", "qos-keepwarm")
+CONDITIONS = ("off", "keepwarm", "qos", "qos-keepwarm", "keepwarm-nooverlap")
 
 
 def apply_condition(name: str) -> None:
-    from models.flashnext import expert_cache
+    from models.flashnext import adaptive_topk, expert_cache
 
-    expert_cache.set_gpu_keepwarm(name in ("keepwarm", "qos-keepwarm"))
+    expert_cache.set_gpu_keepwarm(
+        name in ("keepwarm", "qos-keepwarm", "keepwarm-nooverlap")
+    )
+    # Submit the shared expert early (FLASHNEXT_OVERLAP, default on) or not.
+    adaptive_topk.set_overlap(name != "keepwarm-nooverlap")
     setter = getattr(expert_cache, "set_io_qos", None)
     if setter is not None:
         setter("user-interactive" if name in ("qos", "qos-keepwarm") else "default")

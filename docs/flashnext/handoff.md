@@ -91,6 +91,17 @@ measure 2.86 to 2.93 tok/s at 8 pins, so 3 tok/s needs about 10 to 15 ms/token.
    Claude app renderer and `mediaanalysisd` added one to two cores of load
    during the 2026-09-22 runs.
 
+### Runtime refactor, 2026-09-23
+
+Rejected experiment switches were removed from the runtime (list in the
+last `research.md` section); their names now do nothing, and an unknown
+`FLASHNEXT_READ` raises. Read modes are `pread` (default), `preadv`,
+`shared_mmap` and `mmap`. Saved sessions from before the refactor report
+"different engine code". The refactored runtime reproduced the recorded
+128-token digest `e19af44d5268e9d1`. Shared-expert overlap off
+(`FLASHNEXT_OVERLAP=0`) measured +5.2% inside a 9.0% band and stays on;
+`bench_long_states` has a `keepwarm-nooverlap` condition to repeat it.
+
 ### Rules the user set this session
 
 - Commits and pushes are allowed; the author is always the user

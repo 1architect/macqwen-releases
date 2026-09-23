@@ -1,0 +1,25 @@
+== keepwarm: free 81 MB
+  keepwarm     tok   64  2.16 tok/s   486.0 MB/tok  gpu state 12.39  pcpu state 19.27
+  keepwarm     tok  128  2.54 tok/s   474.8 MB/tok  gpu state 14.98  pcpu state 18.97
+  keepwarm: gen 2.321 tok/s, digest e19af44d5268e9d1
+== keepwarm-nooverlap: free 112 MB
+  keepwarm-nooverlap tok   64  2.72 tok/s   422.2 MB/tok  gpu state 14.91  pcpu state 18.84
+  keepwarm-nooverlap tok  128  2.62 tok/s   465.9 MB/tok  gpu state 14.99  pcpu state 18.80
+  keepwarm-nooverlap: gen 2.647 tok/s, digest e19af44d5268e9d1
+== keepwarm-nooverlap: free 120 MB
+  keepwarm-nooverlap tok   64  2.70 tok/s   434.7 MB/tok  gpu state 14.97  pcpu state 18.81
+  keepwarm-nooverlap tok  128  2.56 tok/s   477.9 MB/tok  gpu state 14.99  pcpu state 18.80
+  keepwarm-nooverlap: gen 2.606 tok/s, digest e19af44d5268e9d1
+== keepwarm: free 120 MB
+  keepwarm     tok   64  2.71 tok/s   418.4 MB/tok  gpu state 14.96  pcpu state 18.81
+  keepwarm     tok  128  2.58 tok/s   465.0 MB/tok  gpu state 14.99  pcpu state 18.80
+  keepwarm: gen 2.623 tok/s, digest e19af44d5268e9d1
+== keepwarm: free 133 MB
+  keepwarm     tok   64  2.71 tok/s   420.4 MB/tok  gpu state 14.98  pcpu state 18.83
+  keepwarm     tok  128  2.56 tok/s   474.9 MB/tok  gpu state 14.97  pcpu state 18.82
+  keepwarm: gen 2.61 tok/s, digest e19af44d5268e9d1
+== keepwarm-nooverlap: free 115 MB
+  keepwarm-nooverlap tok   64  2.70 tok/s   427.0 MB/tok  gpu state 14.98  pcpu state 18.85
+  keepwarm-nooverlap tok  128  2.67 tok/s   440.2 MB/tok  gpu state 14.99  pcpu state 18.83
+  keepwarm-nooverlap: gen 2.665 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-023827-refactor-gate/long-states.json

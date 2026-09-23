@@ -19,7 +19,6 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import wait as _wait_futures
 from typing import Any, Dict, List
 
 import mlx.core as mx
@@ -683,6 +682,29 @@ def _pending_futures(pending) -> list:
     return futures
 
 
+class _Latch:
+    """Set an event once every read of a layer has completed.
+
+    One event per layer replaces polling the whole future list with
+    ``concurrent.futures.wait`` every period, which built a waiter over
+    every pending future on each pass.
+    """
+
+    __slots__ = ("remaining", "lock", "event")
+
+    def __init__(self, count: int):
+        self.remaining = count
+        self.lock = threading.Lock()
+        self.event = threading.Event()
+
+    def count_down(self, _future) -> None:
+        with self.lock:
+            self.remaining -= 1
+            finished = self.remaining == 0
+        if finished:
+            self.event.set()
+
+
 def _keep_gpu_warm_until_done(pending) -> None:
     """Submit one short spin per period until every read of this layer is done.
 
@@ -691,11 +713,15 @@ def _keep_gpu_warm_until_done(pending) -> None:
     stream, one threadgroup wide, beside the layer's real work.
     """
     futures = [future for future in _pending_futures(pending) if not future.done()]
+    if not futures:
+        return
+    latch = _Latch(len(futures))
+    for future in futures:
+        future.add_done_callback(latch.count_down)
     period = _KEEPWARM_PERIOD[0]
-    while futures:
+    while not latch.event.is_set():
         _keepwarm_spin()
-        _done, remaining = _wait_futures(futures, timeout=period)
-        futures = list(remaining)
+        latch.event.wait(period)
 
 
 def _await_projection_tasks(pending, timings=None):

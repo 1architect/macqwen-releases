@@ -4847,3 +4847,70 @@ the GPU work, and 5.6 s reading n-gram rows serially on the main thread
   n-gram prefill reads.
 - Exact but unmeasured at long context: the two QSA flags. A comparison at 16K
   to 32K context is the remaining gate.
+
+## Runtime refactor, 2026-09-23
+
+We refactored the Flash-Next runtime for bugs, efficiency and cleanup
+(commits `c3b22fe`, `b00a7b5` and the following one). No routing or
+arithmetic changed.
+
+### Bugs fixed
+
+- `load_session` kept a replay flag left by a cancelled turn, so the next
+  message fed the whole tape through the restored cache a second time.
+- `pins.json` was rewritten in place during decode. A truncated file made
+  `_load_pin_profile` raise inside `StreamingSwitchGLU.__init__` and the model
+  failed to load. The write is now atomic, and the runtime treats a corrupt
+  profile as missing.
+- The MTP expert block used `layer_id=0`, so slab allocation, packed-slot
+  lookup and route traces treated it as backbone layer 0. Only the layer-0
+  Metal exclusion kept it from reading layer 0's packed weights. It now has
+  its own id.
+- `FLASHNEXT_COMPILE` was read but never installed outside
+  `bench_production`.
+- `/config model defaults` applied `metal-runtime=0` through the live setter,
+  turning the Metal executor off. Declared defaults now match the chat launch.
+- `RoutingProfile` hardcoded 48 layers; session fingerprints omitted
+  `compile_glue.py` and `compiled.py`; frozen slab snapshots were never pruned.
+
+### Removed
+
+Switches for experiments this log rejected: early submit and warm prefetch,
+one-sync, the buffer arena, the prefill MoE pipeline, read coalescing, one
+task per expert, the `resident`, `hybrid` and `mixed` read modes,
+`NGRAM_NOCACHE`/`NGRAM_DONTNEED`, `F_NOCACHE`, sorted reads, last-row prefill
+logits, the legacy `FLASHNEXT_SLAB` resident slab and `METAL_VERIFY`. Dead
+code: the online tail predictor, `fetch_mtp.py`, the unused expert and n-gram
+row caches. Their runnable cases were removed; the results above stay.
+Kept as the invariants require: physical-miss-hybrid, stream-pack, Frontier
+8B, G64 slabs, cache-aware routing and residency tracking. An unknown read
+mode now raises instead of silently reading through `np.memmap`.
+
+The three Metal kernel bodies now share one pointer prelude with whole-word
+placeholder substitution. All 34 kernel variants preprocess (`clang -E`) to
+the same source, names and inputs as before. Keep-warm waits on one
+completion latch per layer instead of polling every pending future each
+period.
+
+### Exactness gate and overlap pairs
+
+`bench_long_states`, 128 greedy tokens, 8 pins, keep-warm on in every arm,
+order keepwarm/nooverlap, nooverlap/keepwarm, keepwarm/nooverlap. Evidence:
+`results/flashnext/20260923-023827-refactor-gate/`.
+
+| Pair | Overlap on (default) | Overlap off | Change |
+|---:|---:|---:|---:|
+| 1 | 2.321 | 2.647 | +14.0% |
+| 2 | 2.623 | 2.606 | -0.6% |
+| 3 | 2.610 | 2.665 | +2.1% |
+
+All six arms kept digest `e19af44d5268e9d1`, the digest of the recorded
+2026-09-22 run, so the refactored runtime produces the same tokens. The
+overlap effect is +5.2% inside a two-SE band of 9.0%; pair 1 is the cold
+first arm. Unresolved; `FLASHNEXT_OVERLAP` stays on.
+
+Absolute rates were 2.61 to 2.67 tok/s against 2.86 to 2.93 recorded on
+2026-09-22, but physical reads were 440 to 478 MB/token against 395 to
+411 MB/token with identical routes, so page-cache state differs between the
+two days. At about 0.57 ms/MB the extra reads account for most of the gap.
+This run does not compare the old and new runtime in one machine state.
