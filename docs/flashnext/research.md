@@ -5438,3 +5438,67 @@ grouped and head norms, both gain conventions. A checkpoint-free timing of
 the SIMD-group share overstates its time; the split was not kept. Glue fusion
 has no large block left: the GPU work at P15 is mostly the Q4 matvecs and the
 recurrence.
+
+## Read path re-examined with an offline replay, 2026-09-23
+
+The read wait (about 225 ms/token) had been treated as drive-bound because 8
+and 16 workers tied. Four assumptions behind that were untested: that the wait
+is drive time, that direct reads run at the isolated 2.9 to 3.0 GB/s, that the
+idle gap between layers costs nothing on the drive side, and that an
+application-owned expert cache could only differ from the page cache on hit
+rate. Two static facts were also missed: none of the 432 expert tensors starts
+on a 4 KB boundary in its shard, so a 102,400-byte row touches seven or eight
+16 KB pages; and with Xcode's capture replay and an idle chat open the machine
+held 4.8 GB in the compressor and 90 MB free.
+
+A fully cached layer (8 experts, 24.6 MB, 72 positioned reads) cost 1.69 ms
+(p90 2.24) through the production path against 0.78 ms for an eight-thread
+memcpy of the same bytes.
+
+`bench_read_replay` (new) replays the first 128 decode tokens of each recorded
+turn of `20260922-221213-route-trace-manual` from the shards, with no model:
+chat environment, today's frozen slab and each turn's pin set, keep-warm on real
+GPU spins, a 3.4 GB anonymous ballast for the model's memory and a 2.6 ms sleep
+per layer for the GPU phase. `--evict` drops every expert tensor's clean pages
+with `msync(MS_INVALIDATE)` (no root; a test tensor went from 41% to 0%
+resident), so each run starts cold. Repeated runs agree within 1 to 2%.
+Evidence: `results/flashnext/20260923-131822-read-replay/` and
+`results/flashnext/20260923-133612-read-replay-native/`.
+
+| Engine | Read ms/token (photosynthesis / SketchUp / open) | Physical MB/token |
+|---|---|---|
+| production | 184-187 / 194-198 / 203-209 | 279-285 / 302-305 / 323-325 |
+| production, no gap between layers | 175-178 / 185 / 198 | 281-284 / 302-304 / 323-324 |
+| production destinations, one native call per layer (`native_read`) | 175-183 / 190-193 / 201-204 | 274-283 / 302-303 / 325 |
+| application pool, direct fills, 3 GB | 234 / 265-266 / 269-270 | 446 / 504 / 512 |
+| application pool, direct fills, 4 GB | 200-201 / 232 / 232-236 | 381 / 439 / 444 |
+| application pool, direct fills, 5 GB | 177-178 / 198-200 / 209-210 | 331 / 374 / 392 |
+| application pool, direct fills, 6 GB | 160-164 / 179-180 / 191 | 301 / 334 / 355 |
+
+The production replay's read time matches the model's read wait at comparable
+bytes; its bytes are lower than the trace's (390 to 480 MB/token) because the
+machine had more free memory than on 2026-09-22.
+
+Findings:
+
+- Cold reads cost about 0.52 ms per physical MB on every engine, buffered or
+  direct, about 1.9 GB/s for this pattern of unaligned 819,200 and 102,400-byte
+  rows at eight lanes. The isolated 2.9 to 3.0 GB/s is not reachable here.
+- Removing the per-layer gap saves about 9 ms/token, the upper bound for any
+  drive keep-alive.
+- One native call per layer with the GIL released gains 1 to 5%, so Python
+  task dispatch is not the overhead.
+- Copying cached rows out of the page cache costs about 37 ms/token (about
+  880 MB/token of cached rows). Only a zero-copy cache avoids it. An
+  application pool wins only when it is at least as large as the page cache's
+  effective share: here 5 GB tied and 6 GB saved 15 to 24 ms/token while reading
+  more bytes. A fixed pool cannot follow free memory the way the page cache
+  does, and at 6 GB the process would hold about 9.4 GB.
+
+None of this is wired into the runtime. The code-side remainder on this machine
+is about 50 ms/token at best (6 GB pool about 15-24, full small-row sidecar
+about 18, drive keep-alive at most 9, dispatch at most 5), against the about
+70 to 80 ms that 4 tok/s needs from today's quiet-machine rate of about 3.05 to
+3.16 tok/s. Free memory is the larger variable: the recorded turns read 390 to
+480 MB/token on a busy machine and the same routes read 280 to 325 MB/token in
+today's quieter state.

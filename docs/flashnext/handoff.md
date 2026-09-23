@@ -110,6 +110,16 @@ three reversed fresh-process pairs measured +2.4% mean inside a 1.0% two-SE
 band, 3 of 3 pairs (`results/flashnext/20260923-035157-bundle-slab/`), so the
 gain resolves.
 
+### Read path re-examined, 2026-09-23
+
+`bench_read_replay` replays recorded routes through the read path without a
+model and reproduces the model's read wait. Cold reads cost about 0.52 ms/MB
+on any engine (buffered, direct or native); copying cached rows costs about
+37 ms/token; the per-layer gap about 9 ms/token. An application-owned zero-copy
+pool only wins at 6 GB (15 to 24 ms/token). 4 tok/s is not reachable by code
+alone on this 16 GB machine; free memory moves reads more than any change
+tested. See the last `research.md` section.
+
 ### Host and GPU-glue stack default, 2026-09-23
 
 At the user's request the chat now also sets `FLASHNEXT_ONE_SYNC=1`,

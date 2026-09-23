@@ -1,0 +1,31 @@
+=== run 1: production
+production    photosynthesis read  183.9 ms/token   283.3 MB/token (model 390.0)  misses/layer 7.89
+production    sketchup       read  194.2 ms/token   303.6 MB/token (model 479.4)  misses/layer 7.72
+production    open           read  202.7 ms/token   323.1 MB/token (model 479.9)  misses/layer 8.01
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-131822-read-replay/run-1-production.json
+=== run 2: pool4
+pool-direct   photosynthesis read  201.4 ms/token   380.7 MB/token (model 390.0)  misses/layer 2.53
+pool-direct   sketchup       read  231.6 ms/token   438.6 MB/token (model 479.4)  misses/layer 2.88
+pool-direct   open           read  236.1 ms/token   443.8 MB/token (model 479.9)  misses/layer 2.92
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-131822-read-replay/run-2-pool4.json
+=== run 3: pool3
+pool-direct   photosynthesis read  234.4 ms/token   446.4 MB/token (model 390.0)  misses/layer 2.94
+pool-direct   sketchup       read  266.2 ms/token   504.0 MB/token (model 479.4)  misses/layer 3.29
+pool-direct   open           read  268.9 ms/token   512.0 MB/token (model 479.9)  misses/layer 3.35
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-131822-read-replay/run-3-pool3.json
+=== run 4: pool3
+pool-direct   photosynthesis read  234.4 ms/token   446.4 MB/token (model 390.0)  misses/layer 2.94
+pool-direct   sketchup       read  265.1 ms/token   504.0 MB/token (model 479.4)  misses/layer 3.29
+pool-direct   open           read  270.2 ms/token   512.0 MB/token (model 479.9)  misses/layer 3.35
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-131822-read-replay/run-4-pool3.json
+=== run 5: pool4
+pool-direct   photosynthesis read  200.1 ms/token   380.7 MB/token (model 390.0)  misses/layer 2.53
+pool-direct   sketchup       read  232.0 ms/token   438.6 MB/token (model 479.4)  misses/layer 2.88
+pool-direct   open           read  232.3 ms/token   443.8 MB/token (model 479.9)  misses/layer 2.92
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-131822-read-replay/run-5-pool4.json
+=== run 6: production
+production    photosynthesis read  185.4 ms/token   282.8 MB/token (model 390.0)  misses/layer 7.89
+production    sketchup       read  193.5 ms/token   302.3 MB/token (model 479.4)  misses/layer 7.72
+production    open           read  207.1 ms/token   323.5 MB/token (model 479.9)  misses/layer 8.01
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-131822-read-replay/run-6-production.json
+=== done

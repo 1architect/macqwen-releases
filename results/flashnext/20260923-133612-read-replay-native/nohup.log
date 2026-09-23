@@ -1,0 +1,21 @@
+=== run 1: production
+production    photosynthesis read  184.1 ms/token   283.8 MB/token (model 390.0)  misses/layer 7.89
+production    sketchup       read  193.5 ms/token   304.1 MB/token (model 479.4)  misses/layer 7.72
+production    open           read  204.0 ms/token   323.7 MB/token (model 479.9)  misses/layer 8.01
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-133612-read-replay-native/run-1-production.json
+=== run 2: native
+production-native photosynthesis read  175.1 ms/token   273.8 MB/token (model 390.0)  misses/layer 7.89
+production-native sketchup       read  189.8 ms/token   302.2 MB/token (model 479.4)  misses/layer 7.72
+production-native open           read  200.7 ms/token   325.0 MB/token (model 479.9)  misses/layer 8.01
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-133612-read-replay-native/run-2-native.json
+=== run 3: native
+production-native photosynthesis read  183.2 ms/token   283.4 MB/token (model 390.0)  misses/layer 7.89
+production-native sketchup       read  192.6 ms/token   303.2 MB/token (model 479.4)  misses/layer 7.72
+production-native open           read  204.0 ms/token   324.5 MB/token (model 479.9)  misses/layer 8.01
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-133612-read-replay-native/run-3-native.json
+=== run 4: production
+production    photosynthesis read  187.0 ms/token   279.0 MB/token (model 390.0)  misses/layer 7.89
+production    sketchup       read  197.6 ms/token   304.0 MB/token (model 479.4)  misses/layer 7.72
+production    open           read  208.5 ms/token   323.3 MB/token (model 479.9)  misses/layer 8.01
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-133612-read-replay-native/run-4-production.json
+=== done
