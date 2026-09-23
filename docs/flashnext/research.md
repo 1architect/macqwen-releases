@@ -5310,3 +5310,42 @@ turn six small reads into one (isolated reader: +11% for merged scales and
 biases, +18% for one record per expert, 2026-08-31). For this checkpoint it is
 15.1 GB (48 x 512 x 614,400 bytes); the data volume has 15 GB free, so it was
 not built.
+
+## Small-row sidecar on the slab layers, 2026-09-23
+
+A cold expert costs nine positioned reads, six of them 102,400-byte scale and
+bias rows in different tensors. `FLASHNEXT_SMALL_SIDECAR` (research, off)
+names a sidecar that stores each expert's six small rows as one 614,400-byte
+record in stream-record order; one `preadv` scatters it into the record's
+three scale-and-bias gaps, so a cold expert costs four reads. It applies only
+on the stream-pack path, which today means the 12 slab-pack layers (3, 9, 14,
+15, 16, 19, 25, 27, 29, 31, 32 and 39 in the frozen allocation).
+`build_small_sidecar` wrote those 12 layers, 3.77 GB, with `F_NOCACHE` writes
+and reads and a byte comparison of every record against the checkpoint
+(20.6 s). The full checkpoint would need 15.1 GB.
+
+`bench_split_p15` per fresh process (unprofiled 128 tokens, then profiled 128
+tokens), chat defaults, order off/side/side/off/off/side, plus a seventh arm.
+Evidence: `results/flashnext/20260923-120412-small-sidecar/`. The first
+attempt stopped with the session and is kept as `interrupted-*`. The Mac slept
+for 10 s at 12:07:48 (clamshell, on battery) during arm 1's profiled pass;
+that pass (428 ms/token) is excluded and arm 7 (off) replaces it. All passes
+kept digest `e19af44d5268e9d1` and a mean GPU state of 14.95 to 14.99.
+
+| Arm | Condition | Read wait on the 12 layers | Positioned reads/token | Unprofiled tok/s |
+|---:|---|---:|---:|---:|
+| 1 | off | excluded | 3,421 | 2.904 |
+| 2 | sidecar | 48.32 ms | 2,947 | 2.699 |
+| 3 | sidecar | 45.91 ms | 2,947 | 2.791 |
+| 4 | off | 52.61 ms | 3,421 | 2.778 |
+| 5 | off | 51.16 ms | 3,421 | 2.680 |
+| 6 | sidecar | 48.74 ms | 2,947 | 2.798 |
+| 7 | off | 52.93 ms | 3,421 | 2.690 |
+
+The sidecar cut the read wait on its layers from 52.2 to 47.7 ms/token
+(-4.6 ms, -8.8%); every sidecar arm is below every off arm. Positioned reads
+fell by 474 per token. The unprofiled rate pairs (-7.1%, +0.5%, +4.4%) do not
+resolve an effect of about 1.3% of a token. Scaled to 48 layers the saving is
+about 18 ms/token (about 5%), which would also need the other 36 layers on the
+record read path and 15.1 GB of disk. The sidecar stays off; the 12-layer
+files remain in `~/.cache/flashnext/small-sidecar-9b74bb32b36fc9ab/`.

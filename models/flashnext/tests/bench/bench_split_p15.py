@@ -122,6 +122,14 @@ def main() -> int:
     split["remainder"] = round(profiled["ms_per_token"] - sum(split.values()), 2)
     profiled["split_ms_per_token"] = split
     profiled["io_calls_per_token"] = round(totals["io_calls"] / count, 2)
+    # Subset of io_wait: the stream-pack (slab) layers only.
+    profiled["io_wait_packed_ms_per_token"] = round(
+        totals.get("io_wait_packed", 0.0) / count * 1000, 2
+    )
+    profiled["io_calls_packed_per_token"] = round(
+        totals.get("io_calls_packed", 0) / count, 2
+    )
+    profiled["pread_calls_per_token"] = round(totals["pread_calls"] / count, 1)
     evidence["profiled"] = profiled
     evidence["status"] = (
         "completed" if profiled["digest"] == reference["digest"] else "digest_mismatch"
@@ -130,6 +138,9 @@ def main() -> int:
     print(f"profiled   {profiled}", flush=True)
     for key, value in split.items():
         print(f"  {key:14s} {value:8.2f} ms/token", flush=True)
+    print(f"  io_wait_packed {profiled['io_wait_packed_ms_per_token']:8.2f} ms/token over "
+          f"{profiled['io_calls_packed_per_token']} layers, "
+          f"{profiled['pread_calls_per_token']} preads/token", flush=True)
     print(f"wrote {target}")
     return 0 if evidence["status"] == "completed" else 1
 

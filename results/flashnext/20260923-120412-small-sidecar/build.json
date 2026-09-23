@@ -1,0 +1,20 @@
+{
+ "directory": "/Users/gioma/.cache/flashnext/small-sidecar-9b74bb32b36fc9ab",
+ "layers": [
+  3,
+  9,
+  14,
+  15,
+  16,
+  19,
+  25,
+  27,
+  29,
+  31,
+  32,
+  39
+ ],
+ "bytes": 3774873600,
+ "seconds": 20.6,
+ "verified": true
+}

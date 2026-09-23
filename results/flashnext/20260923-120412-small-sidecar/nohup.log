@@ -1,0 +1,85 @@
+=== arm 1: off
+reference  {'tokens': 128, 'gen_rate': 2.904, 'ms_per_token': 344.38, 'mb_per_token': 368.3, 'gpu_mean_state': 14.973, 'gpu_active_share': 0.9848, 'digest': 'e19af44d5268e9d1'}
+profiled   {'tokens': 128, 'gen_rate': 2.336, 'ms_per_token': 428.08, 'mb_per_token': 462.4, 'gpu_mean_state': 14.593, 'gpu_active_share': 0.967, 'digest': 'e19af44d5268e9d1', 'split_ms_per_token': {'io_wait': 267.01, 'to_mx': 2.94, 'moe_issue': 2.58, 'router_sync': 9.86, 'score_sync': 107.1, 'topk_python': 4.03, 'shared_expert': 0.48, 'ngram_wait': 6.64, 'remainder': 27.44}, 'io_calls_per_token': 48.0, 'io_wait_packed_ms_per_token': 58.45, 'io_calls_packed_per_token': 12.0, 'pread_calls_per_token': 3421.3}
+  io_wait          267.01 ms/token
+  to_mx              2.94 ms/token
+  moe_issue          2.58 ms/token
+  router_sync        9.86 ms/token
+  score_sync       107.10 ms/token
+  topk_python        4.03 ms/token
+  shared_expert      0.48 ms/token
+  ngram_wait         6.64 ms/token
+  remainder         27.44 ms/token
+  io_wait_packed    58.45 ms/token over 12.0 layers, 3421.3 preads/token
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-120412-small-sidecar/arm-1-off.json
+=== arm 2: side
+reference  {'tokens': 128, 'gen_rate': 2.699, 'ms_per_token': 370.53, 'mb_per_token': 422.4, 'gpu_mean_state': 14.976, 'gpu_active_share': 0.9881, 'digest': 'e19af44d5268e9d1'}
+profiled   {'tokens': 128, 'gen_rate': 2.572, 'ms_per_token': 388.83, 'mb_per_token': 441.4, 'gpu_mean_state': 14.984, 'gpu_active_share': 0.9883, 'digest': 'e19af44d5268e9d1', 'split_ms_per_token': {'io_wait': 243.17, 'to_mx': 2.77, 'moe_issue': 2.1, 'router_sync': 9.96, 'score_sync': 96.86, 'topk_python': 4.18, 'shared_expert': 0.45, 'ngram_wait': 6.44, 'remainder': 22.9}, 'io_calls_per_token': 48.0, 'io_wait_packed_ms_per_token': 48.32, 'io_calls_packed_per_token': 12.0, 'pread_calls_per_token': 2946.8}
+  io_wait          243.17 ms/token
+  to_mx              2.77 ms/token
+  moe_issue          2.10 ms/token
+  router_sync        9.96 ms/token
+  score_sync        96.86 ms/token
+  topk_python        4.18 ms/token
+  shared_expert      0.45 ms/token
+  ngram_wait         6.44 ms/token
+  remainder         22.90 ms/token
+  io_wait_packed    48.32 ms/token over 12.0 layers, 2946.8 preads/token
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-120412-small-sidecar/arm-2-side.json
+=== arm 3: side
+reference  {'tokens': 128, 'gen_rate': 2.791, 'ms_per_token': 358.35, 'mb_per_token': 393.7, 'gpu_mean_state': 14.979, 'gpu_active_share': 0.9873, 'digest': 'e19af44d5268e9d1'}
+profiled   {'tokens': 128, 'gen_rate': 2.658, 'ms_per_token': 376.19, 'mb_per_token': 427.1, 'gpu_mean_state': 14.985, 'gpu_active_share': 0.9886, 'digest': 'e19af44d5268e9d1', 'split_ms_per_token': {'io_wait': 233.8, 'to_mx': 2.73, 'moe_issue': 1.96, 'router_sync': 9.48, 'score_sync': 95.47, 'topk_python': 3.69, 'shared_expert': 0.43, 'ngram_wait': 6.17, 'remainder': 22.46}, 'io_calls_per_token': 48.0, 'io_wait_packed_ms_per_token': 45.91, 'io_calls_packed_per_token': 12.0, 'pread_calls_per_token': 2946.8}
+  io_wait          233.80 ms/token
+  to_mx              2.73 ms/token
+  moe_issue          1.96 ms/token
+  router_sync        9.48 ms/token
+  score_sync        95.47 ms/token
+  topk_python        3.69 ms/token
+  shared_expert      0.43 ms/token
+  ngram_wait         6.17 ms/token
+  remainder         22.46 ms/token
+  io_wait_packed    45.91 ms/token over 12.0 layers, 2946.8 preads/token
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-120412-small-sidecar/arm-3-side.json
+=== arm 4: off
+reference  {'tokens': 128, 'gen_rate': 2.778, 'ms_per_token': 360.02, 'mb_per_token': 393.8, 'gpu_mean_state': 14.97, 'gpu_active_share': 0.9855, 'digest': 'e19af44d5268e9d1'}
+profiled   {'tokens': 128, 'gen_rate': 2.564, 'ms_per_token': 390.06, 'mb_per_token': 439.9, 'gpu_mean_state': 14.952, 'gpu_active_share': 0.9897, 'digest': 'e19af44d5268e9d1', 'split_ms_per_token': {'io_wait': 245.34, 'to_mx': 2.85, 'moe_issue': 2.06, 'router_sync': 8.98, 'score_sync': 97.25, 'topk_python': 3.54, 'shared_expert': 0.43, 'ngram_wait': 6.04, 'remainder': 23.57}, 'io_calls_per_token': 48.0, 'io_wait_packed_ms_per_token': 52.61, 'io_calls_packed_per_token': 12.0, 'pread_calls_per_token': 3421.3}
+  io_wait          245.34 ms/token
+  to_mx              2.85 ms/token
+  moe_issue          2.06 ms/token
+  router_sync        8.98 ms/token
+  score_sync        97.25 ms/token
+  topk_python        3.54 ms/token
+  shared_expert      0.43 ms/token
+  ngram_wait         6.04 ms/token
+  remainder         23.57 ms/token
+  io_wait_packed    52.61 ms/token over 12.0 layers, 3421.3 preads/token
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-120412-small-sidecar/arm-4-off.json
+=== arm 5: off
+reference  {'tokens': 128, 'gen_rate': 2.68, 'ms_per_token': 373.17, 'mb_per_token': 406.1, 'gpu_mean_state': 14.951, 'gpu_active_share': 0.9885, 'digest': 'e19af44d5268e9d1'}
+profiled   {'tokens': 128, 'gen_rate': 2.604, 'ms_per_token': 384.03, 'mb_per_token': 430.1, 'gpu_mean_state': 14.984, 'gpu_active_share': 0.9892, 'digest': 'e19af44d5268e9d1', 'split_ms_per_token': {'io_wait': 241.37, 'to_mx': 2.76, 'moe_issue': 2.0, 'router_sync': 9.05, 'score_sync': 95.48, 'topk_python': 3.48, 'shared_expert': 0.42, 'ngram_wait': 6.16, 'remainder': 23.31}, 'io_calls_per_token': 48.0, 'io_wait_packed_ms_per_token': 51.16, 'io_calls_packed_per_token': 12.0, 'pread_calls_per_token': 3421.3}
+  io_wait          241.37 ms/token
+  to_mx              2.76 ms/token
+  moe_issue          2.00 ms/token
+  router_sync        9.05 ms/token
+  score_sync        95.48 ms/token
+  topk_python        3.48 ms/token
+  shared_expert      0.42 ms/token
+  ngram_wait         6.16 ms/token
+  remainder         23.31 ms/token
+  io_wait_packed    51.16 ms/token over 12.0 layers, 3421.3 preads/token
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-120412-small-sidecar/arm-5-off.json
+=== arm 6: side
+reference  {'tokens': 128, 'gen_rate': 2.798, 'ms_per_token': 357.38, 'mb_per_token': 396.2, 'gpu_mean_state': 14.966, 'gpu_active_share': 0.9868, 'digest': 'e19af44d5268e9d1'}
+profiled   {'tokens': 128, 'gen_rate': 2.514, 'ms_per_token': 397.7, 'mb_per_token': 445.8, 'gpu_mean_state': 14.982, 'gpu_active_share': 0.9904, 'digest': 'e19af44d5268e9d1', 'split_ms_per_token': {'io_wait': 243.57, 'to_mx': 3.06, 'moe_issue': 2.35, 'router_sync': 10.83, 'score_sync': 101.63, 'topk_python': 4.96, 'shared_expert': 0.51, 'ngram_wait': 6.19, 'remainder': 24.6}, 'io_calls_per_token': 48.0, 'io_wait_packed_ms_per_token': 48.74, 'io_calls_packed_per_token': 12.0, 'pread_calls_per_token': 2946.8}
+  io_wait          243.57 ms/token
+  to_mx              3.06 ms/token
+  moe_issue          2.35 ms/token
+  router_sync       10.83 ms/token
+  score_sync       101.63 ms/token
+  topk_python        4.96 ms/token
+  shared_expert      0.51 ms/token
+  ngram_wait         6.19 ms/token
+  remainder         24.60 ms/token
+  io_wait_packed    48.74 ms/token over 12.0 layers, 2946.8 preads/token
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-120412-small-sidecar/arm-6-side.json
+=== done

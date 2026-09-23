@@ -236,6 +236,8 @@ _TIMERS = {
     "score_sync_pool_completed_before": 0,
     "score_sync_pool_completed_after": 0,
     "io_calls": 0,
+    "io_wait_packed": 0.0,
+    "io_calls_packed": 0,
     "read_tasks": 0,
     "pread_calls": 0,
     "pread_bytes": 0,
@@ -1348,6 +1350,14 @@ class StreamingSwitchGLU(nn.Module):
         self.slab_expert_to_slot = {}
         self._slab_pack_disabled_reason = None
         self._attach_slab_pack(store, group_size, slab_g64)
+        # Research sidecar with each expert's scale and bias rows in one
+        # record (FLASHNEXT_SMALL_SIDECAR, off). Stream-pack path only.
+        from .small_sidecar import for_store as _small_sidecar_for_store
+
+        sidecar = _small_sidecar_for_store(store)
+        self._small_sidecar = (
+            sidecar if sidecar is not None and layer_id in sidecar.layers else None
+        )
 
     def _attach_slab_pack(self, store, group_size: int, slab_g64: bool) -> None:
         """Map this layer's packed experts, when a pack is configured."""
@@ -1474,7 +1484,16 @@ class StreamingSwitchGLU(nn.Module):
         configured_chunk = int(os.environ.get("FLASHNEXT_STREAM_PACK_CHUNK", "0"))
         chunk = configured_chunk if configured_chunk > 0 else len(wanted)
         futures = []
-        for projection, part, offset in _STREAM_RECORD_PARTS:
+        sidecar = self._small_sidecar
+        parts = _STREAM_RECORD_PARTS
+        if sidecar is not None:
+            parts = tuple(entry for entry in parts if entry[1] == "weight")
+            for start in range(0, len(wanted), chunk):
+                futures.append(_submit_read(
+                    sidecar.read_into, self.layer_id,
+                    wanted[start : start + chunk], buffer, start,
+                ))
+        for projection, part, offset in parts:
             name = f"{switch_prefix}.{projection}.{part}"
             for start in range(0, len(wanted), chunk):
                 piece = wanted[start : start + chunk]
@@ -1611,7 +1630,9 @@ class StreamingSwitchGLU(nn.Module):
             ended = time.perf_counter()
             if _PROFILE:
                 _TIMERS["io_wait"] += ended - began
+                _TIMERS["io_wait_packed"] += ended - began
                 _TIMERS["io_calls"] += 1
+                _TIMERS["io_calls_packed"] += 1
                 _record_read_timing(timings, began, ended)
             began = time.perf_counter()
             streamed_record = pending.to_mx()
