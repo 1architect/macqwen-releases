@@ -32,7 +32,17 @@ with `FLASHNEXT_METAL_G64=1`. We retain generic MLX expert execution as the
 explicit rollback with `FLASHNEXT_METAL_G64=0`. G64 slabs remain off with
 `FLASHNEXT_SLAB_G64=0`. Since 2026-09-23 the chat also enables an exact opt-in
 bundle (streamed embedding, compiled glue, QoS, QSA flags, stream-pack and
-others; see `settings/launch.py`).
+others; see `settings/launch.py`), one host sync per decode layer, compiled
+GatedDeltaNet glue, and a 6 GB application-owned expert pool that the Metal
+kernels read in place (`FLASHNEXT_EXPERT_POOL_GB=6`; it replaces the static
+slab pack and the expert pins).
+
+Current speed on the installed checkpoint, quiet 16 GB M4, 128 greedy tokens:
+3.79 to 3.93 tok/s with the pool (4.09 tok/s over tokens 65 to 128 in one
+arm), against 3.42 to 3.47 tok/s with the pool off in the same session
+(+11.3% inside a 1.9% band, three fresh-process pairs, identical digest
+`e19af44d5268e9d1`). The pool needs about 6 GB of free memory;
+`FLASHNEXT_EXPERT_POOL_GB=0` rolls it back.
 
 We enabled this default on 2026-09-17 after six reversed interleaved pairs
 of 32 tokens on REAP. Reference median is 2.374 tok/s; Metal median is 2.665 tok/s.
@@ -216,7 +226,8 @@ integration are active. We default to the Metal runtime with the G64 executor
 flag on and retain
 `FLASHNEXT_METAL_G64=0` as the generic MLX rollback; the supporting speed
 evidence is the REAP-era comparison above. G64 slabs remain off;
-the exact opt-in bundle, including stream-pack and the QSA flags, is on. Cache-aware stays optional; MTP stays
+the exact opt-in bundle, including stream-pack and the QSA flags, the
+host and GPU-glue stack and the 6 GB expert pool are on. Cache-aware stays optional; MTP stays
 disabled. Our requested promotion uses short controlled speed and exact-digest
 evidence. We skip long-turn quality validation at our request and leave general
 quality unverified. Residency and last-row-only prefill remain separate

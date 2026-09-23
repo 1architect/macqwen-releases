@@ -21,6 +21,8 @@ period; keep them as history and trust this section where they disagree.
 
 | Protocol | Result |
 |---|---|
+| Chat defaults with the 6 GB expert pool, 128 tokens, quiet machine (2026-09-23) | 3.79-3.93 tok/s; 4.09 tok/s over tokens 65-128 |
+| Pool-off defaults, same session | 3.42-3.47 tok/s, 294-310 MB/token |
 | Chat, 8 pins (policy), 72 tokens | about 2.14 tok/s, about 350 MB/token |
 | Historical 60-slot protocol, 32 pins, 32 tokens, 4 arms | 2.28 tok/s median, 402 MB/token |
 | `bench_production`, 96 tokens, keep-warm off / on | 2.19 / 2.55 tok/s |
@@ -112,15 +114,16 @@ gain resolves.
 
 ### Expert pool, 2026-09-23
 
-`FLASHNEXT_EXPERT_POOL_GB=6 ./chat.sh` enables an application-owned 6 GB pool
-of expert records addressed in place by the Metal kernels (pins and the static
-slab pack switch off with it). Three fresh-process pairs at 128 tokens: +11.3%
-inside a 1.9% band, identical digest, 3.79 to 3.93 tok/s against 3.42 to 3.47
-on a quiet machine, and 4.09 tok/s over tokens 65 to 128 in one arm. Off by
-default: it needs about 6 GB free, and a machine under memory load was not
-tested. Next gates before a default: a loaded-machine pair (the
-`memory_load` helper, as in the wired-memory test), a 384-token answer, and a
-pool size taken from free memory at launch instead of a fixed value.
+The chat default since 2026-09-23 (`FLASHNEXT_EXPERT_POOL_GB=6`), promoted at
+the user's request: an application-owned 6 GB pool of expert records
+addressed in place by the Metal kernels (pins and the static slab pack switch
+off with it). Three fresh-process pairs at 128 tokens: +11.3% inside a 1.9%
+band, identical digest, 3.79 to 3.93 tok/s against 3.42 to 3.47 on a quiet
+machine, and 4.09 tok/s over tokens 65 to 128 in one arm. It needs about 6 GB
+free; `FLASHNEXT_EXPERT_POOL_GB=0` rolls back. Still open: a pair under memory
+load (the `memory_load` helper, as in the wired-memory test), a 384-token
+answer, and a pool size taken from free memory at launch instead of a fixed
+value.
 
 ### Next possible step: the full small-row sidecar
 
@@ -350,7 +353,9 @@ The exact opt-in bundle is also on by default since 2026-09-23 (full list in
 `FLASHNEXT_RDAHEAD=0`, `FLASHNEXT_IO_WORKERS=8`, `FLASHNEXT_STREAM_PACK=1`
 and `FLASHNEXT_STREAM_PACK_CHUNK=2`. Since 2026-09-23 it also sets
 `FLASHNEXT_ONE_SYNC=1` and `FLASHNEXT_COMPILE_GDN=1`, and
-`FLASHNEXT_NGRAM_PARALLEL_MIN` is 16. The launcher only fills unset
+`FLASHNEXT_NGRAM_PARALLEL_MIN` is 16, and `FLASHNEXT_EXPERT_POOL_GB=6`
+enables the expert pool (which replaces the slab pack and the pins). The
+launcher only fills unset
 variables, so any member rolls back with an explicit value, for example
 `FLASHNEXT_IO_WORKERS=16 ./chat.sh`.
 

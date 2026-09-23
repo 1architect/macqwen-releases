@@ -23,9 +23,12 @@ The shared measurement rules are in [`../measurement-standard.md`](../measuremen
   stay off with `FLASHNEXT_SLAB_G64=0`. Streamed expert-major records
   (`FLASHNEXT_STREAM_PACK=1`, chunk 2) are part of the exact opt-in bundle we
   made the chat default on 2026-09-23.
-- For normal Vontra Q4/G32 chat, keep a frozen per-checkpoint slab profile as
-  the requested default. Live pin history still updates for routing; use
-  `FLASHNEXT_SLAB_PROFILE=rolling` for the previous slab behavior.
+- Normal chat uses the 6 GB expert pool (`FLASHNEXT_EXPERT_POOL_GB=6`) since
+  2026-09-23 at our request (+11.3% inside a 1.9% band over three pairs,
+  identical digest). With the pool on, the static slab pack and the expert
+  pins are off. With `FLASHNEXT_EXPERT_POOL_GB=0`, keep the frozen
+  per-checkpoint slab profile; `FLASHNEXT_SLAB_PROFILE=rolling` restores the
+  previous slab behavior.
 - The exact opt-in bundle is the chat default since 2026-09-23 at our request:
   streamed embedding, compiled injections and norm, cached norm gain, QoS
   user-interactive, parallel n-gram prefill, both QSA flags, overlap off,

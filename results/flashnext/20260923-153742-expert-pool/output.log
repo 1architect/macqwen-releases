@@ -88,3 +88,5 @@ wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-po
   defaults: gen 3.925 tok/s, digest e19af44d5268e9d1
 wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-153742-expert-pool/arm-6-pool6.json
 === done  swap 1389.56M
+=== default launch check after promotion (no pool variable set)
+FLASHNEXT_EXPERT_POOL_GB = 6

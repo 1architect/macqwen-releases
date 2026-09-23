@@ -5543,3 +5543,8 @@ measured gain exceeds the replay's estimate (15 to 24 ms/token); dropping the
 8 pins (about 1.2 GB of locked file cache) is part of the difference. The pool
 holds 6 GB of anonymous memory, so the result applies to a machine with that
 memory free; a busy machine was not tested. It stays off by default.
+
+We made the 6 GB expert pool the chat default on 2026-09-23 at the user's
+request (`FLASHNEXT_EXPERT_POOL_GB=6` in `settings/launch.py`;
+`FLASHNEXT_EXPERT_POOL_GB=0` rolls back). The loaded-machine pair, a long
+answer and launch-time pool sizing remain open.

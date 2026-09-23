@@ -52,6 +52,11 @@ CHAT_ENV = {
     # 8.0% band, identical digest e19af44d5268e9d1.
     "FLASHNEXT_ONE_SYNC": "1",
     "FLASHNEXT_COMPILE_GDN": "1",
+    # Application-owned 6 GB expert pool, promoted on 2026-09-23 at the
+    # user's request: +11.3% inside a 1.9% band over three fresh-process pairs
+    # at 128 tokens, identical digest e19af44d5268e9d1, on a quiet machine.
+    # It replaces the static slab pack and the expert pins. Set 0 to roll back.
+    "FLASHNEXT_EXPERT_POOL_GB": "6",
 }
 
 

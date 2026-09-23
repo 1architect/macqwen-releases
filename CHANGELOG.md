@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Make a 6 GB application-owned expert pool the Flash-Next chat default
+  (`FLASHNEXT_EXPERT_POOL_GB=6`; `0` rolls back). The Metal kernels read
+  pooled expert records in place, so hits cost no read and no copy; it
+  replaces the static slab pack and the expert pins. Three fresh-process
+  pairs at 128 tokens: 3.79–3.93 tok/s against 3.42–3.47 tok/s, +11.3%
+  inside a 1.9% band, identical digest; 4.09 tok/s over tokens 65–128.
+  It needs about 6 GB of free memory.
+- Default to one host sync per decode layer, compiled GatedDeltaNet q/k
+  normalization and gated norm, and decode n-gram rows on the read pool
+  (exact; +6.6% inside an 8.0% band).
+- Add an offline read replay of recorded routes (`bench_read_replay`), a
+  P15 decode split, a host-line sampler, route predictability and exactness
+  probes, and an opt-in small-row sidecar (`FLASHNEXT_SMALL_SIDECAR`).
+
+### Fixed
+
+- Keep-warm now also covers stream-pack read waits.
+- `/save` and `/load` run on the generation thread; after an interrupted
+  answer `/save` failed with "There is no Stream(gpu, N) in current thread".
+- Parallel n-gram reads no longer crash when I/O profiling is on.
+- Slab record offsets in the Metal kernels are 64-bit.
+
 ## MACQWEN 0.5.0 - 2026-09-23
 
 ### Added

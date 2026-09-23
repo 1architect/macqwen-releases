@@ -29,22 +29,26 @@ needs. `exact-quality` is the normal routing profile; the other profiles
 controls — see the [Flash-Next brief](docs/flashnext/brief.md).
 
 Current chat defaults live in `models/flashnext/settings/launch.py`:
-Metal runtime, 60-slot skew slab pack on a frozen per-checkpoint profile,
-GPU keep-warm on, 8 resident experts on this checkpoint (32 elsewhere),
-and the exact opt-in bundle (streamed embedding, compiled glue/norm,
-cached norm gain, interactive QoS, parallel n-gram prefill, both QSA
-flags, stream-pack chunk 2). Any member rolls back with an explicit
-value, for example:
+Metal runtime, a 6 GB application-owned expert pool read in place by the
+Metal kernels (it replaces the static slab pack and the expert pins),
+GPU keep-warm on, one host sync per decode layer, compiled GatedDeltaNet
+glue, and the exact opt-in bundle (streamed embedding, compiled
+glue/norm, cached norm gain, interactive QoS, parallel n-gram reads, both
+QSA flags, stream-pack chunk 2). Every default keeps the exact token
+digest. The pool needs about 6 GB of free memory; on a busier Mac, roll
+it back with an explicit value, for example:
 
 ```bash
-FLASHNEXT_GPU_KEEPWARM=0 ./chat.sh --model flashnext --checkpoint vontra-mtp
+FLASHNEXT_EXPERT_POOL_GB=0 ./chat.sh --model flashnext --checkpoint vontra-mtp
 ```
 
 ## Reference performance (Flash-Next, installed checkpoint)
 
 | Operation | Result |
 |---|---|
-| Current defaults, 128 tokens, 8 pins, slab on | 3.05–3.09 tok/s; bundle +2.4% mean over pre-bundle, 3/3 pairs, two-SE 1.0%, digest `e19af44d5268e9d1` |
+| Current defaults (6 GB expert pool), 128 tokens | 3.79–3.93 tok/s; 4.09 tok/s over tokens 65–128; +11.3% over the pool-off defaults, 3/3 pairs, two-SE 1.9%, digest `e19af44d5268e9d1` |
+| Pool-off defaults (slab and 8 pins), 128 tokens, same session | 3.42–3.47 tok/s, 294–310 MB/token |
+| Pool-off defaults before the host/GPU-glue stack, 128 tokens | 3.05–3.09 tok/s (earlier session); stack +6.6% inside 8.0% |
 | 128-token paired arms, 8 pins, keep-warm off / on | 2.33–2.41 / 2.86–2.93 tok/s |
 | `bench_production`, 96 tokens, keep-warm off / on | 2.19 / 2.55 tok/s |
 | Chat, 8 pins (policy), 72 tokens | about 2.14 tok/s, about 350 MB/token |
@@ -53,19 +57,22 @@ FLASHNEXT_GPU_KEEPWARM=0 ./chat.sh --model flashnext --checkpoint vontra-mtp
 | Historical REAP-288 (not installed), terminal sanity, 32 tokens | 3.74 tok/s median, 3.45 tok/s tail, 193.3 MB/token |
 | Long-prompt prefill near 5,000 tokens (historical oQ4) | About 40–50 tok/s; 62.19 tok/s in a synthetic diagnostic (not production) |
 
-Measured on an M4 Mac with 16 GB unified memory and a 256 GB SSD; the
-first rows are the installed checkpoint and the oQ4/REAP rows cannot be
-reproduced here. Short 32-token arms sit inside a ~40-token warm-up
-window and read higher than longer answers. Evidence:
-[results/flashnext/](results/flashnext/) (latest:
-`20260923-035157-bundle-slab/`, `20260923-034046-extras-split/`),
-[Flash-Next handoff](docs/flashnext/handoff.md). Goal: 3 tok/s decode
-(333 ms/token) without quantizing or pruning.
+Measured on an M4 Mac with 16 GB unified memory and a 256 GB SSD, on a
+quiet machine (no other heavy applications); free memory moves the rate
+more than most code changes, because the expert stream reads less when
+more RAM holds experts. The oQ4/REAP rows cannot be reproduced here.
+Short 32-token arms sit inside a ~40-token warm-up window and read higher
+than longer answers. Evidence: [results/flashnext/](results/flashnext/)
+(latest: `20260923-153742-expert-pool/`, `20260923-133612-read-replay-native/`),
+[Flash-Next handoff](docs/flashnext/handoff.md). The earlier goal of
+3 tok/s decode without quantizing or pruning is met; the current target is
+4 tok/s (250 ms/token).
 
 ## Quick start
 
-Requirements: Apple Silicon Mac, Python 3.12, a fast SSD, and ~120 GB
-free for the checkpoint plus page-cache headroom.
+Requirements: Apple Silicon Mac, Python 3.12, a fast SSD, ~120 GB free
+for the checkpoint, and about 10 GB of free memory for the default
+Flash-Next chat (about 3.4 GB model core plus the 6 GB expert pool).
 
 ```bash
 git clone https://github.com/1architect/macqwen-releases.git
