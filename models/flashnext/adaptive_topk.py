@@ -83,16 +83,20 @@ def _moe_call(self, x: mx.array) -> mx.array:
             _SWAP_RESIDENT[0] is not None
             and scores.size // k <= _SWAP_MAX_ROWS[0]
         )
+        # One sync per decode layer: bring `inds` over with `scores` and build
+        # the routed list here, so the expert block skips its own `eval(flat)`.
+        one_sync = _ONE_SYNC[0] and scores.size // k <= _ONE_SYNC_MAX_ROWS
+        routed_host = None
         if score_profile_enabled:
             score_handle = _expert_cache.score_sync_begin(True)
             try:
-                if swap_active:
+                if swap_active or one_sync:
                     mx.eval(scores, inds)
                 else:
                     mx.eval(scores)
             finally:
                 _expert_cache.score_sync_end(score_handle)
-        elif swap_active:
+        elif swap_active or one_sync:
             mx.eval(scores, inds)
         else:
             mx.eval(scores)
@@ -183,6 +187,24 @@ def _moe_call(self, x: mx.array) -> mx.array:
             effective_keeps = keeps
             width = max(keeps)
 
+        if one_sync:
+            # Same values the device `where` below gives `flat`: kept slots
+            # keep their expert, dropped slots repeat the row's first expert.
+            if expert_rows is None:
+                expert_rows = inds.reshape(-1, k).tolist()
+            if masks is None:
+                routed_host = [
+                    row[position] if position < keep else row[0]
+                    for row, keep in zip(expert_rows, keeps)
+                    for position in range(width)
+                ]
+            else:
+                routed_host = [
+                    row[position] if mask[position] else row[0]
+                    for row, mask in zip(expert_rows, masks)
+                    for position in range(width)
+                ]
+
         if layer_id is not None:
             _LAST_KEEPS[layer_id] = tuple(effective_keeps)
             _KEEP_SUM[0] += sum(effective_keeps)
@@ -203,6 +225,11 @@ def _moe_call(self, x: mx.array) -> mx.array:
             ).reshape(scores.shape)
             inds = mx.where(active, inds, inds[..., :1])
             scores = mx.where(active, scores, 0)
+        if routed_host is not None:
+            # Bound to the exact `inds` object the expert block receives, so a
+            # stale hand-off can never be used. A list assigned normally would
+            # land in the module's parameter dict, where None cannot clear it.
+            object.__setattr__(self.switch_mlp, "_routed_host", (routed_host, inds))
         if profile:
             _TIMERS["topk_python"] += time.perf_counter() - python_began
     elif layer_id is not None:
@@ -295,6 +322,14 @@ FAST_LAYERS = (24, 12, 10, 21, 7, 18, 33, 22, 15, 5, 26, 16)
 # Submit the shared expert's graph as soon as it is built. A list so a
 # benchmark can flip it on a live backend.
 _OVERLAP = [os.environ.get("FLASHNEXT_OVERLAP", "1") == "1"]
+# One host sync per decode layer instead of two (research, off). Rejected on
+# 2026-09-02 at -11.4%, measured while the GPU clock collapsed; retested at P15.
+_ONE_SYNC = [os.environ.get("FLASHNEXT_ONE_SYNC", "0") == "1"]
+_ONE_SYNC_MAX_ROWS = 8
+
+
+def set_one_sync(enabled: bool) -> None:
+    _ONE_SYNC[0] = bool(enabled)
 
 
 def set_overlap(enabled: bool) -> None:

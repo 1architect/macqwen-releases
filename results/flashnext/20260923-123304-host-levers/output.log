@@ -1,0 +1,55 @@
+=== arm 1: defaults
+== defaults: free 80 MB
+  defaults     tok   64  2.60 tok/s   437.8 MB/tok  gpu state 14.97  pcpu state 18.83
+  defaults     tok  128  2.50 tok/s   470.9 MB/tok  gpu state 14.98  pcpu state 18.85
+  defaults: gen 2.53 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-123304-host-levers/arm-1-defaults.json
+=== arm 2: onesync
+== defaults: free 83 MB
+  defaults     tok   64  2.75 tok/s   420.1 MB/tok  gpu state 14.98  pcpu state 18.87
+  defaults     tok  128  2.59 tok/s   467.8 MB/tok  gpu state 14.98  pcpu state 18.87
+  defaults: gen 2.648 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-123304-host-levers/arm-2-onesync.json
+=== arm 3: ngram16
+== defaults: free 81 MB
+  defaults     tok   64  2.78 tok/s   409.9 MB/tok  gpu state 14.99  pcpu state 18.86
+  defaults     tok  128  2.66 tok/s   443.6 MB/tok  gpu state 14.99  pcpu state 18.86
+  defaults: gen 2.694 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-123304-host-levers/arm-3-ngram16.json
+=== arm 4: ngram16
+== defaults: free 76 MB
+  defaults     tok   64  2.82 tok/s   400.1 MB/tok  gpu state 14.97  pcpu state 18.87
+  defaults     tok  128  2.62 tok/s   452.3 MB/tok  gpu state 14.99  pcpu state 18.88
+  defaults: gen 2.692 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-123304-host-levers/arm-4-ngram16.json
+=== arm 5: onesync
+== defaults: free 88 MB
+  defaults     tok   64  2.59 tok/s   427.6 MB/tok  gpu state 14.98  pcpu state 18.85
+  defaults     tok  128  2.52 tok/s   467.8 MB/tok  gpu state 14.98  pcpu state 18.82
+  defaults: gen 2.534 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-123304-host-levers/arm-5-onesync.json
+=== arm 6: defaults
+== defaults: free 80 MB
+  defaults     tok   64  2.59 tok/s   426.7 MB/tok  gpu state 14.98  pcpu state 18.81
+  defaults     tok  128  2.53 tok/s   466.0 MB/tok  gpu state 14.98  pcpu state 18.81
+  defaults: gen 2.538 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-123304-host-levers/arm-6-defaults.json
+=== arm 7: defaults
+== defaults: free 83 MB
+  defaults     tok   64  2.71 tok/s   391.9 MB/tok  gpu state 14.95  pcpu state 18.84
+  defaults     tok  128  2.78 tok/s   417.2 MB/tok  gpu state 14.98  pcpu state 18.87
+  defaults: gen 2.722 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-123304-host-levers/arm-7-defaults.json
+=== arm 8: onesync
+== defaults: free 76 MB
+  defaults     tok   64  2.98 tok/s   367.3 MB/tok  gpu state 14.96  pcpu state 18.90
+  defaults     tok  128  2.84 tok/s   417.5 MB/tok  gpu state 14.98  pcpu state 18.87
+  defaults: gen 2.883 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-123304-host-levers/arm-8-onesync.json
+=== arm 9: ngram16
+== defaults: free 77 MB
+  defaults     tok   64  2.71 tok/s   409.4 MB/tok  gpu state 14.98  pcpu state 18.85
+  defaults     tok  128  2.53 tok/s   461.0 MB/tok  gpu state 14.90  pcpu state 18.93
+  defaults: gen 2.595 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-123304-host-levers/arm-9-ngram16.json
+=== done

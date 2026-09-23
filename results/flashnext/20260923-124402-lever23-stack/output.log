@@ -1,0 +1,37 @@
+=== arm 1: defaults
+== defaults: free 85 MB
+  defaults     tok   64  2.50 tok/s   412.6 MB/tok  gpu state 14.38  pcpu state 18.95
+  defaults     tok  128  2.68 tok/s   409.0 MB/tok  gpu state 14.98  pcpu state 18.91
+  defaults: gen 2.566 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-124402-lever23-stack/arm-1-defaults.json
+=== arm 2: stack
+== defaults: free 79 MB
+  defaults     tok   64  3.13 tok/s   332.4 MB/tok  gpu state 14.98  pcpu state 18.92
+  defaults     tok  128  2.81 tok/s   399.1 MB/tok  gpu state 14.99  pcpu state 18.89
+  defaults: gen 2.936 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-124402-lever23-stack/arm-2-stack.json
+=== arm 3: stack
+== defaults: free 91 MB
+  defaults     tok   64  3.14 tok/s   341.3 MB/tok  gpu state 14.98  pcpu state 18.84
+  defaults     tok  128  2.95 tok/s   389.6 MB/tok  gpu state 14.99  pcpu state 18.84
+  defaults: gen 3.015 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-124402-lever23-stack/arm-3-stack.json
+=== arm 4: defaults
+== defaults: free 78 MB
+  defaults     tok   64  3.06 tok/s   331.2 MB/tok  gpu state 14.98  pcpu state 18.85
+  defaults     tok  128  2.95 tok/s   367.4 MB/tok  gpu state 14.98  pcpu state 18.84
+  defaults: gen 2.98 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-124402-lever23-stack/arm-4-defaults.json
+=== arm 5: defaults
+== defaults: free 89 MB
+  defaults     tok   64  3.12 tok/s   327.9 MB/tok  gpu state 14.96  pcpu state 18.87
+  defaults     tok  128  2.92 tok/s   370.7 MB/tok  gpu state 14.98  pcpu state 18.85
+  defaults: gen 2.992 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-124402-lever23-stack/arm-5-defaults.json
+=== arm 6: stack
+== defaults: free 52 MB
+  defaults     tok   64  3.24 tok/s   328.8 MB/tok  gpu state 14.97  pcpu state 18.85
+  defaults     tok  128  3.06 tok/s   367.1 MB/tok  gpu state 14.99  pcpu state 18.82
+  defaults: gen 3.118 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-124402-lever23-stack/arm-6-stack.json
+=== done

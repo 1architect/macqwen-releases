@@ -5349,3 +5349,65 @@ resolve an effect of about 1.3% of a token. Scaled to 48 layers the saving is
 about 18 ms/token (about 5%), which would also need the other 36 layers on the
 record read path and 15.1 GB of disk. The sidecar stays off; the 12-layer
 files remain in `~/.cache/flashnext/small-sidecar-9b74bb32b36fc9ab/`.
+
+## Host and GPU-glue levers for 4 tok/s, 2026-09-23
+
+### Where the main thread is
+
+`bench_host_sample` (new) samples the main thread's Python line every
+0.5 ms during a 96-token decode with the normal-chat backend (381 ms/token,
+digest `a99aba9af10336eb`). Evidence: `results/flashnext/20260923-122756-host-sample/`.
+
+| Site | ms/token |
+|---|---:|
+| keep-warm latch waiting for expert reads | 220.2 |
+| `mx.eval(scores)` in the MoE call (GPU dense work) | 108.8 |
+| keep-warm spin submission | 16.4 |
+| `mx.eval(flat)` in the expert block (second sync per layer) | 13.8 |
+| n-gram rows read serially on the main thread | 6.2 |
+| final token sync | 5.9 |
+| all Python graph construction together | under 5 |
+
+Host Python is not a lever. `bench_layer_split` at P15
+(`results/flashnext/20260923-122920-layer-split-p15/`) puts about 86 ms/token
+in the non-MoE layer work and leaves about 1.08 ms per GatedDeltaNet layer
+(38.9 ms/token) outside its timed components.
+
+### Three exact changes (all off)
+
+- `FLASHNEXT_ONE_SYNC=1`: for decode rows, the MoE call evaluates `scores`
+  and `inds` together and hands the expert block the routed list it would get
+  from `eval(flat)`, bound to the same `inds` object. A unit test checks the
+  list against the device route. The 2026-09-02 rejection (-11.4%) ran with
+  the GPU clock collapsed.
+- `FLASHNEXT_NGRAM_PARALLEL_MIN=16`: a decode token's 16 n-gram rows go to
+  the read pool (the existing parallel path, exact by unit test).
+- `FLASHNEXT_COMPILE_GDN=1` (new, `compile_gdn.py`): compiles the Qwen4 q/k
+  L2 normalization and the gated output norm's elementwise tail for one-row
+  decode calls. `bench_gdn_exact` compared 144 captured real calls of each
+  chain (36 layers, 4 tokens): 0 mismatches, and 32-token digests with the
+  flag off and on matched (`6f1ec5a039fca178`). Evidence:
+  `results/flashnext/20260923-124251-gdn-exact/`.
+
+Separately, one-sync and n-gram (`results/flashnext/20260923-123304-host-levers/`, 9 fresh arms, order D S N N S D D S
+N, all digests `e19af44d5268e9d1`) gave +3.5% and +2.6% mean rate, inside
+the noise; physical reads varied 417 to 471 MB/token between arms. Removing
+0.55 ms/MB from each arm leaves 137.3 ms for defaults (136.3 to 137.9),
+125.0 for one-sync and 127.2 for n-gram. That adjustment is an assumption, so
+these are directional.
+
+### Stacked
+
+`results/flashnext/20260923-124402-lever23-stack/`: defaults against all three, fresh process per arm, 128 greedy tokens,
+order D C C D D C. All arms kept digest `e19af44d5268e9d1` and P15.
+
+| Pair | Defaults | Stack | Change | Byte-adjusted saving |
+|---:|---:|---:|---:|---:|
+| 1 | 2.566 | 2.936 | +14.4% | 24.3 ms |
+| 2 | 2.980 | 3.015 | +1.2% | 12.8 ms |
+| 3 | 2.992 | 3.118 | +4.2% | 12.8 ms |
+
+The stack won 3 of 3 pairs, mean +6.6% inside a two-SE band of 8.0%, so the
+rate gain is unresolved. Pair 1's defaults arm was the cold first arm. On the
+byte-adjusted residual the stack removes about 13 ms/token in pairs 2 and 3.
+The three switches stay off.

@@ -1,0 +1,156 @@
+{
+ "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+ "resident_experts": 8,
+ "tokens": 128,
+ "window": 64,
+ "conditions": [
+  "defaults"
+ ],
+ "arms": [
+  {
+   "condition": "defaults",
+   "free_mb_before": 89.46875,
+   "therm_before": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_before": [
+    3.0205078125,
+    3.158203125,
+    3.07275390625
+   ],
+   "gen_rate": 2.992,
+   "tail_rate": 3.006,
+   "tokens": 128,
+   "digest": "e19af44d5268e9d1",
+   "windows": [
+    {
+     "end_token": 64,
+     "tok_s": 3.116,
+     "mb_per_token": 327.9,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.985,
+       "mean_active_state": 14.963
+      },
+      "ECPU": {
+       "active_share": 0.9956,
+       "mean_active_state": 3.351
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.306
+      },
+      "PCPU": {
+       "active_share": 0.6069,
+       "mean_active_state": 18.873
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.121
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 128,
+     "tok_s": 2.925,
+     "mb_per_token": 370.7,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.9868,
+       "mean_active_state": 14.984
+      },
+      "ECPU": {
+       "active_share": 0.5892,
+       "mean_active_state": 3.513
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 3.483
+      },
+      "PCPU": {
+       "active_share": 0.5958,
+       "mean_active_state": 18.849
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.124
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    }
+   ],
+   "therm_after": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_after": [
+    3.3271484375,
+    3.2080078125,
+    3.09619140625
+   ],
+   "vm": {
+    "reactivated": 183353,
+    "decompress": 703382,
+    "compress": 638802,
+    "pagein": 2024312,
+    "pageout": 303,
+    "swapin": 95,
+    "swapout": 0
+   },
+   "pinned_bytes": 1236418560,
+   "expert_lock": {
+    "budget_bytes": 0,
+    "locked_bytes": 0,
+    "locked_rows": 0,
+    "failed": false
+   }
+  }
+ ],
+ "status": "completed",
+ "environment": {
+  "FLASHNEXT_COMPILE_HC": "1",
+  "FLASHNEXT_COMPILE_NORM": "1",
+  "FLASHNEXT_FUSED_SHARED": "1",
+  "FLASHNEXT_FUSED_SHARED_PARTS": "0",
+  "FLASHNEXT_FUSED_UP_SWIGLU": "1",
+  "FLASHNEXT_GPU_KEEPWARM": "1",
+  "FLASHNEXT_IO_QOS": "user-interactive",
+  "FLASHNEXT_IO_WORKERS": "8",
+  "FLASHNEXT_METAL_G64": "1",
+  "FLASHNEXT_METAL_RUNTIME": "1",
+  "FLASHNEXT_NGRAM_PARALLEL_MIN": "64",
+  "FLASHNEXT_NORM_WEIGHT_CACHE": "1",
+  "FLASHNEXT_ONE_SYNC": "0",
+  "FLASHNEXT_OVERLAP": "0",
+  "FLASHNEXT_PIN_CACHE": "/var/folders/58/86027c3j0tvc1gkm43k28c180000gn/T/flashnext-long-states-wb2i3iau/pins.json",
+  "FLASHNEXT_PREAD_CHUNK": "2",
+  "FLASHNEXT_PROFILE_IO": "0",
+  "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "1",
+  "FLASHNEXT_QSA_SCATTER_DECODE": "1",
+  "FLASHNEXT_RDAHEAD": "0",
+  "FLASHNEXT_READ": "pread",
+  "FLASHNEXT_SLAB_G64": "0",
+  "FLASHNEXT_SLAB_GLOBAL": "60",
+  "FLASHNEXT_SLAB_MAX_SLOTS": "6",
+  "FLASHNEXT_SLAB_MIN_SLOTS": "4",
+  "FLASHNEXT_SLAB_NUM_LAYERS": "12",
+  "FLASHNEXT_SLAB_PACK": "1",
+  "FLASHNEXT_SLAB_PACK_REQUIRE_EXISTING": "0",
+  "FLASHNEXT_SLAB_POLICY": "skew",
+  "FLASHNEXT_SLAB_PROFILE": "frozen",
+  "FLASHNEXT_STREAM_EMBED": "1",
+  "FLASHNEXT_STREAM_PACK": "1",
+  "FLASHNEXT_STREAM_PACK_CHUNK": "2",
+  "FLASHNEXT_TOPK_THRESHOLD": "0.85"
+ }
+}

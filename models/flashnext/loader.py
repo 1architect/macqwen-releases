@@ -31,6 +31,7 @@ from .patch_rmsnorm import apply as apply_rmsnorm_fix
 from .patch_rmsnorm import configure as configure_rmsnorm
 from .qsa_chunk import apply as apply_qsa_chunk
 from .compile_glue import apply as apply_compile_glue
+from .compile_gdn import apply as apply_compile_gdn
 from .ngram import (
     StreamingQuantizedEmbedding,
     StreamingShardedEmbedding,
@@ -122,6 +123,7 @@ def load_streaming(
     apply_adaptive_topk()
     apply_qsa_chunk()
     apply_compile_glue()
+    apply_compile_gdn()
     from . import compiled
 
     if compiled.ENABLED:

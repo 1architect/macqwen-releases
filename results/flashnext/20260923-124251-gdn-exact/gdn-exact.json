@@ -1,0 +1,21 @@
+{
+ "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+ "capture_tokens": 4,
+ "chains": {
+  "qk": {
+   "calls": 144,
+   "mismatched": 0,
+   "max_abs_difference": 0.0
+  },
+  "norm": {
+   "calls": 144,
+   "mismatched": 0,
+   "max_abs_difference": 0.0
+  }
+ },
+ "digests": {
+  "off": "6f1ec5a039fca178",
+  "on": "6f1ec5a039fca178"
+ },
+ "exact": true
+}

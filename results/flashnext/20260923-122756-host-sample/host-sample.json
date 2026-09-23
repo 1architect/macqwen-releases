@@ -1,0 +1,461 @@
+{
+ "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+ "tokens": 96,
+ "ms_per_token": 380.83,
+ "samples": 54315,
+ "digest": "a99aba9af10336eb",
+ "leaf": [
+  {
+   "site": "models/flashnext/expert_cache.py:740 _keep_gpu_warm_until",
+   "share": 0.5783,
+   "ms_per_token": 220.22
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:98 _moe_call",
+   "share": 0.2856,
+   "ms_per_token": 108.78
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:679 _keepwarm_spin",
+   "share": 0.0431,
+   "ms_per_token": 16.41
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:1588 __call__",
+   "share": 0.0361,
+   "ms_per_token": 13.75
+  },
+  {
+   "site": "models/flashnext/store.py:77 _profiled_pread",
+   "share": 0.0162,
+   "ms_per_token": 6.16
+  },
+  {
+   "site": "macqwen/backends/flashnext.py:708 standard_tokens",
+   "share": 0.0154,
+   "ms_per_token": 5.86
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:109 _moe_call",
+   "share": 0.0089,
+   "ms_per_token": 3.41
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:127 _moe_call",
+   "share": 0.0031,
+   "ms_per_token": 1.18
+  },
+  {
+   "site": "models/flashnext/store.py:330 pin_rows",
+   "share": 0.0029,
+   "ms_per_token": 1.09
+  },
+  {
+   "site": "models/flashnext/ngram.py:164 _direct_rows",
+   "share": 0.0016,
+   "ms_per_token": 0.6
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:131 _moe_call",
+   "share": 0.0006,
+   "ms_per_token": 0.22
+  },
+  {
+   "site": "mlx_vlm/models/qwen3_5/language.py:1096 _causal_conv1d_decode",
+   "share": 0.0005,
+   "ms_per_token": 0.2
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:61 _moe_call",
+   "share": 0.0005,
+   "ms_per_token": 0.19
+  },
+  {
+   "site": "models/flashnext/patch_rmsnorm.py:116 _rms_norm",
+   "share": 0.0004,
+   "ms_per_token": 0.17
+  },
+  {
+   "site": "mlx_vlm/models/qwen4_exp/language.py:444 __call__",
+   "share": 0.0004,
+   "ms_per_token": 0.17
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:63 _moe_call",
+   "share": 0.0004,
+   "ms_per_token": 0.16
+  },
+  {
+   "site": "models/flashnext/ngram.py:64 __call__",
+   "share": 0.0004,
+   "ms_per_token": 0.14
+  },
+  {
+   "site": "mlx_vlm/models/qwen3_5/gated_delta.py:196 gated_delta_kernel",
+   "share": 0.0003,
+   "ms_per_token": 0.12
+  },
+  {
+   "site": "models/flashnext/metal_runtime.py:595 _kernel",
+   "share": 0.0003,
+   "ms_per_token": 0.1
+  },
+  {
+   "site": "mlx_vlm/models/base.py:305 scaled_dot_product_attention",
+   "share": 0.0002,
+   "ms_per_token": 0.09
+  },
+  {
+   "site": "models/flashnext/metal_runtime.py:347 <lambda>",
+   "share": 0.0002,
+   "ms_per_token": 0.09
+  },
+  {
+   "site": "mlx_vlm/models/qwen4_exp/language.py:270 _normalize_qk",
+   "share": 0.0002,
+   "ms_per_token": 0.08
+  },
+  {
+   "site": "mlx_vlm/models/qwen4_exp/language.py:448 __call__",
+   "share": 0.0002,
+   "ms_per_token": 0.08
+  },
+  {
+   "site": "models/flashnext/compile_glue.py:55 _decoder_call",
+   "share": 0.0002,
+   "ms_per_token": 0.07
+  },
+  {
+   "site": "mlx_vlm/models/rope_utils.py:1269 apply_rotary",
+   "share": 0.0002,
+   "ms_per_token": 0.06
+  },
+  {
+   "site": "mlx_vlm/models/qwen4_exp/language.py:451 __call__",
+   "share": 0.0001,
+   "ms_per_token": 0.06
+  },
+  {
+   "site": "models/flashnext/metal_runtime.py:611 _launch",
+   "share": 0.0001,
+   "ms_per_token": 0.06
+  },
+  {
+   "site": "models/flashnext/patch_rmsnorm.py:102 _rms_norm",
+   "share": 0.0001,
+   "ms_per_token": 0.05
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:67 _moe_call",
+   "share": 0.0001,
+   "ms_per_token": 0.05
+  },
+  {
+   "site": "mlx_vlm/models/qwen3_5/gated_delta.py:400 gated_delta_update",
+   "share": 0.0001,
+   "ms_per_token": 0.05
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:76 _moe_call",
+   "share": 0.0001,
+   "ms_per_token": 0.04
+  },
+  {
+   "site": "models/flashnext/compile_glue.py:52 _decoder_call",
+   "share": 0.0001,
+   "ms_per_token": 0.04
+  },
+  {
+   "site": "models/flashnext/compiled.py:213 installed",
+   "share": 0.0001,
+   "ms_per_token": 0.04
+  },
+  {
+   "site": "mlx_vlm/models/qwen3_5/gated_delta.py:394 gated_delta_update",
+   "share": 0.0001,
+   "ms_per_token": 0.04
+  },
+  {
+   "site": "mlx_vlm/models/qwen3_5/language.py:1101 _causal_conv1d_decode",
+   "share": 0.0001,
+   "ms_per_token": 0.03
+  },
+  {
+   "site": "mlx_vlm/models/qwen4_exp/language.py:446 __call__",
+   "share": 0.0001,
+   "ms_per_token": 0.03
+  },
+  {
+   "site": "mlx_vlm/models/qwen3_5/language.py:1120 __call__",
+   "share": 0.0001,
+   "ms_per_token": 0.03
+  },
+  {
+   "site": "mlx_vlm/models/qwen3_5/language.py:1196 __call__",
+   "share": 0.0001,
+   "ms_per_token": 0.03
+  },
+  {
+   "site": "models/flashnext/patch_rmsnorm.py:103 _rms_norm",
+   "share": 0.0001,
+   "ms_per_token": 0.03
+  },
+  {
+   "site": "mlx_vlm/models/qwen4_exp/language.py:271 _normalize_qk",
+   "share": 0.0001,
+   "ms_per_token": 0.03
+  },
+  {
+   "site": "models/flashnext/qsa_chunk.py:84 _prepare_indexer",
+   "share": 0.0001,
+   "ms_per_token": 0.03
+  },
+  {
+   "site": "mlx_vlm/models/qwen3_5/language.py:1151 __call__",
+   "share": 0.0001,
+   "ms_per_token": 0.03
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:190 _submit_read",
+   "share": 0.0001,
+   "ms_per_token": 0.03
+  },
+  {
+   "site": "models/flashnext/compile_glue.py:53 _decoder_call",
+   "share": 0.0001,
+   "ms_per_token": 0.03
+  },
+  {
+   "site": "mlx_vlm/models/qwen4_exp/language.py:445 __call__",
+   "share": 0.0001,
+   "ms_per_token": 0.03
+  }
+ ],
+ "inclusive": [
+  {
+   "site": "macqwen/backends/flashnext.py:717 generate",
+   "share": 0.997,
+   "ms_per_token": 379.68
+  },
+  {
+   "site": "mlx_vlm/models/qwen3_5/language.py:2072 __call__",
+   "share": 0.9816,
+   "ms_per_token": 373.82
+  },
+  {
+   "site": "macqwen/backends/flashnext.py:706 standard_tokens",
+   "share": 0.9816,
+   "ms_per_token": 373.82
+  },
+  {
+   "site": "mlx_vlm/models/qwen4_exp/language.py:819 __call__",
+   "share": 0.9799,
+   "ms_per_token": 373.17
+  },
+  {
+   "site": "models/flashnext/compile_glue.py:54 _decoder_call",
+   "share": 0.9583,
+   "ms_per_token": 364.94
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:262 _moe_call",
+   "share": 0.6369,
+   "ms_per_token": 242.55
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:740 _keep_gpu_warm_until",
+   "share": 0.5783,
+   "ms_per_token": 220.22
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:1606 __call__",
+   "share": 0.4898,
+   "ms_per_token": 186.55
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:1688 _one_pass",
+   "share": 0.4891,
+   "ms_per_token": 186.25
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:746 _await_projection_tasks",
+   "share": 0.489,
+   "ms_per_token": 186.22
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:1568 _read_weights",
+   "share": 0.489,
+   "ms_per_token": 186.22
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:726 _keep_gpu_warm_until_done",
+   "share": 0.489,
+   "ms_per_token": 186.22
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:98 _moe_call",
+   "share": 0.2856,
+   "ms_per_token": 108.78
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:1603 __call__",
+   "share": 0.1327,
+   "ms_per_token": 50.53
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:523 wait",
+   "share": 0.1325,
+   "ms_per_token": 50.45
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:1629 _packed_pass",
+   "share": 0.1325,
+   "ms_per_token": 50.45
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:679 _keepwarm_spin",
+   "share": 0.0431,
+   "ms_per_token": 16.41
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:739 _keep_gpu_warm_until",
+   "share": 0.0431,
+   "ms_per_token": 16.41
+  },
+  {
+   "site": "models/flashnext/expert_cache.py:1588 __call__",
+   "share": 0.0361,
+   "ms_per_token": 13.75
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:248 _moe_call",
+   "share": 0.0217,
+   "ms_per_token": 8.28
+  },
+  {
+   "site": "models/flashnext/ngram.py:136 _direct",
+   "share": 0.0164,
+   "ms_per_token": 6.25
+  },
+  {
+   "site": "mlx_vlm/models/qwen4_exp/language.py:704 __call__",
+   "share": 0.0164,
+   "ms_per_token": 6.25
+  },
+  {
+   "site": "mlx_vlm/models/qwen4_exp/language.py:641 __call__",
+   "share": 0.0164,
+   "ms_per_token": 6.25
+  },
+  {
+   "site": "models/flashnext/ngram.py:187 __call__",
+   "share": 0.0164,
+   "ms_per_token": 6.25
+  },
+  {
+   "site": "models/flashnext/compile_glue.py:46 _decoder_call",
+   "share": 0.0164,
+   "ms_per_token": 6.25
+  },
+  {
+   "site": "models/flashnext/store.py:598 rows",
+   "share": 0.0162,
+   "ms_per_token": 6.16
+  },
+  {
+   "site": "models/flashnext/store.py:436 _pread_into",
+   "share": 0.0162,
+   "ms_per_token": 6.16
+  },
+  {
+   "site": "models/flashnext/store.py:310 rows_np",
+   "share": 0.0162,
+   "ms_per_token": 6.16
+  },
+  {
+   "site": "models/flashnext/store.py:77 _profiled_pread",
+   "share": 0.0162,
+   "ms_per_token": 6.16
+  },
+  {
+   "site": "macqwen/backends/flashnext.py:708 standard_tokens",
+   "share": 0.0154,
+   "ms_per_token": 5.86
+  },
+  {
+   "site": "models/flashnext/ngram.py:174 _direct_rows",
+   "share": 0.0148,
+   "ms_per_token": 5.64
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:109 _moe_call",
+   "share": 0.0089,
+   "ms_per_token": 3.41
+  },
+  {
+   "site": "models/flashnext/ngram.py:52 _rows",
+   "share": 0.0061,
+   "ms_per_token": 2.34
+  },
+  {
+   "site": "models/flashnext/ngram.py:50 _rows",
+   "share": 0.0054,
+   "ms_per_token": 2.07
+  },
+  {
+   "site": "models/flashnext/ngram.py:51 _rows",
+   "share": 0.0046,
+   "ms_per_token": 1.75
+  },
+  {
+   "site": "models/flashnext/adaptive_topk.py:127 _moe_call",
+   "share": 0.0031,
+   "ms_per_token": 1.18
+  },
+  {
+   "site": "macqwen/backends/flashnext.py:721 generate",
+   "share": 0.003,
+   "ms_per_token": 1.15
+  },
+  {
+   "site": "models/flashnext/routing.py:588 after_token",
+   "share": 0.0029,
+   "ms_per_token": 1.11
+  },
+  {
+   "site": "models/flashnext/routing.py:836 _pin_candidates",
+   "share": 0.0029,
+   "ms_per_token": 1.11
+  },
+  {
+   "site": "models/flashnext/store.py:330 pin_rows",
+   "share": 0.0029,
+   "ms_per_token": 1.09
+  },
+  {
+   "site": "models/flashnext/compile_glue.py:49 _decoder_call",
+   "share": 0.0021,
+   "ms_per_token": 0.81
+  },
+  {
+   "site": "mlx_vlm/models/qwen4_exp/language.py:805 __call__",
+   "share": 0.0017,
+   "ms_per_token": 0.65
+  },
+  {
+   "site": "models/flashnext/ngram.py:164 _direct_rows",
+   "share": 0.0016,
+   "ms_per_token": 0.6
+  },
+  {
+   "site": "models/flashnext/ngram.py:68 __call__",
+   "share": 0.0013,
+   "ms_per_token": 0.51
+  },
+  {
+   "site": "models/flashnext/compile_glue.py:53 _decoder_call",
+   "share": 0.0012,
+   "ms_per_token": 0.45
+  }
+ ]
+}

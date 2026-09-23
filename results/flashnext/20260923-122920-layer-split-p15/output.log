@@ -1,0 +1,44 @@
+env: chat defaults; bench_layer_split --arms 3
+model        /Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP
+free memory  95 MB
+components   LAYER_attnx12, LAYER_linearx36, attn_hyper_connectionx48, linear_attnx36, mlp_hyper_connectionx48, moe_blockx48, plex1, router_gatex48, self_attnx12, shared_expertx48
+sync floor   0.152 ms per eval round trip
+timing       32 reps under one eval, median of 3 arms
+
+  component                  serial    indep  count  ms/token  MB/call
+  LAYER_linear               4.8279   5.2615     36    173.81     0.12 *
+  moe_block                  2.8017   2.8679     48    134.48     0.00
+  LAYER_attn                 3.9344   4.3969     12     47.21     0.02 *
+  linear_attn                0.6493   0.5097     36     23.37     0.00 *
+  attn_hyper_connection      0.1654   0.1549     48      7.94     0.00
+  mlp_hyper_connection       0.1305   0.1187     48      6.27     0.00
+  self_attn                  0.4464   0.3982     12      5.36     0.00 *
+  shared_expert              0.0344   0.0296     48      1.65     0.00
+  ple                        1.4172   1.3856      1      1.42     0.01
+  router_gate                0.0128   0.0162     48      0.62     0.00
+  PARTS TOTAL                                          181.10
+
+  glue per linear layer     1.0810 ms  ( 38.92 ms/token)
+  glue per attn layer       0.3903 ms  (  4.68 ms/token)
+  glue is the two injection combines, the PLE residual add and the
+  MoE output combine, none of which has its own timer.
+  WHOLE LAYERS                                         221.02
+  parts miss                                            39.92
+
+  serial: each call waits for the previous, as the layer chain
+  forces. indep: independent copies, which the GPU overlaps. The
+  gap between the two columns is pipelining the model cannot use.
+
+  * carries a cache. Chained reps advance it, so the KV-backed
+    components grow their context across the chain and their
+    figure is an upper bound.
+
+premise:
+  physical read during timing   27.08 MB
+
+reading:
+  The GPU half of a token measured 172.4 ms: score_sync 142.91,
+  router_sync 22.81, final_eval 6.70. Compare the attributed total
+  above against it. A large residual means components fuse in situ
+  or the capture missed a stage; a small one means this split is
+  the map of where the GPU time goes.

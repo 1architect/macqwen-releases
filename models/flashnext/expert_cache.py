@@ -1341,6 +1341,7 @@ class StreamingSwitchGLU(nn.Module):
         self.activation = activation
         self.hits = 0
         self.misses = 0
+        object.__setattr__(self, "_routed_host", None)
         self._metal_executors = {}
         self._metal_runtime_capable = self._compute_metal_runtime_capable()
         self._slab_pack_capable = self._metal_runtime_capable and validate_slab_allocation(
@@ -1579,15 +1580,23 @@ class StreamingSwitchGLU(nn.Module):
         self._last_fused_shared = False
         flat_input = x.reshape(-1, x.shape[-1])
         x = mx.expand_dims(x, (-2, -3))
-        flat = indices.reshape(-1)
-        if _PROFILE:
-            began = time.perf_counter()
-            mx.eval(flat)
-            _TIMERS["router_sync"] += time.perf_counter() - began
-        else:
-            mx.eval(flat)
-        with hostwindow.window("route_tolist"):
-            routed = flat.tolist()
+        handed = getattr(self, "_routed_host", None)
+        routed = None
+        if handed is not None:
+            # Built by the MoE block from values it already synced.
+            object.__setattr__(self, "_routed_host", None)
+            if handed[1] is indices:
+                routed = handed[0]
+        if routed is None:
+            flat = indices.reshape(-1)
+            if _PROFILE:
+                began = time.perf_counter()
+                mx.eval(flat)
+                _TIMERS["router_sync"] += time.perf_counter() - began
+            else:
+                mx.eval(flat)
+            with hostwindow.window("route_tolist"):
+                routed = flat.tolist()
         observer = _PREFILL_PROGRESS
         if observer is not None and self.layer_id >= 0:
             observer(self.layer_id)

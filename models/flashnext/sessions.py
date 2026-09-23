@@ -36,6 +36,7 @@ _CHECKSUM_PLACEHOLDER = "UNSET-" + "0" * 58
 _ENGINE_FILES = (
     "adaptive_topk.py",
     # Opt-in compiled graphs replace upstream chains when enabled.
+    "compile_gdn.py",
     "compile_glue.py",
     "compiled.py",
     "expert_cache.py",
@@ -47,6 +48,7 @@ _ENGINE_FILES = (
     "patch_rmsnorm.py",
     "prefill.py",
     "qsa_chunk.py",
+    "small_sidecar.py",
     "store.py",
 )
 

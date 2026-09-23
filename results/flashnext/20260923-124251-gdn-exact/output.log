@@ -1,0 +1,4 @@
+qk    calls  144  mismatched    0  max |diff| 0
+norm  calls  144  mismatched    0  max |diff| 0
+digests {'off': '6f1ec5a039fca178', 'on': '6f1ec5a039fca178'}
+exact: True  wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-124251-gdn-exact/gdn-exact.json

@@ -85,6 +85,8 @@ SETTINGS = (
     research("gpu-keepwarm-period-ms", "FLASHNEXT_GPU_KEEPWARM_PERIOD_MS", "0.5", "startup", float),
     research("gpu-keepwarm-stream-pack", "FLASHNEXT_GPU_KEEPWARM_STREAM_PACK", "1", "startup"),
     research("small-sidecar", "FLASHNEXT_SMALL_SIDECAR", "", "startup"),
+    research("one-sync", "FLASHNEXT_ONE_SYNC"),
+    research("compile-gdn", "FLASHNEXT_COMPILE_GDN"),
     research("compile-hc", "FLASHNEXT_COMPILE_HC", "1", parser=choice(("0", "1"), "compile-hc"), unset="0"),
     research("compile-norm", "FLASHNEXT_COMPILE_NORM", "1", parser=choice(("0", "1"), "compile-norm"), unset="0"),
     research("stream-embed", "FLASHNEXT_STREAM_EMBED", "1", "startup", choice(("0", "1"), "stream-embed"), unset="0"),
