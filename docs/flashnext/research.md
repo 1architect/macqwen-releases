@@ -5154,3 +5154,34 @@ those two: the lock's loss comes from elsewhere (compressor traffic rose 2.4
 to 7 times in the earlier run), and the larger slab reads no fewer bytes.
 Layer mode was discarded and its code removed. The expert lock remains in the
 runtime, off, with no measured gain.
+
+## Keep-warm on stream-pack waits, 2026-09-23
+
+Stream-pack is part of the chat default, and with it the 12 slab-pack layers
+wait for their cold reads in `_StreamedPackRead.wait`, not in
+`_await_projection_tasks`, so keep-warm never ran on those layers. This fits
+the bundle-with-slab result above, where the bundle's mean GPU state was 13.1
+to 13.8 against 15.0 for the prior settings; that bundle changed overlap and
+stream-pack together, so the earlier attribution to overlap was not
+isolated. `_StreamedPackRead.wait` now spins through the same latch as the
+other layers. `FLASHNEXT_GPU_KEEPWARM_STREAM_PACK=0` restores the old
+behaviour.
+
+Fresh process per arm, 128 greedy tokens, chat defaults (slab on, bundle on,
+keep-warm on), 8 pins, order control/fix/fix/control/control/fix. Load average
+was 3 to 4.5 thirteen minutes after boot, with a browser decoding video.
+Evidence: `results/flashnext/20260923-112333-keepwarm-stream-pack/`.
+
+| Pair | Control | Fix | Change | MB/token, tokens 65-128, control / fix |
+|---:|---:|---:|---:|---:|
+| 1 | 2.744 | 2.829 | +3.1% | 425.9 / 417.4 |
+| 2 | 2.836 | 2.848 | +0.4% | 415.4 / 416.1 |
+| 3 | 2.858 | 2.699 | -5.6% | 414.6 / 448.8 |
+
+All six arms kept digest `e19af44d5268e9d1`. The mechanism holds: every fix
+arm kept the GPU at a mean state of 14.97 to 14.98 in both windows, against
+13.2 to 14.3 for the control. The rate effect is -0.7% mean inside a two-SE
+band of 5.1%, unresolved. Pair 3's fix arm read 34 MB/token more than its
+control over the second window, about 19 ms/token at 0.55 ms/MB, so page-cache
+state dominates that pair. The fix stays on as the intended keep-warm
+behaviour; it has no resolved speed claim.

@@ -110,6 +110,14 @@ three reversed fresh-process pairs measured +2.4% mean inside a 1.0% two-SE
 band, 3 of 3 pairs (`results/flashnext/20260923-035157-bundle-slab/`), so the
 gain resolves.
 
+### Keep-warm on stream-pack waits, 2026-09-23
+
+Keep-warm did not cover the stream-pack read wait, so the 12 slab-pack layers
+ran without it once stream-pack became a default. It now does
+(`FLASHNEXT_GPU_KEEPWARM_STREAM_PACK=0` rolls back). Three pairs held the GPU
+at P15 with an identical digest; the rate effect, -0.7% inside a 5.1% band,
+is unresolved. See the last `research.md` section.
+
 ### Checkpoint identity fix, 2026-09-23
 
 The slab cache identity changed at every reboot until commit `b33781d`,

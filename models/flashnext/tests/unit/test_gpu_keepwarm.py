@@ -40,6 +40,30 @@ class KeepWarmTests(unittest.TestCase):
         self.assertTrue(pending.done())
         self.assertGreaterEqual(spin.call_count, 2)
 
+    def test_stream_pack_wait_spins_while_reads_run(self):
+        pending = Future()
+        timer = threading.Timer(0.01, pending.set_result, args=(None,))
+        timer.start()
+        read = expert_cache._StreamedPackRead(None, [pending])
+        with mock.patch.object(expert_cache, "_keepwarm_spin") as spin, \
+                mock.patch.object(expert_cache, "_KEEPWARM", [True]), \
+                mock.patch.object(expert_cache, "_KEEPWARM_STREAM_PACK", True), \
+                mock.patch.object(expert_cache, "_KEEPWARM_PERIOD", [0.001]):
+            self.assertIs(read.wait(), read)
+        timer.join()
+        self.assertGreaterEqual(spin.call_count, 2)
+
+    def test_stream_pack_wait_respects_both_switches(self):
+        done = Future()
+        done.set_result(None)
+        read = expert_cache._StreamedPackRead(None, [done])
+        for enabled, pack in ((False, True), (True, False)):
+            with mock.patch.object(expert_cache, "_keep_gpu_warm_until") as warm, \
+                    mock.patch.object(expert_cache, "_KEEPWARM", [enabled]), \
+                    mock.patch.object(expert_cache, "_KEEPWARM_STREAM_PACK", pack):
+                read.wait()
+            warm.assert_not_called()
+
     def test_collects_futures_from_every_pending_shape(self):
         futures = [Future() for _ in range(3)]
         shared = expert_cache._SharedRead(None, [futures[0]])

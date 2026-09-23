@@ -513,6 +513,12 @@ class _StreamedPackRead:
         self.futures = futures
 
     def wait(self, timings=None):
+        # Stream-pack layers wait here, not in `_await_projection_tasks`, so
+        # keep-warm has to cover this wait as well. Without it the packed
+        # layers idled the GPU during reads and its clock fell (mean state
+        # 13.1 to 13.8 against 15.0, bundle-slab run of 2026-09-23).
+        if _KEEPWARM[0] and _KEEPWARM_STREAM_PACK:
+            _keep_gpu_warm_until(self.futures)
         for future in self.futures:
             _resolve_future(future, timings)
         return self
@@ -629,6 +635,9 @@ _KEEPWARM = [os.environ.get("FLASHNEXT_GPU_KEEPWARM", "0") == "1"]
 _KEEPWARM_ITERS = [int(os.environ.get("FLASHNEXT_GPU_KEEPWARM_ITERS", "60000"))]
 _KEEPWARM_PERIOD = [float(os.environ.get("FLASHNEXT_GPU_KEEPWARM_PERIOD_MS", "0.5")) / 1000]
 _KEEPWARM_STATE: dict = {}
+# Rollback for the stream-pack keep-warm fix of 2026-09-23. Read once at
+# import so the decode path pays one branch.
+_KEEPWARM_STREAM_PACK = os.environ.get("FLASHNEXT_GPU_KEEPWARM_STREAM_PACK", "1") == "1"
 _KEEPWARM_SOURCE = """
     uint lane = thread_position_in_grid.x;
     float value = float(lane);
@@ -712,7 +721,12 @@ def _keep_gpu_warm_until_done(pending) -> None:
     only a few spins can queue past the end of a wait. They run on their own
     stream, one threadgroup wide, beside the layer's real work.
     """
-    futures = [future for future in _pending_futures(pending) if not future.done()]
+    _keep_gpu_warm_until(_pending_futures(pending))
+
+
+def _keep_gpu_warm_until(futures) -> None:
+    """Spin until every future in ``futures`` has completed."""
+    futures = [future for future in futures if not future.done()]
     if not futures:
         return
     latch = _Latch(len(futures))

@@ -1,0 +1,37 @@
+=== arm 1: control
+== defaults: free 76 MB
+  defaults     tok   64  2.78 tok/s   404.8 MB/tok  gpu state 13.67  pcpu state 18.87
+  defaults     tok  128  2.76 tok/s   425.9 MB/tok  gpu state 14.23  pcpu state 18.84
+  defaults: gen 2.744 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-112333-keepwarm-stream-pack/arm-1-control.json
+=== arm 2: fix
+== defaults: free 83 MB
+  defaults     tok   64  2.93 tok/s   372.6 MB/tok  gpu state 14.98  pcpu state 18.84
+  defaults     tok  128  2.78 tok/s   417.4 MB/tok  gpu state 14.98  pcpu state 18.89
+  defaults: gen 2.829 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-112333-keepwarm-stream-pack/arm-2-fix.json
+=== arm 3: fix
+== defaults: free 85 MB
+  defaults     tok   64  2.94 tok/s   369.1 MB/tok  gpu state 14.97  pcpu state 18.84
+  defaults     tok  128  2.81 tok/s   416.1 MB/tok  gpu state 14.98  pcpu state 18.85
+  defaults: gen 2.848 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-112333-keepwarm-stream-pack/arm-3-fix.json
+=== arm 4: control
+== defaults: free 82 MB
+  defaults     tok   64  2.93 tok/s   368.8 MB/tok  gpu state 13.85  pcpu state 18.83
+  defaults     tok  128  2.79 tok/s   415.4 MB/tok  gpu state 14.25  pcpu state 18.84
+  defaults: gen 2.836 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-112333-keepwarm-stream-pack/arm-4-control.json
+=== arm 5: control
+== defaults: free 80 MB
+  defaults     tok   64  2.98 tok/s   359.3 MB/tok  gpu state 13.17  pcpu state 18.84
+  defaults     tok  128  2.79 tok/s   414.6 MB/tok  gpu state 14.23  pcpu state 18.84
+  defaults: gen 2.858 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-112333-keepwarm-stream-pack/arm-5-control.json
+=== arm 6: fix
+== defaults: free 77 MB
+  defaults     tok   64  2.79 tok/s   409.2 MB/tok  gpu state 14.97  pcpu state 18.87
+  defaults     tok  128  2.66 tok/s   448.8 MB/tok  gpu state 14.98  pcpu state 18.85
+  defaults: gen 2.699 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-112333-keepwarm-stream-pack/arm-6-fix.json
+=== done
