@@ -5044,3 +5044,29 @@ estimate of +4.8% was larger; with the slab on the resolved gain is +2.4%.
 Its mean GPU performance state was 13.1 to 13.8 against 15.0 for the prior
 settings, which keep-warm and overlap on hold at P15. The bundle stays the
 default.
+
+## Process footprint audit, 2026-09-23
+
+`bench_footprint` (new) loads the normal chat backend with the current
+defaults (slab on, bundle on, 8 pins) and records `footprint`, `vmmap` and
+MLX memory after load and after a 32-token answer. Evidence:
+`results/flashnext/20260923-040624-footprint/`.
+
+| Category after decode | Resident | Notes |
+|---|---:|---|
+| Metal (IOAccelerator) | 3,016 MB dirty | dense model 2.98 GB at load; KV and MLX buffer cache after decode |
+| MLX buffer cache (inside Metal) | 185 MB | freed buffers kept for reuse |
+| Malloc (small, large, large empty) | about 210 MB | Python heap and freed large blocks (47 MB empty) |
+| Untagged | 110 MB | anonymous |
+| Page tables | 24 MB | |
+| Mapped files | 1,360 MB clean | 8-pin mlock (about 1.18 GB) and the 184 MB slab pack |
+
+Footprint was 3,426 MB, peak 4,591 MB during prefill. Swap did not move.
+The earlier estimate of about 0.8 GB of non-Metal memory is not current: with
+the embedding streamed, anonymous non-Metal memory is about 340 MB. Every
+remaining dense tensor is read every token. The reclaimable part is the MLX
+buffer cache (185 MB), empty malloc blocks (47 MB) and whatever the pins lock
+that the page cache would not keep on its own; 8 pins already tied 0 pins on
+reads. At the cache simulator's price of about 13% of reads per GB near
+4 GB, 0.2 GB is worth about 2 to 3% of reads at most. Freeing process memory
+is therefore close to exhausted as a byte lever on this machine.
