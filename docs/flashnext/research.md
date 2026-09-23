@@ -5070,3 +5070,30 @@ that the page cache would not keep on its own; 8 pins already tied 0 pins on
 reads. At the cache simulator's price of about 13% of reads per GB near
 4 GB, 0.2 GB is worth about 2 to 3% of reads at most. Freeing process memory
 is therefore close to exhausted as a byte lever on this machine.
+
+## Wired Metal memory under a synthetic memory load, 2026-09-23
+
+Question: does wiring the dense model (`FLASHNEXT_WIRED_GB=3.5`, set before
+load) protect decode when another process takes memory? `memory_load`
+(new) holds 3 GB of active anonymous memory and rewrites one byte per page
+every 5 s. Fresh process per arm, 128 greedy tokens, chat defaults, 8 pins.
+Loaded order w0/w3.5/w3.5/w0, then quiet w3.5/w0. Evidence:
+`results/flashnext/20260923-041256-wired-load/`.
+
+| Arm | Condition | tok/s | MB/token, tokens 65-128 | Compressions |
+|---:|---|---:|---:|---:|
+| 1 | loaded, wired 0 | 2.829 | 408.6 | 1.86 M |
+| 2 | loaded, wired 3.5 GB | 2.876 | 406.5 | 1.57 M |
+| 3 | loaded, wired 3.5 GB | 2.837 | 408.0 | 1.48 M |
+| 4 | loaded, wired 0 | 2.900 | 402.0 | 1.75 M |
+| 5 | quiet, wired 3.5 GB | 3.098 | 339.4 | 0 |
+| 6 | quiet, wired 0 | 3.038 | 362.2 | 0.59 M |
+
+All arms kept digest `e19af44d5268e9d1`; swap stayed at 258 MB with no
+swap-outs. Under load, wired against not wired measured +1.7% and -2.2%:
+a tie. Wiring cut compressor traffic by about 15% but not token time. The
+load itself cost about 7% (2.86 against 3.07 tok/s) and raised physical reads
+by about 13% (402 to 409 against 339 to 362 MB/token). The loss therefore
+comes from a smaller page cache for the expert stream, not from our Metal
+memory being compressed or swapped. Wired memory stays off. The lever that
+matches this loss is a locked expert working set, which is not built.

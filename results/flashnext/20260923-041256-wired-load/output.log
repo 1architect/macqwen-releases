@@ -1,0 +1,44 @@
+holding 3.00 GB
+=== arm 1: loaded-w0  swap 258.44M
+wired limit: 0.00 GB
+== defaults: free 79 MB
+  defaults     tok   64  2.93 tok/s   369.3 MB/tok  gpu state 13.64  pcpu state 18.87
+  defaults     tok  128  2.78 tok/s   408.6 MB/tok  gpu state 13.55  pcpu state 18.82
+  defaults: gen 2.829 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-041256-wired-load/arm-1-loaded-w0.json
+=== arm 2: loaded-w35  swap 258.44M
+wired limit: 3.50 GB
+== defaults: free 89 MB
+  defaults     tok   64  3.00 tok/s   363.5 MB/tok  gpu state 13.24  pcpu state 18.80
+  defaults     tok  128  2.81 tok/s   406.5 MB/tok  gpu state 13.54  pcpu state 18.81
+  defaults: gen 2.876 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-041256-wired-load/arm-2-loaded-w35.json
+=== arm 3: loaded-w35  swap 258.44M
+wired limit: 3.50 GB
+== defaults: free 88 MB
+  defaults     tok   64  2.96 tok/s   363.7 MB/tok  gpu state 13.29  pcpu state 18.79
+  defaults     tok  128  2.77 tok/s   408.0 MB/tok  gpu state 13.54  pcpu state 18.80
+  defaults: gen 2.837 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-041256-wired-load/arm-3-loaded-w35.json
+=== arm 4: loaded-w0  swap 258.44M
+wired limit: 0.00 GB
+== defaults: free 96 MB
+  defaults     tok   64  3.00 tok/s   358.9 MB/tok  gpu state 13.23  pcpu state 18.83
+  defaults     tok  128  2.85 tok/s   402.0 MB/tok  gpu state 13.77  pcpu state 18.84
+  defaults: gen 2.9 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-041256-wired-load/arm-4-loaded-w0.json
+=== arm 5: quiet-w35  swap 258.44M
+wired limit: 3.50 GB
+== defaults: free 84 MB
+  defaults     tok   64  3.21 tok/s   310.4 MB/tok  gpu state 12.51  pcpu state 18.77
+  defaults     tok  128  3.04 tok/s   339.4 MB/tok  gpu state 12.20  pcpu state 18.91
+  defaults: gen 3.098 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-041256-wired-load/arm-5-quiet-w35.json
+=== arm 6: quiet-w0  swap 258.44M
+wired limit: 0.00 GB
+== defaults: free 88 MB
+  defaults     tok   64  3.13 tok/s   333.5 MB/tok  gpu state 13.53  pcpu state 18.83
+  defaults     tok  128  3.00 tok/s   362.2 MB/tok  gpu state 13.83  pcpu state 18.82
+  defaults: gen 3.038 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-041256-wired-load/arm-6-quiet-w0.json
+=== done
