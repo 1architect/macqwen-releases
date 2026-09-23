@@ -115,8 +115,10 @@ The slab cache identity changed at every reboot until commit `b33781d`,
 which silently turned the slab pack off after each boot. It now hashes shard
 name, size and mtime only. If the slab ever looks inactive, check that a
 `slab-pack-slots60-*.bin` in `~/.cache/flashnext/` has today's mtime.
-A 120-slot slab with `FLASHNEXT_COMPILE` and prewarm lost 3.3% to 3.5% in
-two pairs and is rejected as a set.
+Tested one at a time on 2026-09-23: a 120-slot slab lost 3.4% to 4.4% (GPU
+clock lower, no fewer reads), prewarm lost 1.5% to 3.8% and read more, and
+`FLASHNEXT_COMPILE` tied. All three stay off. Defaults measured 3.05 to
+3.09 tok/s over 128 tokens with the slab on.
 
 ### Rules the user set this session
 

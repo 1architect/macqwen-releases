@@ -4990,3 +4990,35 @@ All arms kept digest `e19af44d5268e9d1`. Physical reads were 359 to 378
 against 361 to 371 MB/token over the second 64 tokens, and the extras arms'
 mean GPU performance state fell to about 9.5 against 13 to 14 for defaults.
 The three changes were not separated. Rejected as a set; the defaults stay.
+
+## Slab 120, compiled chains and prewarm separately, 2026-09-23
+
+Each candidate on top of the chat defaults, one fresh process per arm,
+128 greedy tokens, 8 pins, order D S C P D P C S D (D defaults, S 120-slot
+slab over 20 layers, C `FLASHNEXT_COMPILE=1`, P `FLASHNEXT_PREWARM=1`).
+Each candidate arm is compared with its neighbouring defaults arm (the mean
+of both neighbours for arms 3 and 7). Evidence:
+`results/flashnext/20260923-034046-extras-split/`.
+
+| Arm | Condition | tok/s | MB/token, tokens 65-128 | Mean GPU state | Change |
+|---:|---|---:|---:|---:|---:|
+| 1 | defaults | 3.094 | 346.7 | 13.6 | |
+| 2 | slab 120 | 2.958 | 358.7 | 9.6 | -4.4% |
+| 3 | compile | 3.059 | 345.0 | 13.2 | -0.3% |
+| 4 | prewarm | 3.000 | 368.1 | 13.9 | -1.5% |
+| 5 | defaults | 3.045 | 356.5 | 14.0 | |
+| 6 | prewarm | 2.930 | 386.3 | 13.9 | -3.8% |
+| 7 | compile | 3.035 | 354.8 | 13.5 | -0.5% |
+| 8 | slab 120 | 2.953 | 355.0 | 9.1 | -3.4% |
+| 9 | defaults | 3.056 | 344.5 | 13.1 | |
+
+All nine arms kept digest `e19af44d5268e9d1`.
+
+- 120-slot slab: lost in both arms and did not reduce physical reads. Its
+  mean GPU performance state fell to about 9, against 13 to 14 in every other
+  arm. One reading is that more all-hit layers leave the GPU idle without a
+  read wait for keep-warm to cover; this is not measured. Rejected.
+- `FLASHNEXT_COMPILE`: -0.3% and -0.5%, a tie. It stays off.
+- Prewarm: lost in both arms and read 12 to 30 MB/token more. Rejected.
+
+The defaults measured 3.05 to 3.09 tok/s over 128 tokens with the slab on.
