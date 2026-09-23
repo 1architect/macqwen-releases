@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import ctypes
+import queue
+import sys
 import json
 import fcntl
 import mmap
@@ -173,6 +175,21 @@ class SafeTensorStore:
         )
         self._resident_lru: "OrderedDict[tuple, None]" = OrderedDict()
         self._pinned = []
+        # Locked expert working set. Other processes can shrink the page cache
+        # the expert stream depends on; a 3 GB competing process measured
+        # about 7% slower decode through 13% more physical reads. With a
+        # budget, the most recently read expert rows stay mlocked in the
+        # checkpoint's own file pages, so no row is held twice. Locking runs on
+        # one background thread; readers only enqueue. Off at 0.
+        self._lock_budget = int(
+            float(os.environ.get("FLASHNEXT_EXPERT_LOCK_GB", "0")) * 1e9
+        )
+        self._locked: "OrderedDict[tuple, tuple]" = OrderedDict()
+        self._locked_bytes = 0
+        self._locked_mutex = threading.Lock()
+        self._lock_queue = None
+        self._lock_thread = None
+        self._lock_failed = False
 
         index_path = os.path.join(self.dir, "model.safetensors.index.json")
         with open(index_path) as handle:
@@ -294,19 +311,22 @@ class SafeTensorStore:
             return out
         return np.ascontiguousarray(self._mapped(name, mode)[rows])
 
-    def pin_rows(self, name: str, rows: Sequence[int]) -> int:
-        """Keep selected file-backed rows resident without copying them."""
+    def _row_span(self, name: str, row: int) -> tuple[int, int]:
+        """Page-aligned address and length of one row in the shared map."""
         ref = self.refs[name]
         view = self._shared_view(name)
-        base = int(view.__array_interface__["data"][0])
+        address = int(view.__array_interface__["data"][0]) + int(row) * ref.row_bytes
         page = mmap.PAGESIZE
+        start = address - address % page
+        end = (address + ref.row_bytes + page - 1) // page * page
+        return start, end - start
+
+    def pin_rows(self, name: str, rows: Sequence[int]) -> int:
+        """Keep selected file-backed rows resident without copying them."""
         libc = _libc()
         total = 0
         for row in rows:
-            address = base + int(row) * ref.row_bytes
-            start = address - address % page
-            end = (address + ref.row_bytes + page - 1) // page * page
-            length = end - start
+            start, length = self._row_span(name, row)
             if libc.mlock(ctypes.c_void_p(start), ctypes.c_size_t(length)) != 0:
                 error = ctypes.get_errno()
                 raise OSError(error, os.strerror(error))
@@ -331,7 +351,14 @@ class SafeTensorStore:
         return total
 
     def unpin_all(self) -> None:
-        self._pinned_rows.clear()
+        with self._locked_mutex:
+            # A row pinned while locked loses its lock with the pin below;
+            # forget it so its next read locks it again.
+            for key in self._pinned_rows:
+                span = self._locked.pop(key, None)
+                if span is not None:
+                    self._locked_bytes -= span[1]
+            self._pinned_rows.clear()
         libc = _libc()
         for address, length in self._pinned:
             libc.munlock(ctypes.c_void_p(address), ctypes.c_size_t(length))
@@ -415,6 +442,91 @@ class SafeTensorStore:
                 raise OSError(f"short pread for {name} row {row}")
         if self._track_residency:
             self._mark_read(name, rows)
+        if self._lock_budget > 0 and ".switch_mlp." in name:
+            self._enqueue_lock(name, rows)
+
+    def _enqueue_lock(self, name: str, rows) -> None:
+        if self._lock_failed:
+            return
+        if self._lock_queue is None:
+            with self._map_lock:
+                if self._lock_queue is None:
+                    self._lock_queue = queue.Queue()
+                    self._lock_thread = threading.Thread(
+                        target=self._lock_worker, name="flashnext-lock",
+                        daemon=True,
+                    )
+                    self._lock_thread.start()
+        self._lock_queue.put((name, tuple(int(row) for row in rows)))
+
+    def _lock_worker(self) -> None:
+        libc = _libc()
+        while True:
+            item = self._lock_queue.get()
+            try:
+                if item is None:
+                    return
+                name, rows = item
+                for row in rows:
+                    self._lock_row(libc, name, row)
+            finally:
+                self._lock_queue.task_done()
+
+    def _lock_row(self, libc, name: str, row: int) -> None:
+        """Lock one row, then unlock the least recently read over budget."""
+        if self._lock_failed:
+            return
+        key = (name, row)
+        with self._locked_mutex:
+            if key in self._locked:
+                self._locked.move_to_end(key)
+                return
+            if key in self._pinned_rows:
+                # Unlocking it later would drop the routing pin as well.
+                return
+            start, length = self._row_span(name, row)
+            if libc.mlock(ctypes.c_void_p(start), ctypes.c_size_t(length)) != 0:
+                error = ctypes.get_errno()
+                self._lock_failed = True
+                print(
+                    f"flashnext: expert locking stopped: {os.strerror(error)}",
+                    file=sys.stderr,
+                )
+                return
+            self._locked[key] = (start, length)
+            self._locked_bytes += length
+            while self._locked_bytes > self._lock_budget and self._locked:
+                old_key, (old_start, old_length) = self._locked.popitem(last=False)
+                if old_key not in self._pinned_rows:
+                    libc.munlock(
+                        ctypes.c_void_p(old_start), ctypes.c_size_t(old_length)
+                    )
+                self._locked_bytes -= old_length
+
+    def drain_expert_locks(self) -> None:
+        """Wait until every queued row has been locked. For tests and probes."""
+        if self._lock_queue is not None:
+            self._lock_queue.join()
+
+    def expert_lock_stats(self) -> dict:
+        return {
+            "budget_bytes": self._lock_budget,
+            "locked_bytes": self._locked_bytes,
+            "locked_rows": len(self._locked),
+            "failed": self._lock_failed,
+        }
+
+    def _unlock_experts(self) -> None:
+        if self._lock_queue is not None:
+            self._lock_queue.put(None)
+            self._lock_thread.join(timeout=5)
+            self._lock_queue = None
+        libc = _libc()
+        with self._locked_mutex:
+            for start, length in self._locked.values():
+                libc.munlock(ctypes.c_void_p(start), ctypes.c_size_t(length))
+            self._locked.clear()
+            self._locked_bytes = 0
 
     def empty_rows(self, name: str, count: int) -> np.ndarray:
         """Allocate one destination for a whole layer's gather."""
@@ -494,6 +606,7 @@ class SafeTensorStore:
         return np.asarray(self._view(name))
 
     def close(self) -> None:
+        self._unlock_experts()
         self.unpin_all()
         self._shared_views.clear()
         if hasattr(self, "_slab_pack") and self._slab_pack is not None:

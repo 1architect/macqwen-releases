@@ -5097,3 +5097,33 @@ by about 13% (402 to 409 against 339 to 362 MB/token). The loss therefore
 comes from a smaller page cache for the expert stream, not from our Metal
 memory being compressed or swapped. Wired memory stays off. The lever that
 matches this loss is a locked expert working set, which is not built.
+
+## Locked expert working set, 2026-09-23
+
+`FLASHNEXT_EXPERT_LOCK_GB` (new, off at 0) keeps the most recently read
+expert rows mlocked in the checkpoint's own file pages, up to a budget. Reader
+threads enqueue each row after its read; one background thread locks it and
+unlocks the least recently read rows over budget. Pinned rows are left to
+the pin. Same design as the wired test: 3 GB helper load for arms 1-4, quiet
+for 5-6, fresh process per arm, 128 greedy tokens. Evidence:
+`results/flashnext/20260923-042253-expert-lock/`.
+
+| Arm | Condition | tok/s | MB/token, tokens 65-128 | Mean GPU state | Compressions |
+|---:|---|---:|---:|---:|---:|
+| 1 | loaded, lock 0 | 2.791 | 410.6 | 14.2 | 1.99 M |
+| 2 | loaded, lock 3 GB | 2.707 | 327.0 | 8.5 | 4.84 M |
+| 3 | loaded, lock 3 GB | 2.796 | 306.5 | 7.9 | 4.56 M |
+| 4 | loaded, lock 0 | 2.986 | 359.1 | 13.4 | 1.94 M |
+| 5 | quiet, lock 3 GB | 2.798 | 324.7 | 8.6 | 2.77 M |
+| 6 | quiet, lock 0 | 3.076 | 348.9 | 13.4 | 0.41 M |
+
+All arms kept digest `e19af44d5268e9d1` and filled the budget (about 8,390
+rows, 3.0 GB). The locked set did what it was built for: physical reads fell
+12% to 25%. Rate still fell: -3.0% and -6.4% under load, -9.0% quiet. Two
+things moved with it. Compressor traffic rose 2.4 to 7 times, and the mean GPU
+performance state fell from about 14 to about 8. The 120-slot slab showed the
+same GPU drop earlier today. Both changes shorten the read waits, and
+keep-warm spins only during read waits, so a likely reading is that the GPU
+now idles in the host phases between waits and the governor lowers its clock;
+this is not measured. Locking stays off. A keep-warm that covers the whole
+layer, not only the read wait, is the premise for retesting both.

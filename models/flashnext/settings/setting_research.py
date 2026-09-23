@@ -70,6 +70,7 @@ SETTINGS = (
     research("qsa-cache-pooled-keys", "FLASHNEXT_QSA_CACHE_POOLED_KEYS", "1", parser=choice(("0", "1"), "qsa-cache-pooled-keys"), unset="0"),
     research("qsa-scatter-decode", "FLASHNEXT_QSA_SCATTER_DECODE", "1", parser=choice(("0", "1"), "qsa-scatter-decode"), unset="0"),
     research("overlap", "FLASHNEXT_OVERLAP", "0", parser=choice(("0", "1"), "overlap"), unset="1"),
+    research("expert-lock-gb", "FLASHNEXT_EXPERT_LOCK_GB", "0", "startup", text),
     research("rdahead", "FLASHNEXT_RDAHEAD", "0", parser=choice(("0", "1"), "rdahead"), unset="1"),
     research("wired-gb", "FLASHNEXT_WIRED_GB", "0", "startup", float),
     research("swap-max-rows", "FLASHNEXT_SWAP_MAX_ROWS", "4", "startup", integer),

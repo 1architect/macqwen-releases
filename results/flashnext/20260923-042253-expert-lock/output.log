@@ -1,0 +1,38 @@
+holding 3.00 GB
+=== arm 1: loaded-lock0  swap 258.44M
+== defaults: free 82 MB
+  defaults     tok   64  2.87 tok/s   378.3 MB/tok  gpu state 13.36  pcpu state 18.98
+  defaults     tok  128  2.77 tok/s   410.6 MB/tok  gpu state 14.16  pcpu state 18.84
+  defaults: gen 2.791 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-042253-expert-lock/arm-1-loaded-lock0.json
+=== arm 2: loaded-lock3  swap 258.44M
+== defaults: free 77 MB
+  defaults     tok   64  2.72 tok/s   326.4 MB/tok  gpu state  8.57  pcpu state 18.96
+  defaults     tok  128  2.74 tok/s   327.0 MB/tok  gpu state  8.47  pcpu state 18.93
+  defaults: gen 2.707 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-042253-expert-lock/arm-2-loaded-lock3.json
+=== arm 3: loaded-lock3  swap 258.44M
+== defaults: free 90 MB
+  defaults     tok   64  2.79 tok/s   318.3 MB/tok  gpu state  8.04  pcpu state 18.95
+  defaults     tok  128  2.85 tok/s   306.5 MB/tok  gpu state  7.86  pcpu state 18.92
+  defaults: gen 2.796 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-042253-expert-lock/arm-3-loaded-lock3.json
+=== arm 4: loaded-lock0  swap 258.44M
+== defaults: free 80 MB
+  defaults     tok   64  3.07 tok/s   327.4 MB/tok  gpu state 13.03  pcpu state 18.84
+  defaults     tok  128  2.95 tok/s   359.1 MB/tok  gpu state 13.40  pcpu state 18.84
+  defaults: gen 2.986 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-042253-expert-lock/arm-4-loaded-lock0.json
+=== arm 5: quiet-lock3  swap 258.44M
+== defaults: free 80 MB
+  defaults     tok   64  2.84 tok/s   321.6 MB/tok  gpu state  8.99  pcpu state 18.85
+  defaults     tok  128  2.81 tok/s   324.7 MB/tok  gpu state  8.64  pcpu state 18.86
+  defaults: gen 2.798 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-042253-expert-lock/arm-5-quiet-lock3.json
+=== arm 6: quiet-lock0  swap 258.44M
+== defaults: free 79 MB
+  defaults     tok   64  3.15 tok/s   320.7 MB/tok  gpu state 12.76  pcpu state 18.98
+  defaults     tok  128  3.05 tok/s   348.9 MB/tok  gpu state 13.39  pcpu state 18.85
+  defaults: gen 3.076 tok/s, digest e19af44d5268e9d1
+wrote /Users/gioma/Developer/MACQWEN/results/flashnext/20260923-042253-expert-lock/arm-6-quiet-lock0.json
+=== done

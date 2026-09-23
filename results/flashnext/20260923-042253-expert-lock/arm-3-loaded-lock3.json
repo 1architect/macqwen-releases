@@ -1,0 +1,156 @@
+{
+ "checkpoint": "/Users/gioma/models/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+ "resident_experts": 8,
+ "tokens": 128,
+ "window": 64,
+ "conditions": [
+  "defaults"
+ ],
+ "arms": [
+  {
+   "condition": "defaults",
+   "free_mb_before": 90.21875,
+   "therm_before": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_before": [
+    3.63330078125,
+    2.658203125,
+    2.275390625
+   ],
+   "gen_rate": 2.796,
+   "tail_rate": 2.847,
+   "tokens": 128,
+   "digest": "e19af44d5268e9d1",
+   "windows": [
+    {
+     "end_token": 64,
+     "tok_s": 2.794,
+     "mb_per_token": 318.3,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.8932,
+       "mean_active_state": 8.042
+      },
+      "ECPU": {
+       "active_share": 0.6364,
+       "mean_active_state": 4.768
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.565
+      },
+      "PCPU": {
+       "active_share": 0.7317,
+       "mean_active_state": 18.953
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.68
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    },
+    {
+     "end_token": 128,
+     "tok_s": 2.847,
+     "mb_per_token": 306.5,
+     "clocks": {
+      "GPUPH": {
+       "active_share": 0.8971,
+       "mean_active_state": 7.856
+      },
+      "ECPU": {
+       "active_share": 0.6396,
+       "mean_active_state": 4.811
+      },
+      "ECPM": {
+       "active_share": 1.0,
+       "mean_active_state": 4.629
+      },
+      "PCPU": {
+       "active_share": 0.7266,
+       "mean_active_state": 18.923
+      },
+      "PCPM": {
+       "active_share": 1.0,
+       "mean_active_state": 16.55
+      }
+     },
+     "therm": [
+      "Note: No thermal warning level has been recorded",
+      "Note: No performance warning level has been recorded"
+     ]
+    }
+   ],
+   "therm_after": [
+    "Note: No thermal warning level has been recorded",
+    "Note: No performance warning level has been recorded",
+    "Note: No CPU power status has been recorded"
+   ],
+   "load_after": [
+    3.66943359375,
+    2.7978515625,
+    2.34765625
+   ],
+   "vm": {
+    "reactivated": 1680587,
+    "decompress": 4606405,
+    "compress": 4558781,
+    "pagein": 1926024,
+    "pageout": 197,
+    "swapin": 0,
+    "swapout": 0
+   },
+   "pinned_bytes": 1236418560,
+   "expert_lock": {
+    "budget_bytes": 3000000000,
+    "locked_bytes": 2999992320,
+    "locked_rows": 8387,
+    "failed": false
+   }
+  }
+ ],
+ "status": "completed",
+ "environment": {
+  "FLASHNEXT_COMPILE_HC": "1",
+  "FLASHNEXT_COMPILE_NORM": "1",
+  "FLASHNEXT_EXPERT_LOCK_GB": "3",
+  "FLASHNEXT_FUSED_SHARED": "1",
+  "FLASHNEXT_FUSED_SHARED_PARTS": "0",
+  "FLASHNEXT_FUSED_UP_SWIGLU": "1",
+  "FLASHNEXT_GPU_KEEPWARM": "1",
+  "FLASHNEXT_IO_QOS": "user-interactive",
+  "FLASHNEXT_IO_WORKERS": "8",
+  "FLASHNEXT_METAL_G64": "1",
+  "FLASHNEXT_METAL_RUNTIME": "1",
+  "FLASHNEXT_NGRAM_PARALLEL_MIN": "64",
+  "FLASHNEXT_NORM_WEIGHT_CACHE": "1",
+  "FLASHNEXT_OVERLAP": "0",
+  "FLASHNEXT_PIN_CACHE": "/var/folders/58/86027c3j0tvc1gkm43k28c180000gn/T/flashnext-long-states-bg_y92pb/pins.json",
+  "FLASHNEXT_PREAD_CHUNK": "2",
+  "FLASHNEXT_PROFILE_IO": "0",
+  "FLASHNEXT_QSA_CACHE_POOLED_KEYS": "1",
+  "FLASHNEXT_QSA_SCATTER_DECODE": "1",
+  "FLASHNEXT_RDAHEAD": "0",
+  "FLASHNEXT_READ": "pread",
+  "FLASHNEXT_SLAB_G64": "0",
+  "FLASHNEXT_SLAB_GLOBAL": "60",
+  "FLASHNEXT_SLAB_MAX_SLOTS": "6",
+  "FLASHNEXT_SLAB_MIN_SLOTS": "4",
+  "FLASHNEXT_SLAB_NUM_LAYERS": "12",
+  "FLASHNEXT_SLAB_PACK": "1",
+  "FLASHNEXT_SLAB_PACK_REQUIRE_EXISTING": "0",
+  "FLASHNEXT_SLAB_POLICY": "skew",
+  "FLASHNEXT_SLAB_PROFILE": "frozen",
+  "FLASHNEXT_STREAM_EMBED": "1",
+  "FLASHNEXT_STREAM_PACK": "1",
+  "FLASHNEXT_STREAM_PACK_CHUNK": "2",
+  "FLASHNEXT_TOPK_THRESHOLD": "0.85"
+ }
+}

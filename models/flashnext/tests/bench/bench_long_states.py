@@ -233,6 +233,8 @@ def main() -> int:
             "therm_after": therm_lines(), "load_after": os.getloadavg(),
             "vm": {key: value - vm_before.get(key, 0) for key, value in vm_counters().items()},
             "pinned_bytes": stats.pinned_bytes,
+            "expert_lock": backend.store.expert_lock_stats()
+            if hasattr(backend.store, "expert_lock_stats") else None,
         })
         evidence["arms"].append(arm)
         save()
