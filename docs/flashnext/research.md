@@ -4541,3 +4541,141 @@ This holds the selected pack stable across launches. Rolling remains available
 through `FLASHNEXT_SLAB_PROFILE=rolling`. We do not attribute the measured
 speed difference solely to profile choice because memory pressure differs
 between arms.
+
+## Next decode and prefill paths, 2026-09-22
+
+This section lists the speed paths that the research has not tested yet. No
+run backs the sizes below; they are projections from earlier measurements.
+Quantizing or pruning the checkpoint stays out of scope.
+
+The best measured decode state on Vontra is about 392 ms/token (keep-warm on,
+96 tokens, 32 pins). Normal chat with 8 pins measures about 467 ms/token
+(2.14 tok/s). 3 tok/s needs 333 ms/token, so decode needs about 60 ms/token
+from the best state.
+
+The keep-warm thermal check comes first. Paths C1 and C2 assume the GPU stays
+at P15. Earlier GPU results were measured at a collapsed clock and do not show
+what GPU work costs at the top state.
+
+### A. Decode: faster I/O completion, same bytes
+
+A1. Thread QoS for the read workers and the main thread. The corrected
+decode-only control measured 80 ms/token between task submission and worker
+start, with only 3 ms/token of worker overhead. The cause is still unknown.
+Python threads run at the default QoS class, so macOS can place them on
+efficiency cores and wake them late. Set
+`pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE)` on the 16 workers
+and the main thread, then compare queue residence and token time. The digest
+can't change. The cost is low and the size is unknown, up to tens of
+ms/token.
+
+A2. CPU performance-state residency during decode. The GPU clock falls during
+idle waits, and the CPU clusters may do the same. The existing IOReport
+sampler (`tests/bench/gpu_pstates.py`) can read CPU states. One instrumented
+run decides whether A1 or a CPU-side keep-warm is worth doing.
+
+### B. Decode: fewer physical bytes, same weights and routes
+
+B1. Offline cache simulator. Record a route trace, then replay it through
+several policies (LRU as an approximation of macOS, LFU, score-weighted,
+Belady optimal) at 4, 6 and 8 GB of cache. It needs no model run. It gives the
+ceiling on byte savings for any policy on this checkpoint. B2 and B3 go ahead
+only if a policy beats LRU by a clear margin.
+
+B2. Cache admission for cold-tail experts. Read rarely reused experts with
+`F_NOCACHE` so they don't evict hot pages, and keep normal reads for hot
+experts. Earlier `F_NOCACHE` tests applied to every expert read at once; this
+version chooses per expert from its reuse frequency. A wrong classification
+costs a repeat read.
+
+B3. An application-owned expert cache instead of the page cache: one
+frequency- or score-aware cache sized to free RAM, filled with `F_NOCACHE`
+reads so no page is held twice. Pinning locked a fixed warmup set on top of the
+page cache and added memory pressure. This replaces the page-cache policy at
+the same RAM. Run it only if B1 shows a gain over LRU.
+
+B4. Free RAM for the page cache. Swap stood at 1.16 GB before one run, and the
+slowest historical-protocol arms had the most compressor traffic. Two parts:
+
+- Load the dense core as file-backed pages: map the dense weights from the
+  shards without a copy instead of loading them into anonymous MLX memory.
+  macOS can then drop clean pages under pressure instead of compressing or
+  swapping them. The slab pack already uses this mechanism.
+- Audit the process footprint with `vmmap`: the tokenizer and `transformers`
+  import, the `weights` dict held after load, and the Python heap. Remove what
+  decode doesn't use.
+
+### C. Decode: less GPU time at a fixed clock
+
+C1. Reopen glue fusion under keep-warm. Broad fusion was closed after a 5%
+dispatch cut changed nothing at miss 0.5, but that arm ran at P1 to P2. The
+GPU capture lists the targets: dtype conversion copies (7,076 SIMD groups,
+more than the routed gather), the nine-dispatch float32 RMSNorm chain, and GDN
+glue. The calibration gives 3.9% of GPU time per 5% of dispatches, so a 25%
+cut of the 86 ms zero-drive GPU time is about 15 to 20 ms/token, if the
+calibration holds at P15.
+
+C2. Compile the dense segment between host syncs: the path from one layer's
+MoE output to the next layer's router scores (hyper-connection, norm,
+attention or GDN, PLE) as one `mx.compile` function. The earlier sweep
+compiled small chains and recovered about 1 ms/token. A whole segment gives
+more fusion on a launch-bound GPU. The gate is `mx.array_equal` at the
+boundary and an identical digest.
+
+C3. Compute slab hits before cold experts inside a layer. At one cold expert
+per layer the token sits 16.5% below the byte line because the GPU keeps P15.
+Computing hits while cold reads run keeps the GPU busy with real work instead
+of spins. This is a form of overlap, which lost before; the clock finding is a
+new premise, but the result can still be a loss.
+
+### D. Decode: remove the copy
+
+D1. Zero-copy shard buffers. Wrap each mapped shard once as a no-copy
+`MTLBuffer`, and let the executor address expert rows by byte offset, with no
+`pread` and no copy. Metal may make the whole buffer resident at commit, which
+would wire gigabytes of a shard. A checkpoint-free probe must settle that
+before any integration. The rejected `resident` read mode still copied rows;
+this path copies nothing.
+
+### E. Prefill
+
+E1. Pipeline expert reads inside each prefill layer. At 2,048 tokens the drive
+runs at 0.82 GB/s against about 3 GB/s available, because prefill reads every
+needed expert before it computes. Split the layer's experts into chunks and
+compute chunk k while chunk k+1 reads. Decode overlap lost with short windows;
+in prefill both the reads and the compute are long. The projection is 1.3 to
+2 times for long prompts; the compute share is not measured yet.
+
+E2. Coalesce adjacent row reads when many experts are needed. At 2,048 tokens
+a layer needs about 255 of 512 experts, so many needed rows are neighbours in
+the file. Merge them, including small gaps, into larger reads. The drive
+measured 3.35 GB/s with 2 MB reads against 2.99 GB/s for the real 800 KB and
+100 KB pattern.
+
+E3. Protect the decode working set during prefill with the B2 admission rule,
+so a long prompt doesn't evict the experts decode needs next. The earlier test
+disabled caching for the whole prefill.
+
+E4. Finish the gates on flags that already exist:
+`FLASHNEXT_PREFILL_LAST_ROW` for time to first token and temporary memory, and
+`FLASHNEXT_QSA_CACHE_POOLED_KEYS` and `FLASHNEXT_QSA_SCATTER_DECODE` for
+long-context prefill and decode.
+
+### Order
+
+| # | Path | Test cost | Projected size |
+|---|---|---|---|
+| 1 | A2, then A1 | very low | unknown, up to tens of ms/token |
+| 2 | B1 | low, no model run | ceiling for B2 and B3 |
+| 3 | C1 and C2 at P15 | medium | about 15 to 20 ms/token |
+| 4 | B4 | medium | fewer slow arms, lower variance |
+| 5 | E1 and E2 | medium | large for long prompts |
+| 6 | B2 or B3, if B1 supports them | high | depends on B1 |
+| 7 | D1 probe | medium, high risk | unknown |
+| 8 | C3 | medium | may lose to contention |
+
+Excluded because they are done or closed: lower-bit or pruned checkpoints,
+speculation and MTP, in-process prefetch and overlap without a new premise,
+repacking and blob layouts, one-sync, worker-count sweeps, pin-depth sweeps,
+cache-aware routing, mapping resident rows with a copy, the wired limit, the
+ops-per-buffer cap, the buffer arena, and keep-warm tuning.

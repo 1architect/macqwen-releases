@@ -54,16 +54,24 @@ production harness, both inside bands near 15%. Full record: the last
 2. Paired A/B of keep-warm in the real chat configuration: 8 pins (the Vontra
    policy), not the harness default of 32. `bench_production` builds
    `FlashNextBackend()` directly and therefore uses 32 pins.
-3. With the clock fixed, re-measure the byte cost per token and decide the
-   next lever: the per-operation cold-expert split (the 1-of-8 dip), zero-copy
-   streaming from the page cache (map + mlock + no-copy Metal buffers), or an
-   offline cache-policy simulation on recorded routes. See the options
-   discussion in `research.md`.
-4. Opt-in candidates that still need their gates:
+3. Run the checkpoint-free and low-cost paths from "Next decode and prefill
+   paths" in `research.md`, in its order: CPU state residency and thread QoS
+   for the read workers (A2, A1), then the offline cache simulator on recorded
+   routes (B1).
+4. With the clock held at P15, try glue fusion and a compiled dense segment
+   between host syncs (C1, C2), then the file-backed dense core and RAM audit
+   (B4).
+5. Prefill: pipeline expert reads inside each layer and coalesce adjacent row
+   reads (E1, E2).
+6. Cache admission or an app-owned expert cache (B2, B3) only if B1 shows a
+   policy that beats LRU. The zero-copy shard probe (D1) and the hit-first
+   split (C3) come last.
+7. Opt-in candidates that still need their gates:
    `FLASHNEXT_PREFILL_LAST_ROW=1` (exact final-logit check),
    `FLASHNEXT_NORM_WEIGHT_CACHE=1` (digest run),
    `FLASHNEXT_SLAB_COUNTS=cumulative` with
-   `FLASHNEXT_SLAB_PROFILE=rolling` (paired hit-rate run).
+   `FLASHNEXT_SLAB_PROFILE=rolling` (paired hit-rate run), and the QSA flags
+   `FLASHNEXT_QSA_CACHE_POOLED_KEYS` and `FLASHNEXT_QSA_SCATTER_DECODE`.
 
 ### Rules the user set this session
 
