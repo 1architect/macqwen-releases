@@ -5548,3 +5548,94 @@ We made the 6 GB expert pool the chat default on 2026-09-23 at the user's
 request (`FLASHNEXT_EXPERT_POOL_GB=6` in `settings/launch.py`;
 `FLASHNEXT_EXPERT_POOL_GB=0` rolls back). The loaded-machine pair, a long
 answer and launch-time pool sizing remain open.
+
+## Smaller checkpoints on the Hub, surveyed 2026-09-23
+
+No download, no model run. Sizes are the current file totals from the Hub API
+with `blobs=true` (the `usedStorage` figure includes old revisions). Expert
+formats come from the safetensors headers, read by HTTP range request. The
+data volume had 24 GiB free, so no candidate fits beside the installed Vontra
+checkpoint (113.2 GB); each needs external storage or removing Vontra. The
+2026-09-22 handoff closed "smaller checkpoint" on quality; this survey
+reopens nothing by itself.
+
+### `ddalcu/Qwen3.8-Flash-Next-MLX-Serve-mixed-4-8bit`
+
+Revision `7eaef0f`. The page shows 75.3 GB, which is the safetensors total
+(index `total_size`, vision included). The repository is 107.3 GB: the
+32.0 GB n-gram table is a separate `ngram_table.bin`, safetensors format with
+a `.bin` name so loaders skip it, and the model needs it for every token.
+
+| Part | Format | Size |
+|---|---|---:|
+| routed experts, 512 x 48 | Q4/G64, 2,764,800 bytes/expert | 67.95 GB |
+| dense trunk | 8-bit/G64 | 3.85 GB |
+| MTP | trunk policy | 1.51 GB |
+| vision (`model.visual.*`) | bf16 | 0.90 GB |
+| `lm_head` | 8-bit/G64 | 0.68 GB |
+| `embed_tokens` | 4-bit/G64 | 0.36 GB |
+| router (`mlp.gate`) | 8-bit/G64 | 0.07 GB |
+| n-gram table | 4-bit/G32, one tensor of 320,001,536 x 160 | 32.00 GB |
+
+The card says routers are bf16; the headers carry scales and biases for every
+`mlp.gate`, so the router is 8-bit. Inject weights and the shared-expert gate
+are bf16 (quantized in Vontra). Norm gains are one-centered and conv weights
+are already `[C, K, 1]`, matching our defaults. The merged n-gram table is
+exactly 128 x 2,500,012 rows, the concatenation of Vontra's and upstream
+`ShardedEmbedding`'s shards, so a global row maps to the merged row
+unchanged.
+
+Support would need an n-gram loader for `config.ngram_table` (today the loader
+refuses with "incomplete n-gram shard set"), a discovery check for the table
+file, and a filter for `model.visual.*`. The G64 expert pool has not run on a
+model. Resident dense weights are about 4.6 GB against about 3.0 GB for Vontra,
+and the 8-bit dense matvecs read about 1.6 GB more per token. Against the 10%
+smaller expert records this projects neutral or slower on 16 GB; not measured.
+
+### Candidates below Vontra's size
+
+602 repos derive from the base model; 136 are MLX-format. The ones that
+shrink the streamed expert bank:
+
+| Checkpoint | Size | Experts | Record | Bank | Our fast path |
+|---|---:|---|---:|---:|---|
+| `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit` | 73.5 GB | 288 x 48, Q4/G64 | 2.76 MB | 38 GB | G64 Metal executor, promoted on this checkpoint; G64 pool untested |
+| `neopolita/Qwen3.8-Flash-Next-119B-A5B-Niwaki-v2.4-3bit-mlx` | 44.8 GB | 512 on 24 layers, 16 on 24 layers, Q3/G64 | 2.15 MB | about 27 GB | no: Q3 runs generic MLX |
+| `Litwein/Qwen3.8-Flash-Next-REAP320-oQ3e-DWQ-MTP-Vision-MLX` | 70.8 GB | 320 x 48, Q3/G64, KL-DWQ | 2.15 MB | 33 GB | no: Q3 runs generic MLX |
+
+- REAP-288: supported historically. The card reports HumanEval 91.5 against
+  93.9 for its control, and an external report of `xhigh` loops; our
+  long-turn G64 quality gate is open.
+- Niwaki v2.4: pruned, recovery-trained. The author's evaluation gives task
+  average 0.762 against 0.759, WikiText-2 perplexity 6.36 against 5.06 and
+  KL 0.75 to the reference; no code or API task. Its layout needs its own
+  loader: `niwaki.kept_experts` stores a compact bank per pruned layer and
+  zeroes routed slots whose expert is not stored, after renormalizing over
+  the top 10 (this interacts with our 0.85 threshold), and the n-gram table
+  is 2-bit in a paired-row layout. The 16-expert layers (about 34 MB each)
+  could stay resident.
+- REAP320-DWQ: pruned plus 3-bit with distillation; standard key layout by
+  the index, not verified further.
+
+Set aside:
+
+- Unpruned Q4/G64 (`Sawfwair/Qwen3.8-Flash-Next-MLX-4bit` 104.8 GB,
+  `nopmobiel` and `pipenetwork` about 103.7 GB): G64 executor applies, but the
+  bank stays about 68 GB and records shrink only 10%.
+- Unpruned Q3 (`Sawfwair/...-Activation-3bit` 89.7 GB, Vontra oQ3-MTP
+  92.5 GB): no Q4 executor; oQ3-MTP failed the SketchUp gate on 2026-09-01.
+- 2-bit experts (Vontra oQ2 67.7 GB, `Sawfwair/...-Mixed-2bit` 73.1 GB,
+  CRACK JANG_2L 70.5 GB): 31% local error measured for Q2/G32 on 2026-08-29.
+- Formats this runtime does not read: VQ codebooks (`TheDrainFlorist`),
+  turboquant (`manjunathshiva`), MXFP4 mode, MLX-Serve and AFM packs with a
+  merged n-gram file.
+- Incomplete: `Kandandan/Qwen3.8-Flash-Next-MLX-4bit-MTP` ships no n-gram
+  table; `khuasar/...REAP-288-Q4g32-Q8-MTPLX` marks its upload unfinished.
+- Earlier Niwaki releases (99B, 102B, 113B, 36.7 to 42.2 GB) narrow experts to
+  448 or delete whole banks.
+
+Only the three pruned candidates change the streamed bank (27 to 38 GB against
+75 GB), which the read replay and cache simulator identify as the variable
+that moves reads on 16 GB. Each is a different model: digests cannot be
+compared with Vontra, and each needs the SketchUp gate. REAP-288 has the
+lowest integration cost.
