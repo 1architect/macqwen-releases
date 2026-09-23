@@ -79,18 +79,13 @@ measure 2.86 to 2.93 tok/s at 8 pins, so 3 tok/s needs about 10 to 15 ms/token.
    host) was measured with the GPU clock collapsed. One profiled run with
    keep-warm on (`FLASHNEXT_PROFILE_IO=1`, separate from throughput arms)
    shows whether the next lever is physical bytes or GPU dispatches.
-4. Measure the QSA flags at 16K to 32K context.
-   `FLASHNEXT_QSA_CACHE_POOLED_KEYS=1` and `FLASHNEXT_QSA_SCATTER_DECODE=1`
-   passed their exact-digest gate at 2.6K context. The work they remove grows
-   with context, which is where agent sessions with long tool results sit.
-   The prefill for each arm takes minutes; use few pairs.
-5. Rejected, do not retry without a new premise: shrinking the checkpoint,
+4. Rejected, do not retry without a new premise: shrinking the checkpoint,
    cache admission or an app-owned expert cache (realizable policies stay
    within 3% of LRU), no-copy Metal buffers over checkpoint mappings (Metal
    makes the whole region resident), the prefill MoE pipeline, prefill read
    coalescing, last-row prefill logits (not exact), compiled hyper-connections
    (not exact), the hit-first MoE split, and further pin-depth sweeps.
-6. Method: use 128-token paired arms in one process (`bench_long_states` with
+5. Method: use 128-token paired arms in one process (`bench_long_states` with
    repeated conditions) for small decode effects. The 32-token harness gave
    bands of 19% to 25% on a busy machine. Close other applications first; the
    Claude app renderer and `mediaanalysisd` added one to two cores of load
