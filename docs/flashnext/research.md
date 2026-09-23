@@ -5639,3 +5639,19 @@ Only the three pruned candidates change the streamed bank (27 to 38 GB against
 that moves reads on 16 GB. Each is a different model: digests cannot be
 compared with Vontra, and each needs the SketchUp gate. REAP-288 has the
 lowest integration cost.
+
+Decision, same day: REAP checkpoints (REAP-288, REAP-384 and REAP-based
+builds) are discarded because they loop. `Vontra/Qwen3.8-Flash-Next-MLX-3bit-MTP`
+(90.8 GB, uniform Q3/G32 on every module including the dense layers,
+`lm_head` and the n-gram table; routers bf16) was also checked: it loads with
+the current layout but runs on generic MLX (the Metal executor is Q4-only),
+and its sensitivity-guided sibling oQ3-MTP already failed the SketchUp gate.
+
+No published unpruned 4-bit checkpoint falls between 80 and 90 GB. With all
+512 experts at Q4/G64 the non-n-gram part is about 72.8 GB
+(`Sawfwair/Qwen3.8-Flash-Next-MLX-4bit`, 104.8 GB with the 32 GB table), so
+only a smaller n-gram table reaches the range: 2-bit at group 32 (60 bytes per
+row) gives about 92 GB, 2-bit at group 128 in a paired-row layout (about 45
+bytes per row) about 87 GB, 3-bit at group 32 about 98 GB. A decode token
+reads 16 table rows, so the table's width changes disk and quality, not
+decode speed. No such checkpoint is published.
