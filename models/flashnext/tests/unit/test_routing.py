@@ -200,12 +200,12 @@ class ReadModePerProfileTests(unittest.TestCase):
 
         import models.flashnext.routing as routing
 
-        with unittest.mock.patch.dict("os.environ", {"FLASHNEXT_READ": "resident"}):
+        with unittest.mock.patch.dict("os.environ", {"FLASHNEXT_READ": "preadv"}):
             reloaded = importlib.reload(routing)
-            self.assertEqual(reloaded.DEFAULT_READ_MODE, "resident")
+            self.assertEqual(reloaded.DEFAULT_READ_MODE, "preadv")
             item = reloaded.RoutingProfile("exact-quality", FakeStore(), fake_language())
             item.reset()
-            self.assertEqual(item.store._read_mode, "resident")
+            self.assertEqual(item.store._read_mode, "preadv")
         importlib.reload(routing)
 
 

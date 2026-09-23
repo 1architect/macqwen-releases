@@ -132,7 +132,7 @@ class PinProfileTests(unittest.TestCase):
             (False, "pin history has incompatible quantization"),
         )
 
-    def test_hot_expert_lookup_checks_only_the_requested_mixed_layout(self):
+    def test_profile_check_covers_only_the_requested_mixed_layout(self):
         store = _ProfileStore(group_size=64, layouts={0: 32, 1: 64})
         payload = _profile()
         payload["layers"] = {"0": [0], "1": [0]}
@@ -150,17 +150,14 @@ class PinProfileTests(unittest.TestCase):
             with mock.patch.dict(
                 routing.os.environ, {"FLASHNEXT_PIN_CACHE": handle.name}
             ):
-                self.assertEqual(
-                    expert_cache.get_hot_slab_experts(
-                        1, 1, store=store, expected_group_size=64
-                    ),
-                    [0],
+                accepted = expert_cache._compatible_pin_profile(
+                    store, 64, layer_ids=(1,)
                 )
-                self.assertEqual(
-                    expert_cache.get_hot_slab_experts(
-                        0, 1, store=store, expected_group_size=64
-                    ),
-                    [],
+                self.assertEqual(accepted["layers"]["1"], [0])
+                self.assertIsNone(
+                    expert_cache._compatible_pin_profile(
+                        store, 64, layer_ids=(0,)
+                    )
                 )
 
     def test_save_skips_an_unverifiable_profile(self):
@@ -254,11 +251,10 @@ class PinProfileTests(unittest.TestCase):
             with mock.patch.dict(
                 routing.os.environ, {"FLASHNEXT_PIN_CACHE": handle.name}
             ):
-                self.assertEqual(
-                    expert_cache.get_hot_slab_experts(
-                        0, 1, store=store, expected_group_size=64
-                    ),
-                    [],
+                self.assertIsNone(
+                    expert_cache._compatible_pin_profile(
+                        store, 64, layer_ids=(0,)
+                    )
                 )
 
 

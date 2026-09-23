@@ -156,7 +156,7 @@ def attach(language) -> None:
     )
 
 
-def swap_streaming(language, store, mode: str, capacity: int = 0) -> None:
+def swap_streaming(language, store, mode: str) -> None:
     """Keep the MTP expert pool on SSD like the backbone expert pools."""
     prefix = f"{PREFIX}.layers.0.mlp.switch_mlp"
     block = language.mtp.layers[0].mlp
@@ -170,7 +170,6 @@ def swap_streaming(language, store, mode: str, capacity: int = 0) -> None:
         group_size,
         bits,
         mode,
-        capacity,
         old.activation,
         layer_id=MTP_LAYER_ID,
         next_prefix=prefix,

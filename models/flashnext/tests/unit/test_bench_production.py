@@ -171,8 +171,8 @@ class ConditionTests(unittest.TestCase):
         target = backend()
         apply_condition(target, {"FLASHNEXT_TRACK_RESIDENT": "1"})
         self.assertTrue(target.store._track_residency)
-        apply_condition(target, {"FLASHNEXT_READ": "resident"})
-        self.assertEqual(target.store._read_mode, "resident")
+        apply_condition(target, {"FLASHNEXT_READ": "preadv"})
+        self.assertEqual(target.store._read_mode, "preadv")
 
     def test_it_refuses_a_setting_that_does_not_take(self):
         class Stubborn:

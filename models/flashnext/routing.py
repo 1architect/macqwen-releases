@@ -16,7 +16,7 @@ PROFILES = (
 # `shared_mmap` and keep it. Every other profile takes the store's default, so
 # FLASHNEXT_READ reaches the chat instead of being overwritten here.
 DEFAULT_READ_MODE = os.environ.get("FLASHNEXT_READ", "pread")
-READ_MODES = ("pread", "preadv", "resident", "shared_mmap", "hybrid")
+READ_MODES = ("pread", "preadv", "shared_mmap")
 # Turn one decodes on a cold page cache and is the slowest turn of a session.
 # The expert set a session pins is stable, so recording it and reading those
 # rows once at load puts them in the cache before the user types. The mlock
@@ -553,17 +553,8 @@ class RoutingProfile:
         # one row per prompt token gives it nothing extra.
         set_route_observer(self._observe, self.warmup)
 
-    def _fast_keep(self, scores, threshold):
-        total = sum(scores)
-        accumulated = 0.0
-        for position, score in enumerate(scores):
-            accumulated += score / total
-            if accumulated >= threshold:
-                return position + 1
-        return len(scores)
-
     def _observe(self, layer, experts, scores, keeps):
-        from models.flashnext.adaptive_topk import FAST_LAYERS
+        from models.flashnext.adaptive_topk import FAST_LAYERS, _keep_for_mass
 
         threshold = 0.40 if layer in FAST_LAYERS else 0.20
         for expert_row, score_row, normal_keep in zip(experts, scores, keeps):
@@ -574,7 +565,7 @@ class RoutingProfile:
             if self.mode in ("exact-quality", "cache-aware", "fused-quality"):
                 selected = zip(expert_row[:normal_keep], score_row[:normal_keep])
             else:
-                keep = self._fast_keep(score_row, threshold)
+                keep = _keep_for_mass(score_row, threshold)
                 selected = zip(expert_row[keep:], score_row[keep:])
             for expert, score in selected:
                 self.candidates[layer][expert] += score / mass

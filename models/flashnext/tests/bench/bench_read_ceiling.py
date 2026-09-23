@@ -144,7 +144,7 @@ def main() -> None:
 
     os.environ.setdefault("FLASHNEXT_TOPK_THRESHOLD", "0.85")
     model, _, _ = load_streaming(
-        MODEL, expert_capacity=0, verbose=False, keep_vision=False, use_mtp=False
+        MODEL, verbose=False, keep_vision=False, use_mtp=False
     )
     language = model.language_model
     store = language.model.layers[0].mlp.switch_mlp.gate_proj.cache.store
@@ -212,12 +212,9 @@ def main() -> None:
     free = free_memory_mb()
     store.unpin_all()
 
-    from models.flashnext.expert_cache import buffer_arena
-
     digest = hashlib.sha256(
         ",".join(str(value) for value in produced).encode()
     ).hexdigest()[:16]
-    print(f"arena: {buffer_arena()}", flush=True)
     print(f"digest: {digest}", flush=True)
     print(f"free memory: {free} MB", flush=True)
     print(f"mode: {args.mode}", flush=True)

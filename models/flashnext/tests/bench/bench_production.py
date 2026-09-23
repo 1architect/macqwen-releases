@@ -271,16 +271,6 @@ COMPARISONS = {
         "wired0": {"FLASHNEXT_WIRED_GB": "0"},
         "wired2": {"FLASHNEXT_WIRED_GB": "2"},
     },
-    # `empty_rows` allocates a fresh numpy block for every part of every layer,
-    # about 1.18 GB of transient host memory per token across 432 allocations.
-    # The ring reuses a handful instead. The 2x2 against the read-ceiling
-    # benchmark could not see it: its ram arm pins everything and its disk arm
-    # caches nothing, so neither arm's hit rate can move. Production is the
-    # only arm where it can, and that is where it showed.
-    "buffer-arena": {
-        "fresh": {"FLASHNEXT_BUFFER_ARENA": "0"},
-        "ring3": {"FLASHNEXT_BUFFER_ARENA": "3"},
-    },
     "gpu-keepwarm": {
         "baseline": {"FLASHNEXT_GPU_KEEPWARM": "0"},
         "keepwarm": {"FLASHNEXT_GPU_KEEPWARM": "1"},
@@ -309,17 +299,9 @@ COMPARISONS = {
             "FLASHNEXT_GPU_KEEPWARM": "1", "FLASHNEXT_IO_QOS": "user-interactive",
         },
     },
-    "ngram-nocache": {
-        "baseline": {"FLASHNEXT_NGRAM_NOCACHE": "0"},
-        "nocache": {"FLASHNEXT_NGRAM_NOCACHE": "1"},
-    },
     "prewarm": {
         "baseline": {"FLASHNEXT_PREWARM": "0"},
         "prewarm": {"FLASHNEXT_PREWARM": "1"},
-    },
-    "read-mode": {
-        "pread": {"FLASHNEXT_READ": "pread"},
-        "resident": {"FLASHNEXT_READ": "resident"},
     },
     # The shared buffer removes the concatenate but is written by 16 workers
     # scattering across it, where the concatenate was one sequential copy. The
@@ -356,31 +338,22 @@ COMPARISONS = {
             "FLASHNEXT_SHARED_READ_BUFFER": "1", "FLASHNEXT_PREAD_CHUNK": "4",
         },
     },
-    # A token blocks on 98 evals for about 200 ms while the shaders are 9%
-    # busy. This builds the routed list on the host instead of fetching it
-    # with a second round trip, which halves the count to 50. Bit-exact:
-    # identical token_sha256 on a real chat turn.
-    "one-sync": {
-        "two-syncs": {"FLASHNEXT_ONE_SYNC": "0"},
-        "one-sync": {"FLASHNEXT_ONE_SYNC": "1"},
-    },
     "metal-runtime": {
         # This is an MLX reference versus the opt-in custom executor on a
         # Q4/G32 checkpoint. It is intentionally not called "stock": both
         # arms are FlashNext and a Q4/G64 checkpoint would route both arms to
         # MLX while the guarded G64 flag remains disabled.
         "mlx-reference": {
-            "FLASHNEXT_METAL_RUNTIME": "0", "FLASHNEXT_SLAB": "0",
+            "FLASHNEXT_METAL_RUNTIME": "0",
         },
         "custom-runtime": {
-            "FLASHNEXT_METAL_RUNTIME": "1", "FLASHNEXT_SLAB": "0",
+            "FLASHNEXT_METAL_RUNTIME": "1",
         },
     },
     "g64-kernel": {
         "g64-reference": {
             "FLASHNEXT_METAL_RUNTIME": "1",
             "FLASHNEXT_METAL_G64": "0",
-            "FLASHNEXT_SLAB": "0",
             "FLASHNEXT_SLAB_GLOBAL": "0",
             "FLASHNEXT_SLAB_PACK": "0",
             "FLASHNEXT_SLAB_G64": "0",
@@ -389,7 +362,6 @@ COMPARISONS = {
         "g64-metal": {
             "FLASHNEXT_METAL_RUNTIME": "1",
             "FLASHNEXT_METAL_G64": "1",
-            "FLASHNEXT_SLAB": "0",
             "FLASHNEXT_SLAB_GLOBAL": "0",
             "FLASHNEXT_SLAB_PACK": "0",
             "FLASHNEXT_SLAB_G64": "0",
@@ -406,18 +378,6 @@ COMPARISONS = {
     "compile": {
         "plain": {"FLASHNEXT_COMPILE": "0"},
         "compiled": {"FLASHNEXT_COMPILE": "1"},
-    },
-    # Map every row the tracker believes is cached, not only the mlocked ones.
-    # Run bench_residency.py first: below 78.5% precision this loses.
-    "track-resident": {
-        "pinned-only": {
-            "FLASHNEXT_READ": "resident",
-            "FLASHNEXT_TRACK_RESIDENT": "0",
-        },
-        "tracked": {
-            "FLASHNEXT_READ": "resident",
-            "FLASHNEXT_TRACK_RESIDENT": "1",
-        },
     },
     # Cache-aware routing: take a resident expert when a cold one scores no
     # better. This changes what the model computes, so compare the text as
@@ -473,13 +433,6 @@ COMPARISONS = {
         "neither": {"FLASHNEXT_PIN_PARTS": "all", "FLASHNEXT_PREWARM": "0"},
         "both": {"FLASHNEXT_PIN_PARTS": "scales", "FLASHNEXT_PREWARM": "1"},
     },
-    # Issue a layer's reads in ascending offset order instead of routing
-    # order. Never measured. It changes the read pattern rather than the
-    # bytes, and read pattern is what the layout result moved.
-    "sort-reads": {
-        "unsorted": {"FLASHNEXT_SORT_READS": "0"},
-        "sorted": {"FLASHNEXT_SORT_READS": "1"},
-    },
     # Spend the pin budget on scales and biases across many experts instead of
     # whole experts across few. Needs resident_experts raised and a candidate
     # pool that large, so pass --hot through the tail benchmark to compare
@@ -530,13 +483,6 @@ LIVE_SETTINGS = {
         lambda backend: backend.store._read_mode,
         str,
     ),
-    "FLASHNEXT_NGRAM_NOCACHE": (
-        lambda backend, value: setattr(
-            backend.store, "_ngram_nocache", value == "1"
-        ),
-        lambda backend: backend.store._ngram_nocache,
-        lambda value: value == "1",
-    ),
     "FLASHNEXT_GPU_KEEPWARM": (
         # Read at call time from a list; spins change no model value.
         lambda backend, value: __import__(
@@ -583,17 +529,6 @@ LIVE_SETTINGS = {
         ).io_qos(),
         str,
     ),
-    "FLASHNEXT_BUFFER_ARENA": (
-        # Read at call time from a list, so a live flip is enough and the
-        # setting is read back before either arm reports.
-        lambda backend, value: __import__(
-            "models.flashnext.expert_cache", fromlist=["set_buffer_arena"]
-        ).set_buffer_arena(value),
-        lambda backend: __import__(
-            "models.flashnext.expert_cache", fromlist=["buffer_arena"]
-        ).buffer_arena(),
-        lambda value: int(value),
-    ),
     "FLASHNEXT_WIRED_GB": (
         # MLX wires nothing by default, so every buffer handed to the GPU is
         # evictable. The setter reads the limit back through Metal itself.
@@ -604,13 +539,6 @@ LIVE_SETTINGS = {
             "models.flashnext.loader", fromlist=["wired_gb"]
         ).wired_gb(),
         lambda value: float(value),
-    ),
-    "FLASHNEXT_SORT_READS": (
-        lambda backend, value: setattr(
-            backend.store, "_sort_reads", value == "1"
-        ),
-        lambda backend: backend.store._sort_reads,
-        lambda value: value == "1",
     ),
     "FLASHNEXT_SWAP_RESIDENT": (
         lambda backend, value: os.environ.__setitem__(
@@ -653,15 +581,6 @@ LIVE_SETTINGS = {
         ),
         lambda backend: backend.store._pread_chunk,
         lambda value: int(value),
-    ),
-    "FLASHNEXT_ONE_SYNC": (
-        lambda backend, value: __import__(
-            "models.flashnext.adaptive_topk", fromlist=["set_one_sync"]
-        ).set_one_sync(value == "1"),
-        lambda backend: __import__(
-            "models.flashnext.adaptive_topk", fromlist=["one_sync"]
-        ).one_sync(),
-        lambda value: value == "1",
     ),
     "FLASHNEXT_COMPILE": (
         lambda backend, value: (
@@ -708,8 +627,6 @@ LIVE_SETTINGS = {
 LOAD_TIME_SETTINGS = {
     "FLASHNEXT_STREAM_EMBED",
     "FLASHNEXT_PREWARM",
-    "FLASHNEXT_SLAB",
-    "FLASHNEXT_SLAB_LAYERS",
     "FLASHNEXT_SLAB_GLOBAL",
     "FLASHNEXT_SLAB_MIN_SLOTS",
     "FLASHNEXT_METAL_G64",
@@ -1396,7 +1313,7 @@ def main() -> None:
     if args.compare in {"qsa", "qsa-cache", "qsa-scatter"}:
         effective_environment.update({
             "FLASHNEXT_METAL_RUNTIME": "1", "FLASHNEXT_METAL_G64": "0",
-            "FLASHNEXT_SLAB": "0", "FLASHNEXT_SLAB_GLOBAL": "0",
+            "FLASHNEXT_SLAB_GLOBAL": "0",
             "FLASHNEXT_SLAB_PACK": "0", "FLASHNEXT_SLAB_G64": "0",
             "FLASHNEXT_STREAM_PACK": "0", "FLASHNEXT_PREWARM": "0",
         })

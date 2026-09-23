@@ -24,46 +24,6 @@ class _ShapeStore:
 
 
 class CheckpointRuntimeCompatibilityTests(unittest.TestCase):
-    def test_resident_slab_drops_stale_preload_ids(self):
-        store = _ShapeStore()
-        slab = expert_cache.ResidentSlab(
-            store, "layer.switch_mlp.gate_proj", 3,
-            initial_experts=[4, 2, 2, -1, 0],
-        )
-
-        self.assertEqual(slab.slot, {0: 1, 2: 0})
-        self.assertEqual(store.calls, [
-            ("layer.switch_mlp.gate_proj.weight", [2, 0]),
-            ("layer.switch_mlp.gate_proj.scales", [2, 0]),
-            ("layer.switch_mlp.gate_proj.biases", [2, 0]),
-        ])
-
-    def test_warm_history_drops_ids_from_wider_checkpoint(self):
-        store = SimpleNamespace()
-        projection = SimpleNamespace(
-            slab=None,
-            cache=SimpleNamespace(store=store, prefix="layer.switch_mlp.gate_proj"),
-        )
-        switch_mlp = SimpleNamespace(
-            gate_proj=SimpleNamespace(
-                num_experts=3,
-                slab=None,
-                cache=SimpleNamespace(
-                    store=store, prefix="layer.switch_mlp.gate_proj"
-                ),
-            ),
-            up_proj=projection,
-            down_proj=projection,
-        )
-
-        with mock.patch.object(expert_cache, "_WARM_ON", True), \
-             mock.patch.object(expert_cache, "_LAST", {7: [287, 2, 512, 0]}), \
-             mock.patch.object(expert_cache._WARM, "submit") as submit:
-            expert_cache.warm_layer(switch_mlp, 7)
-
-        self.assertEqual(submit.call_count, 3)
-        self.assertEqual(submit.call_args_list[0].args[3], [2, 0])
-
     def test_reap_g64_uses_reference_path_with_explicit_opt_out(self):
         prefix = "language_model.model.layers.1.mlp.switch_mlp"
         shapes = {
@@ -96,7 +56,7 @@ class CheckpointRuntimeCompatibilityTests(unittest.TestCase):
         ):
             with mock.patch.object(slab_pack, "get_or_create_slab_pack") as pack:
                 switch_mlp = expert_cache.StreamingSwitchGLU(
-                    store, prefix, 64, 4, "affine", 0,
+                    store, prefix, 64, 4, "affine",
                     activation=lambda value: value,
                     layer_id=1,
                 )

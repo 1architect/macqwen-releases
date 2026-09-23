@@ -187,12 +187,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tokens", type=int, default=24)
     parser.add_argument("--blocks", type=int, nargs="+", default=(8, 4, 2, 1))
-    parser.add_argument(
-        "--sort-order",
-        nargs="+",
-        choices=("off", "on"),
-        help="A/B sequence for physically sorted expert reads",
-    )
     parser.add_argument("--exact-verifier", action="store_true")
     parser.add_argument("--argmax-only", action="store_true")
     parser.add_argument(
@@ -203,7 +197,7 @@ def main():
     args = parser.parse_args()
 
     model, _, store = load_streaming(
-        MODEL, expert_capacity=0, verbose=True, keep_vision=False, use_mtp=False
+        MODEL, verbose=True, keep_vision=False, use_mtp=False
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
     language = model.language_model
@@ -213,7 +207,7 @@ def main():
         from models.flashnext.qwen4_verifier import Qwen4ExactSpeculativeVerifier
 
         qwen35_language._EXACT_SPECULATIVE_VERIFIER = Qwen4ExactSpeculativeVerifier()
-    store._read_mode = "hybrid"
+    store._read_mode = "pread"
     store.set_mmap_advice("random")
     set_threshold(0.85)
     set_renorm_blend(1.0)
@@ -229,16 +223,7 @@ def main():
             args.blocks[0],
         )
         return
-    modes = args.sort_order
-    runs = (
-        [(args.blocks[0], value) for value in modes]
-        if modes
-        else [(size, None) for size in args.blocks]
-    )
-    for size, mode in runs:
-        sort_mode = mode if args.sort_order else None
-        if sort_mode is not None:
-            store._sort_reads = sort_mode == "on"
+    for size in args.blocks:
         rate, elapsed = verify(
             language,
             ids,
@@ -248,8 +233,6 @@ def main():
             argmax_only=args.argmax_only,
         )
         label = f"block {size}"
-        if sort_mode is not None:
-            label += f", sort {sort_mode}"
         print(
             f"{label}: {args.tokens} tok em {elapsed:.2f}s = {rate:.2f} tok/s",
             flush=True,

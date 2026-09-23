@@ -78,7 +78,7 @@ class ScoreSyncProfileTests(unittest.TestCase):
     def test_adaptive_path_keeps_eval_direct_when_profile_is_disabled(self):
         source = inspect.getsource(adaptive_topk._moe_call)
         self.assertIn("if score_profile_enabled:", source)
-        self.assertIn("elif needed:\n            mx.eval(scores, inds)", source)
+        self.assertIn("elif swap_active:\n            mx.eval(scores, inds)", source)
         self.assertNotIn("score_sync_begin(True)\n        try:", source)
 
 

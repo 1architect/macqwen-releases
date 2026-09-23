@@ -37,7 +37,7 @@ class G64IntegrationTests(unittest.TestCase):
             return expert_cache.StreamingSwitchGLU(
                 _G64Store(),
                 "language_model.model.layers.1.mlp.switch_mlp",
-                64, 4, "affine", 0,
+                64, 4, "affine",
                 activation=lambda value: value,
                 layer_id=1,
             )
@@ -123,7 +123,7 @@ class G64IntegrationTests(unittest.TestCase):
                 }, clear=False,
             ):
                 switch = self._make()
-        self.assertIsNone(switch.gate_proj.slab)
+        self.assertIsNone(switch.slab_pack)
         self.assertIn("does not declare Q4/G64", switch._slab_pack_disabled_reason)
 
     def test_fresh_pin_profile_records_g64_checkpoint_provenance(self):

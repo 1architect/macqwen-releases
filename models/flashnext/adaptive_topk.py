@@ -33,6 +33,10 @@ import time
 
 import mlx.core as mx
 
+from . import compiled, hostwindow
+from . import expert_cache as _expert_cache
+from .expert_cache import _TIMERS
+
 _applied = False
 
 
@@ -46,46 +50,9 @@ def _keep_for_mass(weights, threshold: float) -> int:
     return len(weights)
 
 
-def _tail_features(fast_y, shared_y, inputs, missing_fraction):
-    scale = missing_fraction.astype(mx.float32)
-    return mx.stack(
-        (
-            scale * fast_y.astype(mx.float32),
-            scale * shared_y.astype(mx.float32),
-            scale * inputs.astype(mx.float32),
-        ),
-        axis=-1,
-    )
-
-
-def _collect_tail_fit(layer_id, features, target) -> None:
-    hidden = int(target.shape[-1])
-    rows = features.reshape(-1, hidden, 3)
-    values = target.astype(mx.float32).reshape(-1, hidden)
-    gram = mx.einsum("nhf,nhg->hfg", rows, rows)
-    rhs = mx.einsum("nhf,nh->hf", rows, values)
-    previous = _TAIL_STATS.get(layer_id)
-    if previous is not None:
-        gram = gram + previous[0]
-        rhs = rhs + previous[1]
-    _TAIL_STATS[layer_id] = (gram, rhs)
-
-
 def _moe_call(self, x: mx.array) -> mx.array:
-    from models.flashnext import compiled, hostwindow
-    from models.flashnext.expert_cache import (
-        _EARLY_SUBMIT,
-        _PROFILE,
-        _SCORE_SYNC_PROFILE,
-        _TIMERS,
-        _WARM_ON,
-        record_layer,
-        score_sync_begin,
-        score_sync_end,
-        warm_layer,
-    )
-
-    warm_layer(self.switch_mlp, getattr(self, "_flashnext_layer_id", None))
+    profile = _expert_cache._PROFILE
+    score_profile_enabled = profile or _expert_cache._SCORE_SYNC_PROFILE
 
     k = self.top_k
     if compiled.installed():
@@ -102,57 +69,45 @@ def _moe_call(self, x: mx.array) -> mx.array:
         "_flashnext_threshold",
         _LAYER_THRESHOLDS.get(layer_id, _THRESHOLD[0]),
     )
-    score_profile_enabled = _PROFILE or _SCORE_SYNC_PROFILE
     if score_profile_enabled and threshold >= 1.0:
         # Keep the profiler's activation count explicit for the exact path.
-        score_sync_begin(False)
+        _expert_cache.score_sync_begin(False)
     if threshold < 1.0:
         order = mx.argsort(-scores, axis=-1)
         inds = mx.take_along_axis(inds, order, axis=-1)
         scores = mx.take_along_axis(scores, order, axis=-1)
-    if threshold < 1.0:
-        # `inds` is only needed on the host when a prefetch, the warm
-        # predictor, or cache-aware routing will read it. Forcing it every
-        # layer costs a materialisation 48 times per token for a feature that
-        # is off, so it joins the same sync as `scores` only when wanted.
+        # `inds` is needed on the host only when cache-aware routing reads it.
+        # Forcing it every layer costs a materialisation 48 times per token,
+        # so it joins the `scores` sync only when wanted.
         swap_active = (
             _SWAP_RESIDENT[0] is not None
             and scores.size // k <= _SWAP_MAX_ROWS[0]
         )
-        needed = _EARLY_SUBMIT or _WARM_ON or swap_active or _ONE_SYNC
         if score_profile_enabled:
-            score_handle = score_sync_begin(True)
+            score_handle = _expert_cache.score_sync_begin(True)
             try:
-                if needed:
+                if swap_active:
                     mx.eval(scores, inds)
                 else:
                     mx.eval(scores)
             finally:
-                score_sync_end(score_handle)
-        elif needed:
+                _expert_cache.score_sync_end(score_handle)
+        elif swap_active:
             mx.eval(scores, inds)
         else:
             mx.eval(scores)
-        python_began = time.perf_counter() if _PROFILE else 0.0
-        keeps = []
-        fit_keeps = []
+        python_began = time.perf_counter() if profile else 0.0
         minimum = max(
             1,
             min(k, _LAYER_MIN_KEEPS.get(layer_id, _MIN_KEEP[0])),
         )
-        # `scores` was evaluated one line above, so this loop is a host copy
-        # and pure Python. No kernel runs and no read is in flight.
+        # `scores` was evaluated above, so this loop is a host copy and pure
+        # Python. No kernel runs and no read is in flight.
         with hostwindow.window("keep_loop"):
-            for weights in scores.reshape(-1, k).tolist():
-                keep = _keep_for_mass(weights, threshold)
-                keeps.append(max(minimum, keep))
-                if _TAIL_MODE[0] == "collect" and layer_id is not None:
-                    fit_threshold = (
-                        _TAIL_SENSITIVE[0]
-                        if layer_id in FAST_LAYERS
-                        else _TAIL_THRESHOLD[0]
-                    )
-                    fit_keeps.append(_keep_for_mass(weights, fit_threshold))
+            keeps = [
+                max(minimum, _keep_for_mass(weights, threshold))
+                for weights in scores.reshape(-1, k).tolist()
+            ]
 
         observer = _ROUTE_OBSERVER[0]
         expert_rows = None
@@ -208,7 +163,7 @@ def _moe_call(self, x: mx.array) -> mx.array:
                 # `inds` joined the sync above only when something asked for
                 # it. Otherwise this call forces its own, so the enclosing
                 # window is not host-only and must not be counted as free.
-                if not needed:
+                if not swap_active:
                     hostwindow.note_eval()
                 expert_rows = inds.reshape(-1, k).tolist()
             masks = [
@@ -233,81 +188,27 @@ def _moe_call(self, x: mx.array) -> mx.array:
             _KEEP_SUM[0] += sum(effective_keeps)
             _KEEP_COUNT[0] += len(effective_keeps)
 
-        if masks is None:
-            if _EARLY_SUBMIT or _WARM_ON:
-                rows = expert_rows
-                if rows is None:
-                    rows = inds.reshape(-1, k).tolist()
-                routed = [
-                    row[position] if position < keep else row[0]
-                    for row, keep in zip(rows, keeps)
-                    for position in range(width)
-                ]
-                wanted = list(dict.fromkeys(routed))
-                record_layer(layer_id, wanted)
-                prefetch = getattr(self.switch_mlp, "prefetch", None)
-                if prefetch is not None:
-                    prefetch(wanted)
-
-        if _ONE_SYNC:
-            # `expert_rows` is already here; `masks` or `keeps` says which
-            # slots survive. Padded slots reuse the row's first expert, which
-            # is exactly what the device `where` below does.
-            if expert_rows is None:
-                expert_rows = inds.reshape(-1, k).tolist()
-            if masks is None:
-                routed_host = [
-                    row[position] if position < keep else row[0]
-                    for row, keep in zip(expert_rows, keeps)
-                    for position in range(width)
-                ]
-            else:
-                routed_host = [
-                    row[position] if mask[position] else row[0]
-                    for row, mask in zip(expert_rows, masks)
-                    for position in range(width)
-                ]
-            self.switch_mlp._routed_host = (
-                routed_host, (*scores.shape[:-1], width)
-            )
-
         inds = inds[..., :width]
         scores = scores[..., :width]
         if masks is None:
-            if not all(k >= width for k in keeps):
+            if not all(keep >= width for keep in keeps):
                 keep_shape = (*scores.shape[:-1], 1)
                 keep_array = mx.array(keeps, dtype=mx.int32).reshape(keep_shape)
                 active = mx.arange(width) < keep_array
-                if not _ONE_SYNC:
-                    inds = mx.where(active, inds, inds[..., :1])
+                inds = mx.where(active, inds, inds[..., :1])
                 scores = mx.where(active, scores, 0)
         else:
             active = mx.array(
                 [row[:width] for row in masks], dtype=mx.bool_
             ).reshape(scores.shape)
-            if not _ONE_SYNC:
-                inds = mx.where(active, inds, inds[..., :1])
+            inds = mx.where(active, inds, inds[..., :1])
             scores = mx.where(active, scores, 0)
-        if _PROFILE:
+        if profile:
             _TIMERS["topk_python"] += time.perf_counter() - python_began
     elif layer_id is not None:
         _LAST_KEEPS[layer_id] = (k,) * (inds.size // k)
         _KEEP_SUM[0] += inds.size
         _KEEP_COUNT[0] += inds.size // k
-
-        flat_inds = None
-        routed_host = None
-        if _ONE_SYNC or _EARLY_SUBMIT:
-            flat_inds = inds.reshape(-1)
-            mx.eval(flat_inds)
-            routed_host = flat_inds.tolist()
-            self.switch_mlp._routed_host = (routed_host, (*scores.shape[:-1], k))
-            if _EARLY_SUBMIT:
-                wanted = list(dict.fromkeys(routed_host))
-                record_layer(layer_id, wanted)
-                prefetch = getattr(self.switch_mlp, "prefetch", None)
-                if prefetch is not None:
-                    prefetch(wanted)
 
         # At threshold 1.0 nothing is dropped, but the observer still has to
         # run: exact-quality selects its resident experts from it, so without
@@ -316,10 +217,7 @@ def _moe_call(self, x: mx.array) -> mx.array:
         if observer is not None:
             limit = _OBSERVER_MAX_ROWS[0]
             rows_here = inds.size // k
-            if routed_host is not None and limit is None and rows_here <= 1:
-                rows = [routed_host]
-                score_rows = scores.reshape(-1, k).tolist()
-            elif limit is not None and rows_here > limit:
+            if limit is not None and rows_here > limit:
                 rows_here = limit
                 rows = inds.reshape(-1, k)[:limit].tolist()
                 score_rows = scores.reshape(-1, k)[:limit].tolist()
@@ -329,96 +227,41 @@ def _moe_call(self, x: mx.array) -> mx.array:
             observer(layer_id, rows, score_rows, [k] * rows_here)
 
     if compiled.installed():
-        scores, normalizer = compiled.renorm(scores, topk_mass, _RENORM_BLEND[0])
+        scores, _normalizer = compiled.renorm(scores, topk_mass, _RENORM_BLEND[0])
     else:
         selected_mass = scores.sum(axis=-1, keepdims=True)
         normalizer = topk_mass + _RENORM_BLEND[0] * (selected_mass - topk_mass)
         scores = scores / normalizer
-    shared_began = time.perf_counter() if _PROFILE else 0.0
+    shared_began = time.perf_counter() if profile else 0.0
     shared = self.shared_expert(x)
     shared_gate = mx.sigmoid(self.shared_expert_gate(x))
-    if _OVERLAP:
+    if _OVERLAP[0]:
         mx.async_eval(shared, shared_gate)
-    if _PROFILE:
+    if profile:
         _TIMERS["shared_expert"] += time.perf_counter() - shared_began
 
-    predictor_mode = _TAIL_MODE[0]
-    metal_capable = getattr(self.switch_mlp, "metal_combines_scores", False)
     custom_combines = (
-        metal_capable
+        getattr(self.switch_mlp, "metal_combines_scores", False)
         and x.size // x.shape[-1] <= 8
-        and predictor_mode == "off"
     )
-    fuse_shared = (
-        custom_combines
-        and os.environ.get("FLASHNEXT_FUSED_SHARED", "1") == "1"
-    )
-    fuse_shared_parts = (
-        fuse_shared
-        and os.environ.get("FLASHNEXT_FUSED_SHARED_PARTS", "0") == "1"
-    )
-    if fuse_shared_parts:
+    if not custom_combines:
+        y = self.switch_mlp(x, inds)
+        y = (y * scores[..., None]).sum(axis=-2)
+        return y + shared_gate * shared
+    if os.environ.get("FLASHNEXT_FUSED_SHARED", "1") != "1":
+        y = self.switch_mlp(x, inds, scores=scores)
+        return y + shared_gate * shared
+    if os.environ.get("FLASHNEXT_FUSED_SHARED_PARTS", "0") == "1":
         y = self.switch_mlp(
             x, inds, scores=scores, shared=shared, shared_gate=shared_gate
         )
-        expert_values = None
         if not getattr(self.switch_mlp, "_last_fused_shared", False):
-            shared_y = shared_gate * shared
-            y = y + shared_y
-    elif fuse_shared:
-        shared_y = shared_gate * shared
-        y = self.switch_mlp(x, inds, scores=scores, shared_y=shared_y)
-        expert_values = None
-        if not getattr(self.switch_mlp, "_last_fused_shared", False):
-            y = y + shared_y
-    elif custom_combines:
-        shared_y = shared_gate * shared
-        y = self.switch_mlp(x, inds, scores=scores)
-        expert_values = None
+            y = y + shared_gate * shared
+        return y
+    shared_y = shared_gate * shared
+    y = self.switch_mlp(x, inds, scores=scores, shared_y=shared_y)
+    if not getattr(self.switch_mlp, "_last_fused_shared", False):
         y = y + shared_y
-    else:
-        shared_y = shared_gate * shared
-        expert_values = self.switch_mlp(x, inds)
-        y = (expert_values * scores[..., None]).sum(axis=-2)
-
-    if (
-        predictor_mode in ("collect", "apply")
-        and layer_id is not None
-        and expert_values is not None
-    ):
-        predictor_keeps = fit_keeps if predictor_mode == "collect" else keeps
-        predictor_shape = (*scores.shape[:-1], 1)
-        predictor_keep_array = mx.array(
-            predictor_keeps, dtype=mx.int32
-        ).reshape(predictor_shape)
-        predictor_active = mx.arange(scores.shape[-1]) < predictor_keep_array
-        fast_scores = mx.where(
-            predictor_active,
-            scores * normalizer / topk_mass,
-            0,
-        )
-        fast_y = (expert_values * fast_scores[..., None]).sum(axis=-2)
-        fast_mass = mx.where(predictor_active, scores * normalizer, 0).sum(
-            axis=-1,
-            keepdims=True,
-        )
-        missing_fraction = mx.clip(
-            1.0 - fast_mass / topk_mass,
-            0.0,
-            1.0,
-        )
-        features = _tail_features(fast_y, shared_y, x, missing_fraction)
-        if predictor_mode == "collect":
-            _collect_tail_fit(layer_id, features, y - fast_y)
-        else:
-            coefficients = _TAIL_COEFFICIENTS.get(layer_id)
-            if coefficients is not None:
-                correction = (
-                    features * coefficients[None, ...]
-                ).sum(axis=-1).astype(y.dtype)
-                y = y + correction
-    if not custom_combines:
-        return y + shared_y
     return y
 
 
@@ -448,35 +291,14 @@ _SWAP_MAX_ROWS = [int(os.environ.get("FLASHNEXT_SWAP_MAX_ROWS", "4"))]
 _RESIDENT_EXPERTS = {}
 # Rows handed to the route observer per call. None means every row.
 _OBSERVER_MAX_ROWS = [None]
-_TAIL_MODE = ["off"]
-_TAIL_STATS = {}
-_TAIL_COEFFICIENTS = {}
-_TAIL_THRESHOLD = [0.20]
-_TAIL_SENSITIVE = [0.40]
 FAST_LAYERS = (24, 12, 10, 21, 7, 18, 33, 22, 15, 5, 26, 16)
-_OVERLAP = os.environ.get("FLASHNEXT_OVERLAP", "1") == "1"
-# One recorded profile blocked on 98 `mx.eval` calls for 236.7 ms while an
-# IOKit counter reported 10.7% shader busy. The counters do not isolate a fixed
-# host/device round-trip cost or prove that the remaining time was idle. Two
-# synchronization points in that measured path were per layer:
-# `mx.eval(scores)` here and `mx.eval(flat)` in StreamingSwitchGLU.
-#
-# The second one exists only to bring the routed expert list to the host. That
-# list is a function of `inds`, `keeps` and the resident mask, and every one of
-# those is already on the host by then. With this on, `scores` and `inds` are
-# evaluated in one round trip, the routed list is built in Python, and the
-# device `where` over `inds` is dropped because nothing downstream reads it.
-# One sync per layer instead of two, and the same bytes read in the same order.
-_ONE_SYNC = os.environ.get("FLASHNEXT_ONE_SYNC", "0") == "1"
+# Submit the shared expert's graph as soon as it is built. A list so a
+# benchmark can flip it on a live backend.
+_OVERLAP = [os.environ.get("FLASHNEXT_OVERLAP", "1") == "1"]
 
 
-def one_sync() -> bool:
-    return _ONE_SYNC
-
-
-def set_one_sync(enabled: bool) -> None:
-    global _ONE_SYNC
-    _ONE_SYNC = bool(enabled)
+def set_overlap(enabled: bool) -> None:
+    _OVERLAP[0] = bool(enabled)
 _RENORM_BLEND = [float(os.environ.get(
     "FLASHNEXT_RENORM_BLEND",
     "1" if os.environ.get("FLASHNEXT_RENORM", "1") == "1" else "0",
@@ -643,58 +465,6 @@ def set_resident_experts(values=None) -> None:
             {int(layer): {int(expert) for expert in experts}
              for layer, experts in values.items()}
         )
-
-
-def start_tail_fit(threshold: float = 0.20, sensitive: float = 0.40) -> None:
-    _TAIL_STATS.clear()
-    _TAIL_COEFFICIENTS.clear()
-    _TAIL_THRESHOLD[0] = float(threshold)
-    _TAIL_SENSITIVE[0] = float(sensitive)
-    _TAIL_MODE[0] = "collect"
-
-
-def finish_tail_fit(
-    ridge: float = 0.01,
-    clip: float = 4.0,
-    per_channel: bool = True,
-) -> int:
-    if not _TAIL_STATS:
-        _TAIL_MODE[0] = "off"
-        return 0
-    pending = [value for pair in _TAIL_STATS.values() for value in pair]
-    mx.eval(*pending)
-    identity = mx.eye(3, dtype=mx.float32)[None]
-    for layer_id, (gram, rhs) in _TAIL_STATS.items():
-        if not per_channel:
-            gram = gram.sum(axis=0, keepdims=True)
-            rhs = rhs.sum(axis=0, keepdims=True)
-        scale = (
-            gram[:, 0, 0] + gram[:, 1, 1] + gram[:, 2, 2]
-        ) / 3.0
-        regularized = gram + identity * (
-            float(ridge) * scale[:, None, None] + 1e-6
-        )
-        coefficients = mx.linalg.solve(
-            regularized,
-            rhs[..., None],
-            stream=mx.cpu,
-        )[..., 0]
-        coefficients = mx.clip(
-            coefficients, -float(clip), float(clip)
-        )
-        _TAIL_COEFFICIENTS[layer_id] = (
-            coefficients if per_channel else coefficients[0]
-        )
-    mx.eval(*_TAIL_COEFFICIENTS.values())
-    _TAIL_STATS.clear()
-    _TAIL_MODE[0] = "apply"
-    return len(_TAIL_COEFFICIENTS)
-
-
-def disable_tail_predictor() -> None:
-    _TAIL_MODE[0] = "off"
-    _TAIL_STATS.clear()
-    _TAIL_COEFFICIENTS.clear()
 
 
 def apply() -> bool:

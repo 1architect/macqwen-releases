@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Controlled production A/B comparison of the winning selective slab.
+"""Controlled production A/B comparison of slab-pack configurations.
 
-Compares:
-  - baseline: FLASHNEXT_METAL_RUNTIME=1, FLASHNEXT_SLAB=0
-  - slab12:   FLASHNEXT_METAL_RUNTIME=1, FLASHNEXT_SLAB=4, FLASHNEXT_SLAB_LAYERS=12
+Compares named arms such as ``baseline`` (no slab) and the packed skew
+allocations (``slabpack60_skew_8a`` and variants).
 
 Methodological controls:
-1. Interleaved reversed pairs ([baseline, slab12], [slab12, baseline]...) to cancel thermal drift.
+1. Interleaved reversed pairs ([control, target], [target, control]...) to cancel thermal drift.
 2. Separate instances cleanly closed and garbage-collected per arm.
 3. Live physical disk telemetry via proc_pid_rusage (ReadMeter).
 4. Full token digest tracking to guarantee exact numerical determinism.
@@ -201,8 +200,6 @@ def require_prepared_capacity_packs() -> Path:
     os.environ["FLASHNEXT_SLAB_MIN_SLOTS"] = "4"
     os.environ["FLASHNEXT_SLAB_MAX_SLOTS"] = "6"
     os.environ["FLASHNEXT_SLAB_NUM_LAYERS"] = "12"
-    os.environ["FLASHNEXT_WARM"] = "0"
-    os.environ["FLASHNEXT_EARLY_SUBMIT"] = "0"
     from models.flashnext.expert_cache import get_skew_slab_allocation
 
     for name, budget in zip(CAPACITY_ARMS, (56, 60, 64)):
@@ -245,8 +242,6 @@ def configure_arm(
     """Apply one complete slab configuration before importing the backend."""
     os.environ["FLASHNEXT_METAL_RUNTIME"] = "1"
     os.environ["FLASHNEXT_SLAB_PROFILE"] = "rolling"
-    os.environ["FLASHNEXT_SLAB"] = str(slab)
-    os.environ["FLASHNEXT_SLAB_LAYERS"] = str(layers)
     os.environ["FLASHNEXT_SLAB_GLOBAL"] = str(global_budget)
     os.environ["FLASHNEXT_SLAB_PACK"] = "1" if slab_pack else "0"
     os.environ["FLASHNEXT_SLAB_PACK_REQUIRE_EXISTING"] = (
@@ -270,8 +265,6 @@ def configure_arm(
     os.environ["FLASHNEXT_STREAM_PACK_CHUNK"] = str(max(0, stream_pack))
     os.environ["FLASHNEXT_FUSED_UP_SWIGLU"] = "1" if fuse_up_swiglu else "0"
     os.environ["FLASHNEXT_PREWARM"] = "0"
-    os.environ["FLASHNEXT_WARM"] = "0"
-    os.environ["FLASHNEXT_EARLY_SUBMIT"] = "0"
     os.environ["FLASHNEXT_PROFILE_IO"] = "1" if profile_io else "0"
     os.environ.pop("FLASHNEXT_PROFILE_BOUNDARIES", None)
     if boundary_profile is None:
@@ -356,7 +349,7 @@ def run_arm(
     from macqwen.backends.flashnext import FlashNextBackend
     from models.flashnext.diskio import ReadMeter, free_memory_mb, vm_counters
     from models.flashnext.expert_cache import (
-        _POOL, io_task_topology,
+        _POOL,
         profile_enabled, profile_totals, reset_profile, set_profile,
     )
 
@@ -478,7 +471,7 @@ def run_arm(
 
     result = {
         "io_workers": _POOL._max_workers,
-        "io_topology": io_task_topology(),
+        "io_topology": "projection",
         "profile_io": profile_enabled(),
         "slab": slab,
         "layers": layers,
@@ -710,7 +703,7 @@ def main():
         type=str,
         default="slabpack56_skew",
         choices=[
-            "baseline", "slab12", "global48", "global56", "slabpack48",
+            "baseline", "slabpack48",
             "slabpack56_uniform", "slabpack56_skew", "slabpack56_skew_unfused",
             "slabpack60_skew", "slabpack60_skew_f5",
             "slabpack60_skew_f5c2", "slabpack60_skew_f5c3",
@@ -726,7 +719,7 @@ def main():
         type=str,
         default="slabpack60_skew",
         choices=[
-            "baseline", "slab12", "global48", "global56", "slabpack48",
+            "baseline", "slabpack48",
             "slabpack56_uniform", "slabpack56_skew", "slabpack56_skew_unfused",
             "slabpack60_skew", "slabpack60_skew_f5",
             "slabpack60_skew_f5c2", "slabpack60_skew_f5c3",
@@ -769,9 +762,6 @@ def main():
 
     cond_defs = {
         "baseline": (0, 0, 0, False, "uniform", True, False, False),
-        "slab12": (4, 12, 0, False, "uniform", True, False, False),
-        "global48": (0, 0, 48, False, "uniform", True, False, False),
-        "global56": (0, 0, 56, False, "uniform", True, False, False),
         "slabpack48": (0, 0, 48, True, "uniform", True, False, False),
         "slabpack56_uniform": (0, 0, 56, True, "uniform", True, False, False),
         "slabpack56_skew": (0, 0, 56, True, "skew", True, False, False),

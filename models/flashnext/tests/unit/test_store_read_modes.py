@@ -1,8 +1,5 @@
-"""Every read mode must return the same bytes.
-
-`resident` maps rows held by `mlock` and reads the rest. A wrong gate would
-return the right shape with the wrong contents, which no timing test catches.
-"""
+"""Every read mode must return the same bytes, and pinning or residency
+tracking must never change them."""
 from __future__ import annotations
 
 import json
@@ -64,33 +61,21 @@ class ReadModeTests(unittest.TestCase):
     def rows(self, indices, mode):
         return self.store.rows_np(self.name, list(indices), mode)
 
-    def test_resident_matches_pread_with_nothing_pinned(self):
-        wanted = [0, 3, 7, 11]
-        np.testing.assert_array_equal(
-            self.rows(wanted, "resident"), self.expected[wanted]
-        )
-
-    def test_resident_matches_pread_when_every_row_is_pinned(self):
-        wanted = [1, 4, 9]
-        self.store.pin_rows(self.name, wanted)
-        np.testing.assert_array_equal(
-            self.rows(wanted, "resident"), self.expected[wanted]
-        )
-
-    def test_resident_mixes_pinned_and_unpinned_rows(self):
+    def test_pinned_rows_read_the_same_bytes(self):
         self.store.pin_rows(self.name, [2, 5])
         wanted = [5, 0, 2, 8]
         np.testing.assert_array_equal(
-            self.rows(wanted, "resident"), self.expected[wanted]
+            self.rows(wanted, "pread"), self.expected[wanted]
         )
 
-    def test_unpinning_sends_every_row_back_to_the_read_path(self):
+    def test_unpinning_clears_every_claim(self):
         self.store.pin_rows(self.name, [2, 5])
         self.store.unpin_all()
         self.assertEqual(self.store._pinned_rows, set())
-        np.testing.assert_array_equal(
-            self.rows([2, 5], "resident"), self.expected[[2, 5]]
-        )
+
+    def test_unknown_mode_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.rows([1], "resident")
 
     def test_pin_size_matches_the_locked_byte_count(self):
         wanted = [1, 4, 9]
@@ -108,7 +93,7 @@ class ReadModeTests(unittest.TestCase):
         wanted = [11, 0, 6]
         self.store.pin_rows(self.name, [6])
         reference = self.expected[wanted]
-        for mode in ("pread", "preadv", "shared_mmap", "resident"):
+        for mode in ("pread", "preadv", "shared_mmap", "mmap"):
             with self.subTest(mode=mode):
                 np.testing.assert_array_equal(self.rows(wanted, mode), reference)
 
@@ -116,7 +101,7 @@ class ReadModeTests(unittest.TestCase):
         wanted = [3, 6, 1]
         self.store.pin_rows(self.name, [6, 1])
         out = self.store.empty_rows(self.name, len(wanted))
-        self.store.rows_into(self.name, wanted, out, "resident")
+        self.store.rows_into(self.name, wanted, out, "preadv")
         np.testing.assert_array_equal(out, self.expected[wanted])
 
     def test_read_profile_counts_pread_service(self):
@@ -233,27 +218,27 @@ class ResidencyTrackerTests(unittest.TestCase):
         store = self.build("0")
         store.pin_rows(self.name, [2])
         self.assertTrue(store.believed_resident(self.name, 2))
-        store.rows_np(self.name, [5], "resident")
+        store.rows_np(self.name, [5], "pread")
         self.assertFalse(store.believed_resident(self.name, 5))
 
     def test_tracking_claims_a_row_it_has_read(self):
         store = self.build("1")
         self.assertFalse(store.believed_resident(self.name, 5))
-        store.rows_np(self.name, [5], "resident")
+        store.rows_np(self.name, [5], "pread")
         self.assertTrue(store.believed_resident(self.name, 5))
 
     def test_tracking_can_be_enabled_after_the_store_opens(self):
         store = self.build("0")
         store.set_residency_tracking(True)
-        store.rows_np(self.name, [5], "resident")
+        store.rows_np(self.name, [5], "pread")
         self.assertTrue(store.believed_resident(self.name, 5))
 
     def test_the_lru_forgets_the_least_recently_used(self):
         store = self.build("1", cap="3")
         for row in (0, 1, 2):
-            store.rows_np(self.name, [row], "resident")
+            store.rows_np(self.name, [row], "pread")
         store.believed_resident(self.name, 0)      # refresh row 0
-        store.rows_np(self.name, [3], "resident")  # evicts row 1, not row 0
+        store.rows_np(self.name, [3], "pread")  # evicts row 1, not row 0
         self.assertTrue(store.believed_resident(self.name, 0))
         self.assertFalse(store.believed_resident(self.name, 1))
 
@@ -262,119 +247,12 @@ class ResidencyTrackerTests(unittest.TestCase):
         wanted = [3, 0, 2]
         for _ in range(3):
             np.testing.assert_array_equal(
-                store.rows_np(self.name, wanted, "resident"), self.expected[wanted]
+                store.rows_np(self.name, wanted, "pread"), self.expected[wanted]
             )
 
     def test_a_pinned_row_stays_claimed_even_when_untracked(self):
         store = self.build("0")
         store.pin_rows(self.name, [1])
         for _ in range(10):
-            store.rows_np(self.name, [7], "resident")
+            store.rows_np(self.name, [7], "pread")
         self.assertTrue(store.believed_resident(self.name, 1))
-
-
-class GateIsReachableTests(unittest.TestCase):
-    """The residency gate is only consulted on the `resident` read path.
-
-    A benchmark that forgets to set the read mode measures nothing and reports
-    it as though the gate never claimed a row. That happened once.
-    """
-
-    def setUp(self):
-        self._dir = tempfile.TemporaryDirectory()
-        write_checkpoint(self._dir.name)
-        self.name = "block.experts.weight"
-
-    def tearDown(self):
-        store = getattr(self, "store", None)
-        if store is not None:
-            store.close()
-        self._dir.cleanup()
-
-    def store_with(self, read_mode: str):
-        with unittest.mock.patch.dict(
-            "os.environ",
-            {"FLASHNEXT_READ": read_mode, "FLASHNEXT_TRACK_RESIDENT": "1"},
-        ):
-            self.store = SafeTensorStore(self._dir.name)
-        return self.store
-
-    def consulted(self, store, rows):
-        seen = []
-        original = type(store).believed_resident
-        type(store).believed_resident = (
-            lambda self, name, row: (
-                seen.append(row), original(self, name, row)
-            )[1]
-        )
-        try:
-            store.rows_np(self.name, rows)
-        finally:
-            type(store).believed_resident = original
-        return seen
-
-    def test_the_resident_mode_consults_the_gate(self):
-        store = self.store_with("resident")
-        self.assertEqual(store._read_mode, "resident")
-        self.assertEqual(self.consulted(store, [1, 2]), [1, 2])
-
-    def test_the_default_mode_never_consults_the_gate(self):
-        store = self.store_with("pread")
-        self.assertEqual(self.consulted(store, [1, 2]), [])
-
-    def test_the_benchmark_selects_the_mode_the_gate_needs(self):
-        from types import ModuleType
-
-        from models.flashnext.tests.bench import bench_residency
-
-        seen = {}
-
-        class FakeStore:
-            _read_mode = "resident"
-            _track_residency = True
-            _resident_cap = 17
-
-            def believed_resident(self, _name, _row):
-                return False
-
-        class FakeBackend:
-            def __init__(self, model_path=None):
-                del model_path
-                seen["constructor"] = dict(os.environ)
-                self.store = FakeStore()
-
-            def reset(self):
-                pass
-
-            def append_text(self, _prompt):
-                pass
-
-            def generate(self, max_tokens):
-                del max_tokens
-
-        module = ModuleType("macqwen.backends.flashnext")
-        module.FlashNextBackend = FakeBackend
-        real_import = __import__("builtins").__import__
-
-        def importing(name, globals=None, locals=None, fromlist=(), level=0):
-            if name == "macqwen.backends.flashnext":
-                seen["import"] = dict(os.environ)
-                return module
-            return real_import(name, globals, locals, fromlist, level)
-
-        with (
-            unittest.mock.patch.dict(os.environ, {}, clear=True),
-            unittest.mock.patch.object(
-                __import__("sys"), "argv", ["bench_residency.py", "--cap", "17"]
-            ),
-            unittest.mock.patch("builtins.__import__", side_effect=importing),
-            unittest.mock.patch("builtins.print"),
-        ):
-            bench_residency.main()
-
-        for point in ("import", "constructor"):
-            with self.subTest(point=point):
-                self.assertEqual(seen[point]["FLASHNEXT_READ"], "resident")
-                self.assertEqual(seen[point]["FLASHNEXT_TRACK_RESIDENT"], "1")
-                self.assertEqual(seen[point]["FLASHNEXT_RESIDENT_ROWS"], "17")
-                self.assertEqual(seen[point]["FLASHNEXT_TOPK_THRESHOLD"], "0.85")

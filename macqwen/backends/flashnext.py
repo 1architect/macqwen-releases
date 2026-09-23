@@ -156,7 +156,7 @@ class FlashNextBackend(Conversation):
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
         model, _, self.store = load_streaming(
-            path, expert_capacity=0, verbose=False, keep_vision=False,
+            path, verbose=False, keep_vision=False,
             use_mtp=(native_mtp == "on"))
         apply_qsa()
         super().__init__(AutoTokenizer.from_pretrained(path))

@@ -375,7 +375,6 @@ def main():
     model_path = os.path.expanduser(args.model)
     model, _, store = load_streaming(
         model_path,
-        expert_capacity=0,
         verbose=True,
         keep_vision=False,
         use_mtp=False,

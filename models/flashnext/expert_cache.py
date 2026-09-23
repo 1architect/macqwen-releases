@@ -462,100 +462,28 @@ def metal_g64() -> bool:
 # Rows per read. A gather's throughput collapses once its output buffer gets
 # large: measured at 16 workers, 1027 MB/s for 10 rows, 1205 MB/s for 96, and
 # 484 MB/s for 290 (a 237 MB buffer). Decode routes 10 and is unaffected;
-# prefill routes hundreds and is split into chunks.
+# prefill routes hundreds and is split into chunks. Applies to shared_mmap.
 _CHUNK = int(os.environ.get("FLASHNEXT_CHUNK", 96))
 
-# Expert sets never repeat exactly between tokens (measured 0%), but they
-# overlap 35.7%. Touching the previous token's rows for the layers ahead warms
-# the page cache while the GPU works. Results are discarded: this only makes
-# the real read faster, so it cannot change what the model computes.
-_LAST: Dict[int, List[int]] = {}
-_WARM_ON = os.environ.get("FLASHNEXT_WARM") == "1"
-# Start expert reads as soon as the routed set is known on the host, instead
-# of waiting for switch_mlp to run its own host sync. The bytes read are
-# identical; only the moment the reads are issued changes. Set to 0 to A/B.
-# Measured 9.9% slower: see the handoff. Default off. "1" submits, "2"
-# computes the routed list without submitting, to separate the cost of the
-# extra eval from memory-controller contention.
 # Read every chunk straight into one destination per part, so the main thread
 # never concatenates the pieces. At FLASHNEXT_PREAD_CHUNK=1 the old path gave
 # every expert its own allocation and then copied the whole layer again, which
-# cost 35.9 ms per token.
-#
-# This was measured once before and returned as a tie: the buffer saved 35 ms
-# of copy and the GPU drain grew 37 ms. The unmeasured explanation in the
-# research log was the write pattern, since 16 workers scatter across one
-# buffer where the concatenate was a single sequential copy. Chunk size and
-# this switch had never been tested together. They now are. At chunk 2 each
-# worker writes one contiguous run and most of the NVMe queue depth survives:
+# cost 35.9 ms per token. With chunk 2 each worker writes one contiguous run and
+# most of the NVMe queue depth survives:
 #
 #   12 arms, clean boot, 40 tokens
 #   concat chunk 1   2.67 gen median   467.7 MB/token
 #   buffer chunk 2   2.83 gen median   457.7 MB/token
-#   +6.3% gen median against a 4.4% band, so it stands
-#   ahead in 10 of 12 pairs, sign test p = 0.019, fewer bytes in 10 of 12
+#   +6.3% gen median against a 4.4% band, ahead in 10 of 12 pairs
 #
-# Token IDs are identical across every arm: the same bytes land in a different
-# destination layout, so nothing the model computes changes. Prefill is
-# unaffected, measured A/B/B/A at 512 and 2048 tokens.
+# Token IDs are identical: the same bytes land in a different destination
+# layout. The pair was measured on the pread family only. `fast` and
+# `fast-quality` read through `shared_mmap`, where none of that evidence
+# applies, so they keep separate chunks unless the switch forces it.
 #
-# The pair was measured on the pread family only, which is what
-# `exact-quality`, `cache-aware`, `standard` and `fused-quality` run. `fast`
-# and `fast-quality` read through `shared_mmap`, where the chunk is _CHUNK and
-# the copy is a numpy slice assignment rather than a concatenate, so none of
-# the evidence above applies to them. Defaulting on for every mode would have
-# changed two profiles nobody has measured. It stays off there until someone
-# does. Setting the variable to 1 or 0 forces it either way for every mode.
-#
-# A list so a benchmark can flip it on a live backend. The module constant
-# could not be changed after import, and a comparison that cannot change its
-# setting measures the same thing twice.
-_PREAD_MODES = ("pread", "preadv", "resident")
+# A list so a benchmark can flip it on a live backend.
+_PREAD_MODES = ("pread", "preadv")
 _SHARED_BUFFER = [os.environ.get("FLASHNEXT_SHARED_READ_BUFFER")]
-
-
-# `empty_rows` allocates a new numpy block for every part of every layer, so a
-# token creates 432 host allocations and hands each one to the GPU as a new
-# Metal-visible buffer. This ring reuses a few destinations instead. Depth has
-# to exceed one: a layer's MoE output is not evaluated until the next layer's
-# router sync, so the GPU may still be reading the previous destination. A list,
-# for the same reason the shared-buffer switch is one.
-_ARENA = [int(os.environ.get("FLASHNEXT_BUFFER_ARENA", "0"))]
-_ARENA_WIDTH = 16
-# One pool for the whole model, not one per layer. Every layer's gate_proj
-# weight has the same shape, so the same block serves all 48 of them and the
-# GPU sees a handful of buffers per token instead of 432. Keyed per layer the
-# ring costs about 9 GB and the machine swaps; keyed by shape it costs about
-# 150 MB. Allocation happens on the main thread inside `_submit_shared`, so no
-# lock is needed.
-_ARENA_POOL: dict = {}
-
-
-def buffer_arena() -> int:
-    """Ring depth, or 0 for one fresh allocation per part per layer."""
-    return _ARENA[0]
-
-
-def set_buffer_arena(depth) -> None:
-    _ARENA[0] = int(depth)
-
-
-# Prefill MoE pipeline (E1). Off by default. A layer that needs at least
-# _PIPELINE_MIN_EXPERTS distinct experts splits them into chunks and computes
-# each chunk while the next chunk's reads are in flight.
-_PREFILL_PIPELINE = [os.environ.get("FLASHNEXT_PREFILL_PIPELINE", "0") == "1"]
-_PIPELINE_CHUNKS = int(os.environ.get("FLASHNEXT_PREFILL_PIPELINE_CHUNKS", "4"))
-_PIPELINE_MIN_EXPERTS = int(os.environ.get("FLASHNEXT_PREFILL_PIPELINE_MIN", "32"))
-
-
-def set_prefill_pipeline(enabled: bool) -> None:
-    _PREFILL_PIPELINE[0] = bool(enabled)
-
-
-# Read coalescing applies to gathers at least this large (prefill), split
-# into this many file-ordered tasks per tensor part.
-_COALESCE_MIN_ROWS = int(os.environ.get("FLASHNEXT_COALESCE_MIN_ROWS", "32"))
-_COALESCE_TASKS = int(os.environ.get("FLASHNEXT_COALESCE_TASKS", "16"))
 
 
 def shared_buffer(mode: str = "pread") -> bool:
@@ -569,56 +497,6 @@ def shared_buffer(mode: str = "pread") -> bool:
 def set_shared_buffer(enabled) -> None:
     """Force the switch, or pass None to return to the per-mode default."""
     _SHARED_BUFFER[0] = None if enabled is None else ("1" if enabled else "0")
-_EARLY_SUBMIT_MODE = os.environ.get("FLASHNEXT_EARLY_SUBMIT", "0")
-_EARLY_SUBMIT = _EARLY_SUBMIT_MODE != "0"
-_WARM = ThreadPoolExecutor(max_workers=4, thread_name_prefix="flashnext-warm")
-def _touch(store, prefix: str, experts: List[int]) -> None:
-    try:
-        for part in _PARTS:
-            store.rows_np(f"{prefix}.{part}", experts)
-    except Exception:
-        pass
-
-
-def warm_layer(switch_mlp, layer_id) -> None:
-    """Warm this layer's likely experts while the GPU runs the router.
-
-    A layer blocks on `mx.eval(scores)` for its attention and GDN work with
-    the drive idle. Expert sets overlap 35.7% between consecutive tokens, so
-    reading the previous token's set for this layer during that window turns
-    part of the next read into a page-cache hit. Results are discarded, so
-    this cannot change what the model computes.
-    """
-    if not _WARM_ON or layer_id is None:
-        return
-    experts = _LAST.get(layer_id)
-    if not experts:
-        return
-    # Pin profiles are shared across model launches.  A profile from a wider
-    # checkpoint can contain expert IDs that do not exist in this layer.
-    # Filter before submitting background reads; `_touch` deliberately hides
-    # read errors because warming is only a best-effort optimization.
-    count = getattr(switch_mlp.gate_proj, "num_experts", 0)
-    if count > 0:
-        experts = [int(expert) for expert in experts if 0 <= int(expert) < count]
-    if not experts:
-        return
-    for projection in (
-        switch_mlp.gate_proj,
-        switch_mlp.up_proj,
-        switch_mlp.down_proj,
-    ):
-        if projection.slab is not None:
-            return
-        _WARM.submit(
-            _touch, projection.cache.store, projection.cache.prefix, experts
-        )
-
-
-def record_layer(layer_id, experts) -> None:
-    """Remember this layer's routed set as the next token's prediction."""
-    if _WARM_ON and layer_id is not None:
-        _LAST[layer_id] = list(experts)
 
 
 def stream_pack_enabled() -> bool:
@@ -659,254 +537,57 @@ class _SharedRead:
         return self
 
 
-class _ExpertGroupRead:
-    """One pool task per expert, with three projection reads in that task.
-
-    The result keeps the existing projection-major shape. This makes the
-    topology experiment change only task grouping, not destination layout or
-    the requested rows.
-    """
-
-    __slots__ = ("futures", "chunks")
-
-    def __init__(self, futures, chunks):
-        self.futures = futures
-        self.chunks = chunks
-
-    def wait(self, timings=None):
-        for future in self.futures:
-            _resolve_future(future, timings)
-        return self.chunks
-
-
-def io_task_topology() -> str:
-    """Return the experimental read-task grouping.
-
-    ``projection`` is the production topology. ``expert`` is diagnostic and
-    groups the three projection reads for one expert into one pool task.
-    """
-    value = os.environ.get("FLASHNEXT_IO_TASK_TOPOLOGY", "projection")
-    return value if value in {"projection", "expert"} else "projection"
-
-
-def _submit_expert_group(projections, experts):
-    """Submit one task per expert into the control's destination buffers.
-
-    In the production pread path, each projection and part owns one full
-    destination buffer while chunk-2 controls only submission boundaries. The
-    grouped diagnostic uses that same shape and buffer count, then changes
-    only which task performs each chunk's row writes.
-    """
-    chunks = []
-    modes = []
-    for projection in projections:
-        projection_chunks = []
-        projection_modes = []
-        for part in _PARTS:
-            store = projection.cache.store
-            mode = store._read_mode
-            if mode == "hybrid":
-                mode = (
-                    "shared_mmap"
-                    if len(experts) <= store._hybrid_cutoff
-                    else "pread"
-                )
-            if mode == "mixed":
-                mode = "pread" if part == "weight" else "shared_mmap"
-            chunk = len(experts) if shared_buffer(mode) else (
-                store._pread_chunk
-                if mode in ("pread", "preadv", "resident")
-                else _CHUNK
-            )
-            buffers = [
-                store.empty_rows(
-                    f"{projection.cache.prefix}.{part}",
-                    min(chunk, len(experts) - start),
-                )
-                for start in range(0, len(experts), chunk)
-            ]
-            projection_chunks.append(buffers)
-            projection_modes.append(mode)
-        chunks.append(projection_chunks)
-        modes.append(projection_modes)
-
-    futures = []
-    for index, expert in enumerate(experts):
-        calls = []
-        for projection_index, projection in enumerate(projections):
-            for part_index, part in enumerate(_PARTS):
-                store = projection.cache.store
-                mode = modes[projection_index][part_index]
-                buffers = chunks[projection_index][part_index]
-                chunk_size = len(experts) if shared_buffer(mode) else (
-                    store._pread_chunk
-                    if mode in ("pread", "preadv", "resident")
-                    else _CHUNK
-                )
-                chunk_index = index // max(1, chunk_size)
-                offset = index % max(1, chunk_size)
-                calls.append(
-                    (
-                        store.rows_into,
-                        f"{projection.cache.prefix}.{part}",
-                        [expert],
-                        buffers[chunk_index][offset:offset + 1],
-                        mode,
-                    )
-                )
-
-        def read_group(calls=calls):
-            return tuple(
-                function(name, rows, destination, mode)
-                for function, name, rows, destination, mode in calls
-            )
-
-        futures.append(_submit_read(read_group))
-    return _ExpertGroupRead(futures, chunks)
-
-
 def submit_projection_tasks(projections, experts):
-    """Submit the selected topology while preserving destination layout."""
-    if io_task_topology() == "expert" and experts:
-        return _submit_expert_group(projections, experts)
-    return [projection.cache.submit(experts, False) for projection in projections]
+    """Queue one layer's reads for gate, up and down."""
+    return [projection.cache.submit(experts) for projection in projections]
 
 
 class ExpertLRU:
     """Per-projection reader for routed expert rows.
 
-    The old row-level LRU merged cached and fresh rows in numpy. That path was
-    never used by the runtime and made `capacity` appear to control caching.
-    The active path submits all routed rows as one read and converts them once.
+    The name is historical: nothing is cached here. All routed rows of a
+    layer are submitted as one read and converted once.
     """
 
-    __slots__ = ("store", "prefix", "capacity")
+    __slots__ = ("store", "prefix")
 
-    def __init__(self, store: SafeTensorStore, prefix: str, capacity: int):
+    def __init__(self, store: SafeTensorStore, prefix: str):
         self.store = store
         self.prefix = prefix
-        self.capacity = capacity
 
-
-    def submit(self, experts: List[int], bulk: bool = False):
+    def submit(self, experts: List[int]):
         """Queue reads so a whole layer flies at once, chunked to stay fast."""
-        if bulk:
-            return [
-                [_submit_read(self.store.whole_np, f"{self.prefix}.{part}")]
-                for part in _PARTS
-            ]
         mode = self.store._read_mode
-        if mode == "hybrid":
-            mode = (
-                "shared_mmap"
-                if len(experts) <= self.store._hybrid_cutoff
-                else "pread"
-            )
         if shared_buffer(mode):
             return self._submit_shared(experts, mode)
-        pending = []
-        for part in _PARTS:
-            part_mode = mode
-            if mode == "mixed":
-                part_mode = "pread" if part == "weight" else "shared_mmap"
-            chunk = (
-                self.store._pread_chunk
-                if part_mode in ("pread", "preadv", "resident")
-                else _CHUNK
-            )
-            pieces = [
-                experts[i : i + chunk] for i in range(0, len(experts), chunk)
-            ]
-            pending.append([
+        chunk = self.store._pread_chunk if mode in _PREAD_MODES else _CHUNK
+        return [
+            [
                 _submit_read(
-                    self.store.rows_np,
-                    f"{self.prefix}.{part}",
-                    piece,
-                    part_mode,
+                    self.store.rows_np, f"{self.prefix}.{part}",
+                    experts[start : start + chunk], mode,
                 )
-                for piece in pieces
-            ])
-        return pending
+                for start in range(0, len(experts), chunk)
+            ]
+            for part in _PARTS
+        ]
 
     def _submit_shared(self, experts: List[int], mode: str):
         """One destination per part; each chunk writes its own slice."""
+        chunk = self.store._pread_chunk if mode in _PREAD_MODES else _CHUNK
         pending = []
         for part in _PARTS:
-            part_mode = mode
-            if mode == "mixed":
-                part_mode = "pread" if part == "weight" else "shared_mmap"
-            chunk = (
-                self.store._pread_chunk
-                if part_mode in ("pread", "preadv", "resident")
-                else _CHUNK
-            )
             name = f"{self.prefix}.{part}"
-            depth = _ARENA[0]
-            buffer = (
-                self._reused_rows(name, len(experts), depth) if depth
-                else self.store.empty_rows(name, len(experts))
-            )
-            if (
-                getattr(self.store, "_coalesce_gap", -1) >= 0
-                and len(experts) >= _COALESCE_MIN_ROWS
-                and part_mode in ("pread", "preadv")
-            ):
-                # Large gathers only: tasks follow file order so adjacent rows
-                # share one preadv. Every row keeps its destination slot.
-                pairs = sorted((expert, slot) for slot, expert in enumerate(experts))
-                size = max(1, -(-len(pairs) // _COALESCE_TASKS))
-                futures = [
-                    _submit_read(
-                        self.store.rows_into_slots, name,
-                        pairs[start : start + size], buffer,
-                    )
-                    for start in range(0, len(pairs), size)
-                ]
-                pending.append(_SharedRead(buffer, futures))
-                continue
+            buffer = self.store.empty_rows(name, len(experts))
             futures = [
                 _submit_read(
-                    self.store.rows_into,
-                    name,
-                    experts[start : start + chunk],
-                    buffer[start : start + chunk],
-                    part_mode,
+                    self.store.rows_into, name, experts[start : start + chunk],
+                    buffer[start : start + chunk], mode,
                 )
                 for start in range(0, len(experts), chunk)
             ]
             pending.append(_SharedRead(buffer, futures))
         return pending
-
-    def _reused_rows(self, name: str, count: int, depth: int):
-        """Hand out one destination from a ring that lives for the whole run.
-
-        The ring is built at the router's top-k width, so a layer that routes
-        fewer experts takes a prefix of the same block rather than a new
-        allocation. A prefix of a C-contiguous block is still contiguous, so
-        `to_mx` wraps it without a copy exactly as before.
-
-        Depth must exceed one. A layer's MoE output is not evaluated until the
-        next layer's router sync, so the GPU may still be reading the previous
-        destination when the following layer asks for one.
-        """
-        # Key on the projection and part, not on the shape. `gate_proj` and
-        # `up_proj` share a shape, so a shape key advances the ring twice per
-        # layer and wraps before the GPU has read the earlier block. That is
-        # not a crash; it silently changes the output.
-        key = name.rsplit(".", 2)[-2:]
-        key = (key[0], key[1], depth)
-        ring = _ARENA_POOL.get(key)
-        if ring is None:
-            ring = [[self.store.empty_rows(name, _ARENA_WIDTH)
-                     for _ in range(depth)], 0]
-            _ARENA_POOL[key] = ring
-        if count > _ARENA_WIDTH:
-            # Wider than the ring was built for. Allocate rather than truncate
-            # the gather; a silent short read would change the output.
-            return self.store.empty_rows(name, count)
-        buffers, index = ring
-        ring[1] = (index + 1) % depth
-        return buffers[index][:count]
 
     def to_mx(self, raw):
         out = []
@@ -918,15 +599,15 @@ class ExpertLRU:
             out.append(self.store.to_mx(f"{self.prefix}.{part}", block))
         return tuple(out)
 
-    def _read(self, experts: List[int]):
-        return tuple(
-            self.store.to_mx(f"{self.prefix}.{p}", self.store.rows_np(f"{self.prefix}.{p}", experts))
-            for p in _PARTS
-        )
-
     def fetch(self, experts: List[int]):
         """Read routed rows synchronously for a standalone projection call."""
-        return self._read(experts)
+        return tuple(
+            self.store.to_mx(
+                f"{self.prefix}.{part}",
+                self.store.rows_np(f"{self.prefix}.{part}", experts),
+            )
+            for part in _PARTS
+        )
 
 
 def _await_read(pending, timings=None):
@@ -944,7 +625,7 @@ def _await_read(pending, timings=None):
 # every command buffer ran about twice as long. With this on, the main thread
 # keeps short ALU-only spin kernels queued on a separate GPU stream while it
 # waits for reads, so the GPU never looks idle to the governor. The spins touch
-# no memory and change no model value. Off by default.
+# no memory and change no model value.
 _KEEPWARM = [os.environ.get("FLASHNEXT_GPU_KEEPWARM", "0") == "1"]
 _KEEPWARM_ITERS = [int(os.environ.get("FLASHNEXT_GPU_KEEPWARM_ITERS", "60000"))]
 _KEEPWARM_PERIOD = [float(os.environ.get("FLASHNEXT_GPU_KEEPWARM_PERIOD_MS", "0.5")) / 1000]
@@ -990,8 +671,6 @@ def _keepwarm_spin():
 
 
 def _pending_futures(pending) -> list:
-    if isinstance(pending, _ExpertGroupRead):
-        return list(pending.futures)
     futures = []
     for projection in pending:
         for item in projection:
@@ -1020,11 +699,9 @@ def _keep_gpu_warm_until_done(pending) -> None:
 
 
 def _await_projection_tasks(pending, timings=None):
-    """Resolve either projection-major or expert-grouped read tasks."""
+    """Resolve the gate, up and down reads of one layer."""
     if _KEEPWARM[0]:
         _keep_gpu_warm_until_done(pending)
-    if isinstance(pending, _ExpertGroupRead):
-        return pending.wait(timings)
     return [_await_read(futures, timings) for futures in pending]
 
 
@@ -1051,12 +728,9 @@ class StreamingSwitchLinear(nn.Module):
         group_size: int,
         bits: int,
         mode: str,
-        capacity: int,
-        slab=None,
     ):
         super().__init__()
-        self.slab = slab
-        self.cache = ExpertLRU(store, prefix, capacity)
+        self.cache = ExpertLRU(store, prefix)
         self.group_size = group_size
         self.bits = bits
         self.mode = mode
@@ -1122,27 +796,6 @@ def _pin_profile_cache_identity(store):
     from .routing import checkpoint_identity_for_store
 
     return checkpoint_identity_for_store(store)
-
-
-def get_hot_slab_experts(
-    layer_id: int,
-    count: int,
-    store=None,
-    expected_group_size: int | None = None,
-) -> List[int]:
-    """Retrieve top hot experts for a layer from the persistent profile cache."""
-    data = _compatible_pin_profile(
-        store, expected_group_size, layer_ids=(layer_id,)
-    )
-    if data is None or count <= 0:
-        return []
-    ranked_scores = data["ranked_scores"].get(str(layer_id))
-    if ranked_scores:
-        return [int(exp) for exp, _score in ranked_scores[:count]]
-    layers_data = data["layers"].get(str(layer_id), [])
-    if layers_data:
-        return [int(x) for x in layers_data[:count]]
-    return []
 
 
 def _pin_profile_path() -> str:
@@ -1572,69 +1225,31 @@ def get_skew_slab_allocation(
     return allocation
 
 
-class ResidentSlab:
-    """Experts kept in unified memory, indexed by gather_qmm without a copy.
-
-    Earlier caches merged cached and freshly-read *weights* into one array, and
-    that merge cost more than re-reading. This one never merges weights: the
-    slab is passed to gather_qmm whole and the routed slots index into it, so a
-    hit costs 0.59 ms against 9.3 ms for a cold read of the same experts. Hits
-    and misses run as two separate GLU passes and are summed at the output,
-    which is 51 KB rather than the 30 MB of weights.
-    """
-
-    __slots__ = ("store", "prefix", "capacity", "slot", "parts", "_pending")
-
-    def __init__(self, store, prefix: str, capacity: int, initial_experts: List[int] = ()):
-        self.store = store
-        self.prefix = prefix
-        self.capacity = capacity
-        self.slot: Dict[int, int] = {}
-        self.parts = None
-        self._pending: List[int] = []
-        if initial_experts:
-            self.populate(initial_experts)
-
-    def populate(self, experts: List[int]) -> None:
-        """Pre-populate the slab with known high-utility recurrent experts."""
-        if self.parts is not None or not experts:
-            return
-        # Pin history can outlive the checkpoint that created it.  Keep stale
-        # IDs out of rows() so a REAP model can reuse the shared history safely.
-        try:
-            expert_count = int(self.store.shape(f"{self.prefix}.weight")[0])
-            experts = [int(e) for e in experts if 0 <= int(e) < expert_count]
-        except (IndexError, KeyError, TypeError):
-            return
-        for expert in experts[:self.capacity]:
-            if expert not in self.slot and len(self._pending) < self.capacity:
-                self.slot[expert] = len(self._pending)
-                self._pending.append(expert)
-        if self._pending:
-            self.build()
-
-    def admit(self, experts: List[int]) -> None:
-        """Fill the slab on first sight; never evict, so no row is rewritten."""
-        if self.parts is not None or len(self.slot) >= self.capacity:
-            return
-        for expert in experts:
-            if expert not in self.slot and len(self._pending) < self.capacity:
-                self.slot[expert] = len(self._pending)
-                self._pending.append(expert)
-        if len(self._pending) >= self.capacity:
-            self.build()
-
-    def build(self) -> None:
-        if self.parts is not None or not self._pending:
-            return
-        self.parts = tuple(
-            self.store.rows(f"{self.prefix}.{part}", self._pending) for part in _PARTS
+def _slab_allocation(store, budget: int, group_size: int) -> Dict[int, List[int]]:
+    """The global slab allocation for the configured policy."""
+    min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", 4))
+    policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
+    if policy == "uniform":
+        return get_global_slab_allocation(
+            budget, min_slots=min_slots, store=store,
+            expected_group_size=group_size,
         )
-        mx.eval(self.parts)
-        self._pending = []
-
-    def ready(self) -> bool:
-        return self.parts is not None
+    if policy == "physical-miss-hybrid":
+        allocation = get_physical_miss_slab_allocation(
+            budget, min_slots=min_slots, store=store,
+            expected_group_size=group_size,
+        )
+        store._slab_alloc_provenance = last_hybrid_summary()
+        return allocation
+    if policy == "physical-miss":
+        raise ValueError(
+            "physical-miss is historical and unavailable; "
+            "use physical-miss-hybrid for the guarded probe"
+        )
+    return get_skew_slab_allocation(
+        budget, min_slots=min_slots, store=store,
+        expected_group_size=group_size,
+    )
 
 
 # Layer id of the MTP expert block. It is not a backbone layer, so it must not
@@ -1643,7 +1258,13 @@ MTP_LAYER_ID = -1
 
 
 class StreamingSwitchGLU(nn.Module):
-    """SwitchGLU whose three projections stream from the checkpoint."""
+    """SwitchGLU whose three projections stream from the checkpoint.
+
+    Decode rows on an eligible layer run through the custom Metal executor,
+    which reads packed slab experts in place and streamed experts from fresh
+    buffers. Prefill, layer 0, the MTP block and other layouts run MLX
+    ``gather_qmm`` on the streamed rows.
+    """
 
     def __init__(
         self,
@@ -1652,7 +1273,6 @@ class StreamingSwitchGLU(nn.Module):
         group_size: int,
         bits: int,
         mode: str,
-        capacity: int,
         activation,
         layer_id: int = -1,
         next_prefix: str = "",
@@ -1660,10 +1280,6 @@ class StreamingSwitchGLU(nn.Module):
         super().__init__()
         self.layer_id = layer_id
         self.next_prefix = next_prefix
-        global_budget = int(os.environ.get("FLASHNEXT_SLAB_GLOBAL", 0))
-        min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", 4))
-        use_slab_pack = os.environ.get("FLASHNEXT_SLAB_PACK") == "1"
-        self._slab_pack_disabled_reason = None
         g64 = group_size == 64
         slab_g64 = os.environ.get("FLASHNEXT_SLAB_G64") == "1"
         if g64 and metal_g64():
@@ -1677,133 +1293,69 @@ class StreamingSwitchGLU(nn.Module):
             raise ValueError(
                 "Q4/G64 slab streaming packs are unavailable until their layout is supported"
             )
-        pack_format_enabled = not g64 or slab_g64
-        self.slab_pack = None
-        self.slab_expert_to_slot = {}
-        # Packed slabs require a fixed Q4 layout descriptor. Defer pack
-        # creation until the projections expose their actual shapes.
-        pack_requested = use_slab_pack and global_budget > 0
-        requested_slab_pack = pack_requested and pack_format_enabled
-        if use_slab_pack and global_budget > 0 and g64 and not slab_g64:
-            self._slab_pack_disabled_reason = "Q4/G64 slab pack requires FLASHNEXT_SLAB_G64=1"
-        if pack_requested and g64 and slab_g64:
-            history_ok, reason = _g64_pin_profile_compatible(
-                store, _load_pin_profile_or_none(_slab_profile_path(store, 64))
-            )
-            if not history_ok:
-                requested_slab_pack = False
-                self._slab_pack_disabled_reason = reason
-        make_slab = None
-        if (
-            not requested_slab_pack
-            and global_budget > 0
-            and not (pack_requested and g64)
-        ):
-            min_slots = int(os.environ.get("FLASHNEXT_SLAB_MIN_SLOTS", 4))
-            policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
-            if policy == "uniform":
-                alloc = get_global_slab_allocation(
-                    global_budget, min_slots=min_slots, store=store,
-                    expected_group_size=group_size,
-                )
-            elif policy == "physical-miss-hybrid":
-                alloc = get_physical_miss_slab_allocation(
-                    global_budget, min_slots=min_slots, store=store,
-                    expected_group_size=group_size,
-                )
-                store._slab_alloc_provenance = last_hybrid_summary()
-            elif policy == "physical-miss":
-                raise ValueError(
-                    "physical-miss is historical and unavailable; "
-                    "use physical-miss-hybrid for the guarded probe"
-                )
-            else:
-                alloc = get_skew_slab_allocation(
-                    global_budget, min_slots=min_slots, store=store,
-                    expected_group_size=group_size,
-                )
-            hot = alloc.get(layer_id, [])
-            slab_size = len(hot)
-            has_slab = slab_size > 0
-            make_slab = lambda name: ResidentSlab(store, f"{prefix}.{name}", slab_size, initial_experts=hot) if has_slab else None
-        elif not requested_slab_pack and not (pack_requested and g64):
-            slab_size = int(os.environ.get("FLASHNEXT_SLAB", 0))
-            max_slab_layer = int(os.environ.get("FLASHNEXT_SLAB_LAYERS", -1))
-            has_slab = slab_size > 0 and (max_slab_layer < 0 or (0 <= layer_id < max_slab_layer))
-            hot = (
-                get_hot_slab_experts(
-                    layer_id, slab_size, store=store,
-                    expected_group_size=group_size,
-                )
-                if has_slab else []
-            )
-            make_slab = lambda name: ResidentSlab(store, f"{prefix}.{name}", slab_size, initial_experts=hot) if has_slab else None
-
-        make = lambda name: StreamingSwitchLinear(
-            store, f"{prefix}.{name}", group_size, bits, mode, capacity,
-            slab=make_slab(name) if make_slab is not None else None,
-        )
+        self.gate_proj = StreamingSwitchLinear(store, f"{prefix}.gate_proj", group_size, bits, mode)
+        self.up_proj = StreamingSwitchLinear(store, f"{prefix}.up_proj", group_size, bits, mode)
+        self.down_proj = StreamingSwitchLinear(store, f"{prefix}.down_proj", group_size, bits, mode)
+        self.activation = activation
         self.hits = 0
         self.misses = 0
-        self.gate_proj = make("gate_proj")
-        self.up_proj = make("up_proj")
-        self.down_proj = make("down_proj")
-        self.activation = activation
         self._metal_executors = {}
         self._metal_runtime_capable = self._compute_metal_runtime_capable()
         self._slab_pack_capable = self._metal_runtime_capable and validate_slab_allocation(
             store, {layer_id: ()}, layout=group_size
         )
+        self.slab_pack = None
+        self.slab_expert_to_slot = {}
+        self._slab_pack_disabled_reason = None
+        self._attach_slab_pack(store, group_size, slab_g64)
 
-        if requested_slab_pack and self._slab_pack_capable:
-            from .slab_pack import get_or_create_slab_pack
+    def _attach_slab_pack(self, store, group_size: int, slab_g64: bool) -> None:
+        """Map this layer's packed experts, when a pack is configured."""
+        budget = int(os.environ.get("FLASHNEXT_SLAB_GLOBAL", 0))
+        if os.environ.get("FLASHNEXT_SLAB_PACK") != "1" or budget <= 0:
+            return
+        if group_size == 64:
+            if not slab_g64:
+                self._slab_pack_disabled_reason = (
+                    "Q4/G64 slab pack requires FLASHNEXT_SLAB_G64=1"
+                )
+                return
+            history_ok, reason = _g64_pin_profile_compatible(
+                store, _load_pin_profile_or_none(_slab_profile_path(store, 64))
+            )
+            if not history_ok:
+                self._slab_pack_disabled_reason = reason
+                return
+        if not self._slab_pack_capable:
+            return
+        alloc = getattr(store, "_slab_alloc", None)
+        if alloc is None:
+            alloc = _slab_allocation(store, budget, group_size)
+            store._slab_alloc = alloc
+        # Missing history is expected on first launch. Keep reference
+        # streaming active until a valid allocation becomes available.
+        if not alloc:
+            return
+        if not validate_slab_allocation(store, alloc, layout=group_size):
+            store._slab_pack_disabled = True
+            self._slab_pack_disabled_reason = "slab allocation does not match checkpoint layout"
+            return
+        from .slab_pack import get_or_create_slab_pack
 
-            alloc = getattr(store, "_slab_alloc", None)
-            if alloc is None:
-                policy = os.environ.get("FLASHNEXT_SLAB_POLICY", "skew")
-                if policy == "uniform":
-                    alloc = get_global_slab_allocation(
-                        global_budget, min_slots=min_slots, store=store,
-                        expected_group_size=group_size,
-                    )
-                elif policy == "physical-miss-hybrid":
-                    alloc = get_physical_miss_slab_allocation(
-                        global_budget, min_slots=min_slots, store=store,
-                        expected_group_size=group_size,
-                    )
-                    store._slab_alloc_provenance = last_hybrid_summary()
-                elif policy == "physical-miss":
-                    raise ValueError(
-                        "physical-miss is historical and unavailable; "
-                        "use physical-miss-hybrid for the guarded probe"
-                    )
-                else:
-                    alloc = get_skew_slab_allocation(
-                        global_budget, min_slots=min_slots, store=store,
-                        expected_group_size=group_size,
-                    )
-                store._slab_alloc = alloc
-            # Missing history is expected on first launch. Keep reference
-            # streaming active until a valid allocation becomes available.
-            if alloc and validate_slab_allocation(store, alloc, layout=group_size):
-                pack = getattr(store, "_slab_pack", None)
-                if pack is None:
-                    pack = get_or_create_slab_pack(store, alloc, layout=group_size)
-                    store._slab_pack = pack
-                self.slab_pack = pack
-                hot = alloc.get(layer_id, [])
-                self.slab_expert_to_slot = {
-                    e: self.slab_pack.layer_expert_to_slot[(layer_id, e)]
-                    for e in hot
-                    if (layer_id, e) in self.slab_pack.layer_expert_to_slot
-                }
-            elif alloc:
-                store._slab_pack_disabled = True
-                self._slab_pack_disabled_reason = "slab allocation does not match checkpoint layout"
+        pack = getattr(store, "_slab_pack", None)
+        if pack is None:
+            pack = get_or_create_slab_pack(store, alloc, layout=group_size)
+            store._slab_pack = pack
+        self.slab_pack = pack
+        self.slab_expert_to_slot = {
+            expert: pack.layer_expert_to_slot[(self.layer_id, expert)]
+            for expert in alloc.get(self.layer_id, [])
+            if (self.layer_id, expert) in pack.layer_expert_to_slot
+        }
 
     @property
     def metal_combines_scores(self) -> bool:
-        """Report the opt-in decode path to the patched MoE block."""
+        """Report the custom decode path to the patched MoE block."""
         return (
             os.environ.get("FLASHNEXT_METAL_RUNTIME") == "1"
             # Layer 0 stays on the reference path (historical guard). The
@@ -1814,7 +1366,7 @@ class StreamingSwitchGLU(nn.Module):
 
     @property
     def metal_runtime_capable(self) -> bool:
-        """Whether this layer matches the custom executor's Q4/G32 contract."""
+        """Whether this layer matches the custom executor's Q4 contract."""
         return self._metal_runtime_capable
 
     def _compute_metal_runtime_capable(self) -> bool:
@@ -1829,9 +1381,7 @@ class StreamingSwitchGLU(nn.Module):
         if supported_group not in (32, 64):
             return False
         if any(
-            projection.group_size != supported_group
-            or projection.bits != 4
-            or projection.mode != "affine"
+            projection.bits != 4 or projection.mode != "affine"
             for projection in projections
         ):
             return False
@@ -1875,52 +1425,16 @@ class StreamingSwitchGLU(nn.Module):
                         return False
         return hidden % supported_group == 0 and inter % supported_group == 0
 
-    def prefetch(self, wanted) -> None:
-        """Issue this layer's expert reads before the next host sync.
-
-        `wanted` must equal the list `_one_pass` would build, in the same
-        order, or the reads are discarded and re-issued normally.
-        """
-        if not _EARLY_SUBMIT or not wanted:
-            return
-        if _EARLY_SUBMIT_MODE == "2":
-            return
-        projections = (self.gate_proj, self.up_proj, self.down_proj)
-        wanted = list(wanted)
-        if self.gate_proj.cache.store._sort_reads:
-            wanted.sort()
-        pack = getattr(self, "slab_pack", None)
-        expert_to_slot = getattr(self, "slab_expert_to_slot", {})
-        if pack is not None and expert_to_slot:
-            wanted = [e for e in wanted if e not in expert_to_slot]
-            if not wanted:
-                return
-        elif projections[0].slab is not None:
-            wanted = [e for e in wanted if e not in projections[0].slab.slot]
-            if not wanted:
-                return
-        pending = (
-            self._submit_stream_pack(wanted)
-            if pack is not None and stream_pack_enabled()
-            else submit_projection_tasks(projections, wanted)
-        )
-        self._prefetch = (wanted, pending)
-
     def _submit_stream_pack(self, wanted) -> _StreamedPackRead:
         """Read all cold components into one slab-compatible destination."""
         store = self.gate_proj.cache.store
         mode = store._read_mode
-        if mode == "hybrid":
-            mode = "shared_mmap" if len(wanted) <= store._hybrid_cutoff else "pread"
         buffer = np.empty(len(wanted) * RECORD_STRIDE, dtype=np.uint8)
         switch_prefix = self.gate_proj.cache.prefix.rsplit(".", 1)[0]
         configured_chunk = int(os.environ.get("FLASHNEXT_STREAM_PACK_CHUNK", "0"))
         chunk = configured_chunk if configured_chunk > 0 else len(wanted)
         futures = []
         for projection, part, offset in _STREAM_RECORD_PARTS:
-            part_mode = mode
-            if mode == "mixed":
-                part_mode = "pread" if part == "weight" else "shared_mmap"
             name = f"{switch_prefix}.{projection}.{part}"
             for start in range(0, len(wanted), chunk):
                 piece = wanted[start : start + chunk]
@@ -1932,13 +1446,7 @@ class StreamingSwitchGLU(nn.Module):
                     RECORD_STRIDE,
                 )
                 futures.append(
-                    _submit_read(
-                        store.rows_into,
-                        name,
-                        piece,
-                        destination,
-                        part_mode,
-                    )
+                    _submit_read(store.rows_into, name, piece, destination, mode)
                 )
         return _StreamedPackRead(buffer, futures)
 
@@ -1964,521 +1472,190 @@ class StreamingSwitchGLU(nn.Module):
             self._cached_dummy_weights = dummy
         return dummy
 
+    def _executor(self, key, expert_count: int, hidden_size: int, slots: int):
+        """The Metal executor for one route shape, built on first use."""
+        executor = self._metal_executors.get(key)
+        if executor is None:
+            from .metal_runtime import MetalMoEExecutor
+
+            executor = MetalMoEExecutor(
+                expert_count, hidden_size, slots,
+                group_size=self.gate_proj.group_size,
+            )
+            self._metal_executors[key] = executor
+        return executor
+
+    def _read_weights(self, projections, wanted):
+        """Read ``wanted`` for every projection and wrap the rows for MLX."""
+        pending = submit_projection_tasks(projections, wanted)
+        if _PROFILE:
+            timings = []
+            began = time.perf_counter()
+            with hostwindow.window("io_await"):
+                raw = _await_projection_tasks(pending, timings)
+            ended = time.perf_counter()
+            _TIMERS["io_wait"] += ended - began
+            _TIMERS["io_calls"] += 1
+            _record_read_timing(timings, began, ended)
+            began = time.perf_counter()
+            with hostwindow.window("to_mx_host"):
+                weights = [
+                    projection.cache.to_mx(chunks)
+                    for projection, chunks in zip(projections, raw)
+                ]
+            _TIMERS["to_mx"] += time.perf_counter() - began
+            return weights
+        with hostwindow.window("io_await"):
+            raw = _await_projection_tasks(pending)
+        with hostwindow.window("to_mx_host"):
+            return [
+                projection.cache.to_mx(chunks)
+                for projection, chunks in zip(projections, raw)
+            ]
+
     def __call__(
         self, x, indices, allow_sort=True, scores=None, shared_y=None,
         shared=None, shared_gate=None,
     ) -> mx.array:
         self._last_fused_shared = False
-        has_shared = shared_y is not None or (
-            shared is not None and shared_gate is not None
-        )
         flat_input = x.reshape(-1, x.shape[-1])
         x = mx.expand_dims(x, (-2, -3))
-        # `_moe_call` leaves the routed list here when one-sync is on. It is
-        # the same list this method would fetch, built from values already on
-        # the host, so taking it removes a Metal round trip per layer.
-        handed = getattr(self, "_routed_host", None)
-        self._routed_host = None
-        if handed is not None:
-            routed, _shape = handed
+        flat = indices.reshape(-1)
+        if _PROFILE:
+            began = time.perf_counter()
+            mx.eval(flat)
+            _TIMERS["router_sync"] += time.perf_counter() - began
         else:
-            flat = indices.reshape(-1)
-            if _PROFILE:
-                began = time.perf_counter()
-                mx.eval(flat)
-                _TIMERS["router_sync"] += time.perf_counter() - began
-            else:
-                mx.eval(flat)
-            with hostwindow.window("route_tolist"):
-                routed = flat.tolist()
+            mx.eval(flat)
+        with hostwindow.window("route_tolist"):
+            routed = flat.tolist()
         observer = _PREFILL_PROGRESS
         if observer is not None and self.layer_id >= 0:
             observer(self.layer_id)
         if _ROUTE_TRACE[0] is not None:
             _ROUTE_TRACE[0](self.layer_id, routed)
 
-        pack = getattr(self, "slab_pack", None)
-        expert_to_slot = getattr(self, "slab_expert_to_slot", {})
-        slabs = [p.slab for p in (self.gate_proj, self.up_proj, self.down_proj)]
-        use_slab_pack = (
-            pack is not None
-            and bool(expert_to_slot)
-            and self.metal_combines_scores
-            and scores is not None
-            and flat_input is not None
+        custom = (
+            scores is not None
             and flat_input.shape[0] <= 8
-        )
-        use_slab = (
-            use_slab_pack
-            or (slabs[0] is not None and slabs[0].ready())
-        )
-        if slabs[0] is not None and not use_slab and pack is None:
-            if flat_input is not None and flat_input.shape[0] <= 8:
-                for sl in slabs:
-                    sl.admit(list(dict.fromkeys(routed)))
-                use_slab = slabs[0].ready()
-
-        if (
-            use_slab
             and self.metal_combines_scores
-            and scores is not None
-            and flat_input is not None
-            and flat_input.shape[0] <= 8
-        ):
-            if use_slab_pack:
-                hit = [e for e in routed if e in expert_to_slot]
-                miss = [e for e in routed if e not in expert_to_slot]
-                self.hits += len(hit)
-                self.misses += len(miss)
+        )
+        if custom and self.slab_expert_to_slot:
+            return self._packed_pass(
+                indices, routed, flat_input, scores, shared_y, shared, shared_gate,
+            )
+        return self._one_pass(
+            x, indices, routed, allow_sort, flat_input,
+            scores if custom else None, shared_y, shared, shared_gate,
+        )
 
-                wanted = list(dict.fromkeys(miss))
-                if self.gate_proj.cache.store._sort_reads:
-                    wanted.sort()
+    def _packed_pass(
+        self, indices, routed, flat_input, scores, shared_y, shared, shared_gate,
+    ):
+        """Custom Metal decode with packed slab hits addressed in place."""
+        expert_to_slot = self.slab_expert_to_slot
+        miss = [e for e in routed if e not in expert_to_slot]
+        self.hits += len(routed) - len(miss)
+        self.misses += len(miss)
+        wanted = list(dict.fromkeys(miss))
+        projections = (self.gate_proj, self.up_proj, self.down_proj)
+        hidden_size = flat_input.shape[-1]
+        streamed_record = None
+        if not wanted:
+            weights = self._get_dummy_streamed_weights(hidden_size)
+        elif stream_pack_enabled():
+            pending = self._submit_stream_pack(wanted)
+            timings = [] if _PROFILE else None
+            began = time.perf_counter()
+            pending.wait(timings)
+            ended = time.perf_counter()
+            if _PROFILE:
+                _TIMERS["io_wait"] += ended - began
+                _TIMERS["io_calls"] += 1
+                _record_read_timing(timings, began, ended)
+            began = time.perf_counter()
+            streamed_record = pending.to_mx()
+            weights = self._get_dummy_streamed_weights(hidden_size)
+            if _PROFILE:
+                _TIMERS["to_mx"] += time.perf_counter() - began
+        else:
+            weights = self._read_weights(projections, wanted)
+        miss_order = {e: i for i, e in enumerate(wanted)}
+        encoded_routes = [
+            0x80000000 | expert_to_slot[e] if e in expert_to_slot else miss_order[e]
+            for e in routed
+        ]
 
-                projections = (self.gate_proj, self.up_proj, self.down_proj)
-                prefetched = getattr(self, "_prefetch", None)
-                self._prefetch = None
-                streamed_record = None
-                if wanted:
-                    if prefetched is not None and prefetched[0] == wanted:
-                        pending = prefetched[1]
-                    elif stream_pack_enabled():
-                        pending = self._submit_stream_pack(wanted)
-                    else:
-                        pending = submit_projection_tasks(projections, wanted)
-                    if isinstance(pending, _StreamedPackRead):
-                        timings = [] if _PROFILE else None
-                        began = time.perf_counter()
-                        pending.wait(timings)
-                        ended = time.perf_counter()
-                        if _PROFILE:
-                            _TIMERS["io_wait"] += ended - began
-                            _TIMERS["io_calls"] += 1
-                            _record_read_timing(timings, began, ended)
-                        began = time.perf_counter()
-                        streamed_record = pending.to_mx()
-                        weights = self._get_dummy_streamed_weights(
-                            flat_input.shape[-1]
-                        )
-                        if _PROFILE:
-                            _TIMERS["to_mx"] += time.perf_counter() - began
-                    elif _PROFILE:
-                        timings = []
-                        began = time.perf_counter()
-                        raw = _await_projection_tasks(pending, timings)
-                        ended = time.perf_counter()
-                        _TIMERS["io_wait"] += ended - began
-                        _TIMERS["io_calls"] += 1
-                        _record_read_timing(timings, began, ended)
-                        began = time.perf_counter()
-                        weights = [
-                            projection.cache.to_mx(chunks)
-                            for projection, chunks in zip(projections, raw)
-                        ]
-                        _TIMERS["to_mx"] += time.perf_counter() - began
-                    else:
-                        raw = _await_projection_tasks(pending)
-                        weights = [
-                            projection.cache.to_mx(chunks)
-                            for projection, chunks in zip(projections, raw)
-                        ]
-                    miss_order = {e: i for i, e in enumerate(wanted)}
-                else:
-                    weights = self._get_dummy_streamed_weights(flat_input.shape[-1])
-                    miss_order = {}
+        slots = indices.shape[-1]
+        tokens = flat_input.shape[0]
+        local = mx.array(encoded_routes, dtype=mx.uint32).reshape(tokens, slots)
+        routed_scores = scores.reshape(tokens, slots)
+        executor = self._executor(
+            ("slab_pack", hidden_size, slots),
+            max(len(expert_to_slot) + len(wanted), slots), hidden_size, slots,
+        )
+        output = executor.execute(
+            flat_input, local,
+            {"gate_proj": weights[0], "up_proj": weights[1], "down_proj": weights[2]},
+            scores=routed_scores,
+            slab_pack=self.slab_pack.buffer_mx,
+            stream_pack=streamed_record,
+            shared_y=shared_y,
+            shared=shared,
+            shared_gate=shared_gate,
+        )
+        if shared_y is not None or (shared is not None and shared_gate is not None):
+            self._last_fused_shared = True
+        output = output.reshape(*indices.shape[:-1], output.shape[-1])
+        return output if self.gate_proj.group_size == 64 else output.astype(mx.bfloat16)
 
-                encoded_routes = []
-                for e in routed:
-                    if e in expert_to_slot:
-                        encoded_routes.append(0x80000000 | expert_to_slot[e])
-                    else:
-                        encoded_routes.append(miss_order[e])
+    def _one_pass(
+        self, x, indices, routed, allow_sort, flat_input, scores, shared_y,
+        shared, shared_gate,
+    ):
+        """Read every routed expert, then run the executor or gather_qmm.
 
-                slots = indices.shape[-1]
-                local = mx.array(encoded_routes, dtype=mx.uint32).reshape(flat_input.shape[0], slots)
-                routed_scores = scores.reshape(flat_input.shape[0], slots)
+        ``scores`` is set only when the custom Metal executor applies.
+        """
+        projections = (self.gate_proj, self.up_proj, self.down_proj)
+        with hostwindow.window("plan_host"):
+            wanted = list(dict.fromkeys(routed))
+            order = {e: i for i, e in enumerate(wanted)}
+            local = mx.array(
+                [order[e] for e in routed], dtype=mx.uint32
+            ).reshape(indices.shape)
+        weights = self._read_weights(projections, wanted)
 
-                from .metal_runtime import MetalMoEExecutor
-                key = ("slab_pack", flat_input.shape[-1], slots)
-                executor = self._metal_executors.get(key)
-                if executor is None:
-                    total_exp = max(len(expert_to_slot) + len(wanted), slots)
-                    executor = MetalMoEExecutor(
-                        total_exp, flat_input.shape[-1], slots,
-                        group_size=self.gate_proj.group_size,
-                    )
-                    self._metal_executors[key] = executor
-
-                streamed_packs = {
-                    "gate_proj": weights[0],
-                    "up_proj": weights[1],
-                    "down_proj": weights[2],
-                }
-                output = executor.execute(
-                    flat_input, local, streamed_packs,
-                    scores=routed_scores,
-                    slab_pack=pack.buffer_mx,
-                    stream_pack=streamed_record,
-                    shared_y=shared_y,
-                    shared=shared,
-                    shared_gate=shared_gate,
+        issue_began = time.perf_counter() if _PROFILE else 0.0
+        with hostwindow.window("moe_issue_host"):
+            if scores is None:
+                return self._issue(
+                    x, indices, projections, local, weights, allow_sort,
+                    issue_began,
                 )
-                if has_shared:
-                    self._last_fused_shared = True
-                output = output.reshape(*indices.shape[:-1], output.shape[-1])
-                return output if self.gate_proj.group_size == 64 else output.astype(mx.bfloat16)
-
-            hit = [e for e in routed if e in slabs[0].slot]
-            miss = [e for e in routed if e not in slabs[0].slot]
-            self.hits += len(hit)
-            self.misses += len(miss)
-
-            wanted = list(dict.fromkeys(miss))
-            if self.gate_proj.cache.store._sort_reads:
-                wanted.sort()
-
-            projections = (self.gate_proj, self.up_proj, self.down_proj)
-            prefetched = getattr(self, "_prefetch", None)
-            self._prefetch = None
-            if wanted:
-                if prefetched is not None and prefetched[0] == wanted:
-                    pending = prefetched[1]
-                else:
-                    pending = submit_projection_tasks(projections, wanted)
-                raw = _await_projection_tasks(pending)
-                weights = [
-                    p.cache.to_mx(chunks)
-                    for p, chunks in zip(projections, raw)
-                ]
-                miss_order = {e: i for i, e in enumerate(wanted)}
-            else:
-                weights = [
-                    (sl.parts[0][:1], sl.parts[1][:1], sl.parts[2][:1])
-                    for sl in slabs
-                ]
-                miss_order = {}
-
-            encoded_routes = []
-            for e in routed:
-                if e in slabs[0].slot:
-                    encoded_routes.append(0x80000000 | slabs[0].slot[e])
-                else:
-                    encoded_routes.append(miss_order[e])
-
             slots = indices.shape[-1]
-            local = mx.array(encoded_routes, dtype=mx.uint32).reshape(flat_input.shape[0], slots)
-            routed_scores = scores.reshape(flat_input.shape[0], slots)
-
-            from .metal_runtime import MetalMoEExecutor
-            key = ("slab", flat_input.shape[-1], slots)
-            executor = self._metal_executors.get(key)
-            if executor is None:
-                total_exp = max(slabs[0].capacity + len(wanted), slots)
-                executor = MetalMoEExecutor(
-                    total_exp, flat_input.shape[-1], slots,
-                    group_size=self.gate_proj.group_size,
-                )
-                self._metal_executors[key] = executor
-
-            streamed_packs = {
-                "gate_proj": weights[0],
-                "up_proj": weights[1],
-                "down_proj": weights[2],
-            }
-            slab_packs = {
-                "gate_proj": slabs[0].parts,
-                "up_proj": slabs[1].parts,
-                "down_proj": slabs[2].parts,
-            }
+            tokens = flat_input.shape[0]
+            hidden_size = flat_input.shape[-1]
+            expert_count = weights[0][0].shape[0]
+            executor = self._executor(
+                (expert_count, hidden_size, slots), expert_count, hidden_size, slots,
+            )
             output = executor.execute(
-                flat_input, local, streamed_packs,
-                scores=routed_scores,
-                slab_projections=slab_packs,
+                flat_input, local.reshape(tokens, slots),
+                {"gate_proj": weights[0], "up_proj": weights[1], "down_proj": weights[2]},
+                scores=scores.reshape(tokens, slots),
                 shared_y=shared_y,
                 shared=shared,
                 shared_gate=shared_gate,
             )
-            if has_shared:
+            if shared_y is not None or (shared is not None and shared_gate is not None):
                 self._last_fused_shared = True
-            output = output.reshape(*indices.shape[:-1], output.shape[-1])
-            return output if self.gate_proj.group_size == 64 else output.astype(mx.bfloat16)
-
-        if not use_slab:
-            return self._one_pass(
-                x, indices, routed, None, allow_sort=allow_sort,
-                flat_input=flat_input, scores=scores,
-                shared_y=shared_y,
-                shared=shared, shared_gate=shared_gate,
-            )
-
-        hit = [e for e in routed if e in slabs[0].slot]
-        miss = [e for e in routed if e not in slabs[0].slot]
-        self.hits += len(hit)
-        self.misses += len(miss)
-        if not miss:
-            return self._one_pass(
-                x, indices, routed, slabs, allow_sort=allow_sort,
-                flat_input=flat_input, scores=scores,
-            )
-        if not hit:
-            return self._one_pass(
-                x, indices, routed, None, allow_sort=allow_sort,
-                flat_input=flat_input, scores=scores,
-            )
-
-        # Sum the two groups at the output. Accumulate in float32: three
-        # bfloat16 adds drift by one ULP against the dense path.
-        out = self._one_pass(
-            x, indices, routed, slabs, mask=hit, allow_sort=allow_sort
-        ).astype(mx.float32)
-        out = out + self._one_pass(
-            x, indices, routed, None, mask=miss, allow_sort=allow_sort
-        ).astype(
-            mx.float32
-        )
-        return out if self.gate_proj.group_size == 64 else out.astype(mx.bfloat16)
-
-    def _one_pass(
-        self, x, indices, routed, slabs, mask=None, allow_sort=True,
-        flat_input=None, scores=None, shared_y=None, shared=None,
-        shared_gate=None,
-    ):
-        projections = (self.gate_proj, self.up_proj, self.down_proj)
-        if slabs is not None:
-            local = mx.array(
-                [slabs[0].slot.get(e, 0) for e in routed], dtype=mx.uint32
-            ).reshape(indices.shape)
-            weights = [sl.parts for sl in slabs]
-        else:
-            with hostwindow.window("plan_host"):
-                keep = None if mask is None else set(mask)
-                wanted = list(
-                    dict.fromkeys(
-                        e for e in routed if keep is None or e in keep
-                    )
-                )
-                if self.gate_proj.cache.store._sort_reads:
-                    wanted.sort()
-                if not wanted:
-                    wanted = [routed[0]]
-                order = {e: i for i, e in enumerate(wanted)}
-                local = mx.array(
-                    [order.get(e, 0) for e in routed], dtype=mx.uint32
-                ).reshape(indices.shape)
-            if (
-                _PREFILL_PIPELINE[0]
-                and mask is None
-                and allow_sort
-                and indices.size >= 64
-                and len(wanted) >= _PIPELINE_MIN_EXPERTS
-                and not (
-                    self.metal_combines_scores
-                    and scores is not None
-                    and flat_input is not None
-                    and flat_input.shape[0] <= 8
-                )
-            ):
-                return self._pipelined_pass(
-                    x, indices, projections, routed, wanted, order, local,
-                )
-            prefetched = getattr(self, "_prefetch", None)
-            self._prefetch = None
-            if prefetched is not None and prefetched[0] == wanted:
-                pending = prefetched[1]
-            else:
-                pending = submit_projection_tasks(projections, wanted)
             if _PROFILE:
-                timings = []
-                began = time.perf_counter()
-                with hostwindow.window("io_await"):
-                    raw = _await_projection_tasks(pending, timings)
-                ended = time.perf_counter()
-                _TIMERS["io_wait"] += ended - began
-                _TIMERS["io_calls"] += 1
-                _record_read_timing(timings, began, ended)
-                began = time.perf_counter()
-                with hostwindow.window("to_mx_host"):
-                    weights = [
-                        p.cache.to_mx(chunks)
-                        for p, chunks in zip(projections, raw)
-                    ]
-                _TIMERS["to_mx"] += time.perf_counter() - began
-            elif hostwindow.ENABLED:
-                # Split the wait from the conversion so each lands in its own
-                # window. Production keeps the interleaved form below, so this
-                # reordering never reaches a normal run.
-                with hostwindow.window("io_await"):
-                    raw = _await_projection_tasks(pending)
-                with hostwindow.window("to_mx_host"):
-                    weights = [
-                        p.cache.to_mx(chunks)
-                        for p, chunks in zip(projections, raw)
-                    ]
-            else:
-                raw = _await_projection_tasks(pending)
-                weights = [
-                    p.cache.to_mx(chunks)
-                    for p, chunks in zip(projections, raw)
-                ]
-
-        issue_began = time.perf_counter() if _PROFILE else 0.0
-        with hostwindow.window("moe_issue_host"):
-            if (
-                self.metal_combines_scores
-                and scores is not None
-                and mask is None
-                and flat_input is not None
-                and flat_input.shape[0] <= 8
-            ):
-                from .metal_runtime import MetalMoEExecutor
-
-                slots = indices.shape[-1]
-                local = local.reshape(flat_input.shape[0], slots)
-                routed_scores = scores.reshape(flat_input.shape[0], slots)
-                expert_count = weights[0][0].shape[0]
-                key = (expert_count, flat_input.shape[-1], slots)
-                executor = self._metal_executors.get(key)
-                if executor is None:
-                    executor = MetalMoEExecutor(
-                        expert_count, flat_input.shape[-1], slots,
-                        group_size=self.gate_proj.group_size,
-                    )
-                    self._metal_executors[key] = executor
-                projection_packs = {
-                    "gate_proj": weights[0],
-                    "up_proj": weights[1],
-                    "down_proj": weights[2],
-                }
-                output = executor.execute(
-                    flat_input, local, projection_packs,
-                    scores=routed_scores,
-                    shared_y=shared_y,
-                    shared=shared,
-                    shared_gate=shared_gate,
-                )
-                if shared_y is not None or (
-                    shared is not None and shared_gate is not None
-                ):
-                    self._last_fused_shared = True
-                output = output.reshape(
-                    *indices.shape[:-1], output.shape[-1]
-                )
-                if (
-                    os.environ.get("FLASHNEXT_METAL_VERIFY") == "1"
-                    and self.layer_id == 1
-                ):
-                    custom_gate, custom_up, custom_down = executor.execute(
-                        flat_input, local, projection_packs, return_all=True
-                    )
-                    reference_gate_raw = projections[0](
-                        x, local.reshape(indices.shape),
-                        plan=(None, local.reshape(indices.shape)),
-                        weights=weights[0], sorted_indices=False,
-                    )
-                    reference_up_raw = projections[1](
-                        x, local.reshape(indices.shape),
-                        plan=(None, local.reshape(indices.shape)),
-                        weights=weights[1], sorted_indices=False,
-                    )
-                    reference_down = projections[2](
-                        self.activation(reference_up_raw, reference_gate_raw),
-                        local.reshape(indices.shape),
-                        plan=(None, local.reshape(indices.shape)),
-                        weights=weights[2], sorted_indices=False,
-                    ).squeeze(-2)
-                    reference_gate = reference_gate_raw.squeeze(-2)
-                    reference_up = reference_up_raw.squeeze(-2)
-                    reference = self._issue(
-                        x, indices, projections, local.reshape(indices.shape),
-                        weights, None, routed, allow_sort, 0.0,
-                    )
-                    reference = (reference * scores[..., None]).sum(axis=-2)
-                    mx.eval(
-                        output, reference, custom_gate, custom_up, custom_down,
-                        reference_gate, reference_up, reference_down,
-                    )
-                    component_errors = []
-                    for actual_part, expected_part in (
-                        (custom_gate, reference_gate),
-                        (custom_up, reference_up),
-                        (custom_down, reference_down),
-                    ):
-                        expected_part = expected_part.reshape(actual_part.shape)
-                        component_errors.append(mx.max(mx.abs(
-                            actual_part.astype(mx.float32)
-                            - expected_part.astype(mx.float32)
-                        )).item())
-                    error = mx.max(mx.abs(
-                        output.astype(mx.float32) - reference.astype(mx.float32)
-                    )).item()
-                    print(
-                        f"metal layer {self.layer_id}: slots={slots} "
-                        f"parts={component_errors} max_abs={error}"
-                    )
-                if _PROFILE:
-                    _TIMERS["moe_issue"] += time.perf_counter() - issue_began
-                return output
-            return self._issue(
-                x, indices, projections, local, weights, mask, routed,
-                allow_sort, issue_began,
-            )
-
-    def _pipelined_pass(self, x, indices, projections, routed, wanted, order, local):
-        """Prefill MoE in expert chunks: compute chunk k while k+1 reads.
-
-        Reads for every chunk are submitted at once, in chunk order. The
-        routed rows are sorted by local expert index as in ``_issue``, so each
-        chunk owns one contiguous segment of the sorted rows; the host knows
-        the segment bounds from the routed list without a sync. Each chunk's
-        matmuls go to the GPU with ``async_eval`` before the next chunk's reads
-        are awaited. Rows keep the same expert weights and the same sorted
-        gather_qmm path; the results are concatenated and unsorted once.
-        """
-        count = len(wanted)
-        chunks = max(1, min(_PIPELINE_CHUNKS, count))
-        size = -(-count // chunks)
-        bounds = [(start, min(count, start + size)) for start in range(0, count, size)]
-        pending = [
-            submit_projection_tasks(projections, wanted[start:end])
-            for start, end in bounds
-        ]
-        per_local = [0] * count
-        for expert in routed:
-            per_local[order[expert]] += 1
-        xs, sorted_local, inverse = _gather_sort(x, local)
-        outputs = []
-        row = 0
-        for (start, end), reads in zip(bounds, pending):
-            rows = sum(per_local[start:end])
-            began = time.perf_counter() if _PROFILE else 0.0
-            raw = _await_projection_tasks(reads)
-            if _PROFILE:
-                _TIMERS["io_wait"] += time.perf_counter() - began
-                _TIMERS["io_calls"] += 1
-            weights = [
-                projection.cache.to_mx(chunk)
-                for projection, chunk in zip(projections, raw)
-            ]
-            if rows == 0:
-                continue
-            segment_x = xs[row : row + rows]
-            segment_local = sorted_local[row : row + rows] - start
-            plan = (None, segment_local)
-            gate = projections[0](segment_x, segment_local, plan=plan,
-                                  weights=weights[0], sorted_indices=True)
-            up = projections[1](segment_x, segment_local, plan=plan,
-                                weights=weights[1], sorted_indices=True)
-            out = projections[2](self.activation(up, gate), segment_local,
-                                 plan=plan, weights=weights[2], sorted_indices=True)
-            mx.async_eval(out)
-            outputs.append(out)
-            row += rows
-        combined = outputs[0] if len(outputs) == 1 else mx.concatenate(outputs, axis=0)
-        return _scatter_unsort(combined, inverse, indices.shape).squeeze(-2)
+                _TIMERS["moe_issue"] += time.perf_counter() - issue_began
+            return output.reshape(*indices.shape[:-1], output.shape[-1])
 
     def _issue(
-        self, x, indices, projections, local, weights, mask, routed,
-        allow_sort, issue_began,
+        self, x, indices, projections, local, weights, allow_sort, issue_began,
     ):
         do_sort = indices.size >= 64 and allow_sort
         inv = None
@@ -2495,13 +1672,6 @@ class StreamingSwitchGLU(nn.Module):
         if do_sort:
             o = _scatter_unsort(o, inv, indices.shape)
         o = o.squeeze(-2)
-
-        if mask is not None:
-            keep = set(mask)
-            m = mx.array(
-                [1.0 if e in keep else 0.0 for e in routed], dtype=mx.bfloat16
-            ).reshape(*indices.shape, 1)
-            o = o * m
         if _PROFILE:
             _TIMERS["moe_issue"] += time.perf_counter() - issue_began
         return o

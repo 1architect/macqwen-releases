@@ -311,11 +311,7 @@ class Qwen4ExactSpeculativeVerifier(Qwen3_5ExactSpeculativeVerifier):
         # False and stay on the generic path.
         metal_capable = getattr(switch, "metal_combines_scores", False)
         tokens = hidden.size // hidden.shape[-1]
-        custom_combines = (
-            bool(metal_capable)
-            and tokens <= 8
-            and routing._TAIL_MODE[0] == "off"
-        )
+        custom_combines = bool(metal_capable) and tokens <= 8
         fuse_shared = (
             custom_combines
             and os.environ.get("FLASHNEXT_FUSED_SHARED", "1") == "1"

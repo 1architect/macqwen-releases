@@ -113,8 +113,6 @@ def _weight_map_for_detector(path: Path, store: SafeTensorStore) -> dict:
 
 def load_streaming(
     model_dir: str,
-    expert_capacity: int = 32,
-    ngram_capacity: int = 0,
     verbose: bool = True,
     keep_vision: bool = True,
     use_mtp: bool = True,
@@ -217,12 +215,12 @@ def load_streaming(
     )
 
     stream_embed = _swap_embedding(model, store, mode, use_mtp)
-    swapped_experts = _swap_experts(model, store, expert_capacity, mode)
-    swapped_ngram = _swap_ngram(model, store, ngram_capacity, mode)
+    swapped_experts = _swap_experts(model, store, mode)
+    swapped_ngram = _swap_ngram(model, store, mode)
     if use_mtp:
         from .mtp import swap_streaming
 
-        swap_streaming(model.language_model, store, mode, expert_capacity)
+        swap_streaming(model.language_model, store, mode)
 
     resident = {
         k: v
@@ -280,7 +278,7 @@ def _swap_embedding(model, store, mode, use_mtp) -> bool:
     inner = model.language_model.model
     dims = int(store.shape(f"{_EMBED_PREFIX}.weight")[-1]) * 32
     dims //= infer_embed_bits(store)
-    inner.embed_tokens = StreamingQuantizedEmbedding(store, _EMBED_PREFIX, dims, mode, 0)
+    inner.embed_tokens = StreamingQuantizedEmbedding(store, _EMBED_PREFIX, dims, mode)
     return True
 
 
@@ -334,7 +332,7 @@ def _nbytes(store: SafeTensorStore, key: str) -> int:
     return total * _DTYPES[ref.dtype][0].itemsize
 
 
-def _swap_experts(model, store, capacity, mode) -> int:
+def _swap_experts(model, store, mode) -> int:
     layers = model.language_model.model.layers
     count = 0
     for index, layer in enumerate(layers):
@@ -349,7 +347,7 @@ def _swap_experts(model, store, capacity, mode) -> int:
         group_size, bits = infer_switch_quantization(store, prefix)
         nxt = f"language_model.model.layers.{index + 1}.mlp.switch_mlp"
         block.switch_mlp = StreamingSwitchGLU(
-            store, prefix, group_size, bits, mode, capacity, old.activation,
+            store, prefix, group_size, bits, mode, old.activation,
             layer_id=index,
             next_prefix=nxt if f"{nxt}.gate_proj.weight" in store.refs else prefix,
         )
@@ -387,7 +385,7 @@ def infer_switch_quantization(store: SafeTensorStore, prefix: str):
 _infer_switch_quant = infer_switch_quantization
 
 
-def _swap_ngram(model, store, capacity, mode) -> int:
+def _swap_ngram(model, store, mode) -> int:
     count = 0
     layers = model.language_model.model.layers
     for index, layer in enumerate(layers):
@@ -404,9 +402,7 @@ def _swap_ngram(model, store, capacity, mode) -> int:
             if prefix is None:
                 break
             shards.append(
-                StreamingQuantizedEmbedding(
-                    store, prefix, table.dims, mode, capacity
-                )
+                StreamingQuantizedEmbedding(store, prefix, table.dims, mode)
             )
             count += 1
         if len(shards) != len(table.shards):

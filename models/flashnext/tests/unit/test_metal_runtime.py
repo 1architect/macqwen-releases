@@ -837,7 +837,7 @@ class MetalRuntimeIntegrationSelectionTests(unittest.TestCase):
 
         kwargs = dict(
             store=Store(), prefix="layers.1.mlp.switch_mlp", group_size=32,
-            bits=4, mode="affine", capacity=16, activation=lambda value: value,
+            bits=4, mode="affine", activation=lambda value: value,
         )
         with unittest.mock.patch.dict(
             "os.environ", {"FLASHNEXT_METAL_RUNTIME": "1"}, clear=False
@@ -863,7 +863,7 @@ class MetalRuntimeIntegrationSelectionTests(unittest.TestCase):
         ):
             layer = StreamingSwitchGLU(
                 store=Store(), prefix="layers.1.mlp.switch_mlp", group_size=32,
-                bits=4, mode="affine", capacity=16, activation=lambda value: value,
+                bits=4, mode="affine", activation=lambda value: value,
                 layer_id=1,
             )
         self.assertFalse(layer.metal_combines_scores)

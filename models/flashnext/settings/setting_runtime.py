@@ -96,7 +96,7 @@ def positive_integer(raw):
 
 def read_mode(raw):
     value = str(raw)
-    options = ("pread", "preadv", "resident", "shared_mmap", "hybrid")
+    options = ("pread", "preadv", "shared_mmap")
     if value not in options:
         raise ValueError(f"read-mode must be one of: {', '.join(options)}")
     return value

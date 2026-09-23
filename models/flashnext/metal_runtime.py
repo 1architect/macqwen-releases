@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -190,7 +191,42 @@ def weighted_combine(expert_outputs: Any, routes: Any, scores: Any) -> Any:
     return (selected * weights).sum(axis=-2)
 
 
-_KERNEL_BODY = r"""
+# Expert row pointers. A packed slab route sets bit 31 and addresses the
+# expert-major record in the slab pack; anything else indexes the streamed
+# weight arrays, or the expert-major stream pack when it is enabled.
+_POINTERS = r"""
+#if SLAB_PACK_ENABLED
+bool in_slab = ((raw_expert & 0x80000000u) != 0);
+uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
+#if STREAM_PACK_ENABLED
+const device char* record_base = in_slab
+    ? ((const device char*)slab_pack) + SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE
+    : ((const device char*)stream_pack) + expert * SLAB_RECORD_STRIDE;
+decltype(weight) w_ptr = (decltype(weight))(record_base + W_OFFSET);
+decltype(scales) s_ptr = (decltype(scales))(record_base + S_OFFSET);
+decltype(biases) b_ptr = (decltype(biases))(record_base + B_OFFSET);
+#else
+uint expert_offset = SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE;
+decltype(weight) w_ptr = in_slab
+    ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + W_OFFSET)
+    : (weight + expert * OUT_WIDTH * (IN_WIDTH / 8));
+decltype(scales) s_ptr = in_slab
+    ? (decltype(scales))(((const device char*)slab_pack) + expert_offset + S_OFFSET)
+    : (scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
+decltype(biases) b_ptr = in_slab
+    ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + B_OFFSET)
+    : (biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
+#endif
+#else
+uint expert = raw_expert;
+decltype(weight) w_ptr = weight + expert * OUT_WIDTH * (IN_WIDTH / 8);
+decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
+decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
+#endif
+"""
+
+
+_PROJECTION_BODY = r"""
 uint pair = threadgroup_position_in_grid.z;
 uint token = pair / SLOTS;
 uint slot = pair % SLOTS;
@@ -201,42 +237,7 @@ const device T* input = x +
     ((SLOT_INPUT != 0) ? pair * IN_WIDTH : token * IN_WIDTH);
 device T* output = out + pair * OUT_WIDTH;
 uint3 tid = uint3(0, threadgroup_position_in_grid.y, pair);
-
-#if SLAB_PACK_ENABLED
-bool in_slab = ((raw_expert & 0x80000000u) != 0);
-uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
-#if STREAM_PACK_ENABLED
-const device char* record_base = in_slab
-    ? ((const device char*)slab_pack) + SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE
-    : ((const device char*)stream_pack) + expert * SLAB_RECORD_STRIDE;
-decltype(weight) w_ptr = (decltype(weight))(record_base + PROJ_W_OFFSET);
-decltype(scales) s_ptr = (decltype(scales))(record_base + PROJ_S_OFFSET);
-decltype(biases) b_ptr = (decltype(biases))(record_base + PROJ_B_OFFSET);
-#else
-uint expert_offset = SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE;
-decltype(weight) w_ptr = in_slab
-    ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + PROJ_W_OFFSET)
-    : (weight + expert * OUT_WIDTH * (IN_WIDTH / 8));
-decltype(scales) s_ptr = in_slab
-    ? (decltype(scales))(((const device char*)slab_pack) + expert_offset + PROJ_S_OFFSET)
-    : (scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
-decltype(biases) b_ptr = in_slab
-    ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + PROJ_B_OFFSET)
-    : (biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
-#endif
-#elif SLAB_ENABLED
-bool in_slab = ((raw_expert & 0x80000000u) != 0);
-uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
-decltype(weight) w_ptr = (in_slab ? slab_weight : weight) + expert * OUT_WIDTH * (IN_WIDTH / 8);
-decltype(scales) s_ptr = (in_slab ? slab_scales : scales) + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
-decltype(biases) b_ptr = (in_slab ? slab_biases : biases) + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
-#else
-uint expert = raw_expert;
-decltype(weight) w_ptr = weight + expert * OUT_WIDTH * (IN_WIDTH / 8);
-decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
-decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
-#endif
-
+""" + _POINTERS + r"""
     QMV_MIXED_IMPL<T, GROUP_SIZE, 4>(
     w_ptr, s_ptr, b_ptr,
     input, output, in_size, out_size, tid,
@@ -255,42 +256,7 @@ const device T* input = x + token * IN_WIDTH;
 device T* output = out + pair * OUT_WIDTH;
 const device T* gate_values = gate_out + pair * OUT_WIDTH;
 uint3 tid = uint3(0, threadgroup_position_in_grid.y, pair);
-
-#if SLAB_PACK_ENABLED
-bool in_slab = ((raw_expert & 0x80000000u) != 0);
-uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
-#if STREAM_PACK_ENABLED
-const device char* record_base = in_slab
-    ? ((const device char*)slab_pack) + SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE
-    : ((const device char*)stream_pack) + expert * SLAB_RECORD_STRIDE;
-decltype(weight) w_ptr = (decltype(weight))(record_base + PROJ_W_OFFSET);
-decltype(scales) s_ptr = (decltype(scales))(record_base + PROJ_S_OFFSET);
-decltype(biases) b_ptr = (decltype(biases))(record_base + PROJ_B_OFFSET);
-#else
-uint expert_offset = SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE;
-decltype(weight) w_ptr = in_slab
-    ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + PROJ_W_OFFSET)
-    : (weight + expert * OUT_WIDTH * (IN_WIDTH / 8));
-decltype(scales) s_ptr = in_slab
-    ? (decltype(scales))(((const device char*)slab_pack) + expert_offset + PROJ_S_OFFSET)
-    : (scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
-decltype(biases) b_ptr = in_slab
-    ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + PROJ_B_OFFSET)
-    : (biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
-#endif
-#elif SLAB_ENABLED
-bool in_slab = ((raw_expert & 0x80000000u) != 0);
-uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
-decltype(weight) w_ptr = (in_slab ? slab_weight : weight) + expert * OUT_WIDTH * (IN_WIDTH / 8);
-decltype(scales) s_ptr = (in_slab ? slab_scales : scales) + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
-decltype(biases) b_ptr = (in_slab ? slab_biases : biases) + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
-#else
-uint expert = raw_expert;
-decltype(weight) w_ptr = weight + expert * OUT_WIDTH * (IN_WIDTH / 8);
-decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
-decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
-#endif
-
+""" + _POINTERS + r"""
     QMV_MIXED_IMPL<T, GROUP_SIZE, 4>(
     w_ptr, s_ptr, b_ptr,
     input, output, in_size, out_size, tid,
@@ -318,6 +284,67 @@ if (thread_index_in_simdgroup == 0) {
     }
 }
 """
+
+
+_FUSED_DOWN_COMBINE_BODY = r"""
+#pragma clang fp contract(off)
+uint3 group = threadgroup_position_in_grid;
+uint simd_lid = thread_index_in_simdgroup;
+uint simd_gid = simdgroup_index_in_threadgroup;
+uint token = group.z;
+uint out_base = group.x * 8 + simd_gid * 4;
+if (token >= TOKENS || out_base >= OUT_WIDTH) return;
+float combined[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+for (uint slot = 0; slot < SLOTS; ++slot) {
+    uint raw_expert = routes[token * SLOTS + slot];
+    float slot_score = float(scores[token * SLOTS + slot]);
+    const int in_size = IN_WIDTH;
+    const int out_size = OUT_WIDTH;
+    uint3 tid = uint3(0, group.x, token);
+""" + _POINTERS + r"""
+    QMV_ACCUMULATE_IMPL<T, GROUP_SIZE, 4>(
+        w_ptr, s_ptr, b_ptr,
+        x + (token * SLOTS + slot) * IN_WIDTH,
+        combined, slot_score, in_size, out_size, tid,
+        simd_gid, simd_lid);
+}
+
+if (simd_lid == 0) {
+#pragma unroll
+    for (uint row = 0; row < 4; ++row) {
+        uint col = out_base + row;
+        if (col < OUT_WIDTH) {
+            uint idx = token * OUT_WIDTH + col;
+            T routed = static_cast<T>(combined[row]);
+#if HAS_SHARED_PARTS
+            T shared_component = static_cast<T>(
+                float(shared[idx]) * float(shared_gate[token]));
+            float final_value = float(routed) + float(shared_component);
+            out[idx] = static_cast<T>(final_value);
+#elif HAS_SHARED_Y
+            float final_value = float(routed) + float(shared_y[idx]);
+            out[idx] = static_cast<T>(final_value);
+#else
+            out[idx] = routed;
+#endif
+        }
+    }
+}
+"""
+
+_BODIES = {
+    "projection": _PROJECTION_BODY,
+    "up_swiglu": _FUSED_UP_SWIGLU_BODY,
+    "down_combine": _FUSED_DOWN_COMBINE_BODY,
+}
+_QMV_LABELS = {"gate_proj": "gate_qmv", "up_proj": "up_qmv", "down_proj": "down_qmv"}
+_KERNEL_TOKEN = re.compile(r"\b[A-Z][A-Z0-9_]*\b")
+
+
+def _render(source: str, values: Mapping[str, str]) -> str:
+    """Substitute whole-word placeholders; anything else stays as written."""
+    return _KERNEL_TOKEN.sub(lambda match: values.get(match.group(0), match.group(0)), source)
 
 
 @lru_cache(maxsize=1)
@@ -388,89 +415,6 @@ def _mlx_qmv_header() -> str:
     # address-space constants. Pass them by value so older Metal compilers do
     # not reject references without an explicit address space.
     return header.replace("const constant int&", "const int")
-
-
-_FUSED_DOWN_COMBINE_BODY = r"""
-#pragma clang fp contract(off)
-uint3 group = threadgroup_position_in_grid;
-uint simd_lid = thread_index_in_simdgroup;
-uint simd_gid = simdgroup_index_in_threadgroup;
-uint token = group.z;
-uint out_base = group.x * 8 + simd_gid * 4;
-if (token >= TOKENS || out_base >= OUT_WIDTH) return;
-float combined[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-
-for (uint slot = 0; slot < SLOTS; ++slot) {
-    uint raw_expert = routes[token * SLOTS + slot];
-    float slot_score = float(scores[token * SLOTS + slot]);
-    const int in_size = IN_WIDTH;
-    const int out_size = OUT_WIDTH;
-    uint3 tid = uint3(0, group.x, token);
-
-#if SLAB_PACK_ENABLED
-    bool in_slab = ((raw_expert & 0x80000000u) != 0);
-    uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
-#if STREAM_PACK_ENABLED
-    const device char* record_base = in_slab
-        ? ((const device char*)slab_pack) + SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE
-        : ((const device char*)stream_pack) + expert * SLAB_RECORD_STRIDE;
-    decltype(weight) w_ptr = (decltype(weight))(record_base + DOWN_W_OFFSET);
-    decltype(scales) s_ptr = (decltype(scales))(record_base + DOWN_S_OFFSET);
-    decltype(biases) b_ptr = (decltype(biases))(record_base + DOWN_B_OFFSET);
-#else
-    uint expert_offset = SLAB_HEADER_SIZE + expert * SLAB_RECORD_STRIDE;
-    decltype(weight) w_ptr = in_slab
-        ? (decltype(weight))(((const device char*)slab_pack) + expert_offset + DOWN_W_OFFSET)
-        : (weight + expert * OUT_WIDTH * (IN_WIDTH / 8));
-    decltype(scales) s_ptr = in_slab
-        ? (decltype(scales))(((const device char*)slab_pack) + expert_offset + DOWN_S_OFFSET)
-        : (scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
-    decltype(biases) b_ptr = in_slab
-        ? (decltype(biases))(((const device char*)slab_pack) + expert_offset + DOWN_B_OFFSET)
-        : (biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE));
-#endif
-#elif SLAB_ENABLED
-    bool in_slab = ((raw_expert & 0x80000000u) != 0);
-    uint expert = in_slab ? (raw_expert & 0x7FFFFFFFu) : raw_expert;
-    decltype(weight) w_ptr = (in_slab ? slab_weight : weight) + expert * OUT_WIDTH * (IN_WIDTH / 8);
-    decltype(scales) s_ptr = (in_slab ? slab_scales : scales) + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
-    decltype(biases) b_ptr = (in_slab ? slab_biases : biases) + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
-#else
-    uint expert = raw_expert;
-    decltype(weight) w_ptr = weight + expert * OUT_WIDTH * (IN_WIDTH / 8);
-    decltype(scales) s_ptr = scales + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
-    decltype(biases) b_ptr = biases + expert * OUT_WIDTH * (IN_WIDTH / GROUP_SIZE);
-#endif
-
-    QMV_ACCUMULATE_IMPL<T, GROUP_SIZE, 4>(
-        w_ptr, s_ptr, b_ptr,
-        x + (token * SLOTS + slot) * IN_WIDTH,
-        combined, slot_score, in_size, out_size, tid,
-        simd_gid, simd_lid);
-}
-
-if (simd_lid == 0) {
-#pragma unroll
-    for (uint row = 0; row < 4; ++row) {
-        uint col = out_base + row;
-        if (col < OUT_WIDTH) {
-            uint idx = token * OUT_WIDTH + col;
-            T routed = static_cast<T>(combined[row]);
-#if HAS_SHARED_PARTS
-            T shared_component = static_cast<T>(
-                float(shared[idx]) * float(shared_gate[token]));
-            float final_value = float(routed) + float(shared_component);
-            out[idx] = static_cast<T>(final_value);
-#elif HAS_SHARED_Y
-            float final_value = float(routed) + float(shared_y[idx]);
-            out[idx] = static_cast<T>(final_value);
-#else
-            out[idx] = routed;
-#endif
-        }
-    }
-}
-"""
 
 
 class MetalMoEExecutor:
@@ -549,173 +493,110 @@ class MetalMoEExecutor:
     def available(self) -> bool:
         return bool(self.capabilities["available"])
 
-    def _get_metal_kernel(
+    def _kernel(
         self,
+        kind: str,
         x: Any,
         tokens: int,
         slots: int,
         input_width: int,
         output_width: int,
-        slot_input: bool,
-        has_slab: bool = False,
+        *,
+        proj_name: str,
+        slot_input: bool = False,
         has_slab_pack: bool = False,
         has_stream_pack: bool = False,
-        proj_name: str = "",
+        has_shared_y: bool = False,
+        has_shared_parts: bool = False,
     ) -> Any:
-        import mlx.core as mx
-
-        maker = getattr(self.backend, "metal_kernel", None)
-        if maker is None:
-            maker = mx.fast.metal_kernel
-        dtype = getattr(x, "dtype", None)
+        """Build, or reuse, one specialised Metal kernel."""
         key = (
-            self.group_size, str(dtype), tokens, slots, input_width, output_width, slot_input,
-            has_slab, has_slab_pack, has_stream_pack, proj_name, self.header_size,
-        )
-        kernel = self._kernels.get(key)
-        if kernel is None:
-            body = _KERNEL_BODY.replace("TOKENS", str(tokens))
-            body = body.replace("SLOTS", str(slots))
-            body = body.replace("IN_WIDTH", str(input_width))
-            body = body.replace("OUT_WIDTH", str(output_width))
-            body = body.replace("GROUPS", str(input_width // self.group_size))
-            body = body.replace("GROUP_SIZE", str(self.group_size))
-            if has_slab_pack:
-                header_size, record_stride = _slab_layout_constants(self.group_size, self.header_size)
-                body = body.replace("SLAB_HEADER_SIZE", f"{header_size}u")
-                body = body.replace("SLAB_RECORD_STRIDE", f"{record_stride}u")
-                from .slab_pack import get_slab_layout
-                layout = get_slab_layout(self.group_size)
-                body = body.replace("DOWN_W_OFFSET", f"{layout.offset('down_proj', 'weight')}u")
-                body = body.replace("DOWN_S_OFFSET", f"{layout.offset('down_proj', 'scales')}u")
-                body = body.replace("DOWN_B_OFFSET", f"{layout.offset('down_proj', 'biases')}u")
-            body = body.replace("SLOT_INPUT", "1" if slot_input else "0")
-            body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
-            body = body.replace(
-                "STREAM_PACK_ENABLED", "1" if has_stream_pack else "0"
-            )
-            body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
-            if has_slab_pack:
-                from .slab_pack import get_slab_layout
-                layout = get_slab_layout(self.group_size)
-                w_off = layout.offset(proj_name, "weight")
-                s_off = layout.offset(proj_name, "scales")
-                b_off = layout.offset(proj_name, "biases")
-                body = body.replace("PROJ_W_OFFSET", f"{w_off}u")
-                body = body.replace("PROJ_S_OFFSET", f"{s_off}u")
-                body = body.replace("PROJ_B_OFFSET", f"{b_off}u")
-            body = body.replace(
-                "QMV_MIXED_IMPL",
-                "qmv_fast_mixed_impl" if input_width % 512 == 0 else "qmv_mixed_impl",
-            )
-            input_names = ["x", "weight", "scales", "biases", "routes"]
-            if has_slab_pack:
-                input_names.append("slab_pack")
-                if has_stream_pack:
-                    input_names.append("stream_pack")
-            elif has_slab:
-                input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
-            kernel_name = (
-                f"flashnext_level1_q4g{self.group_size}_{proj_name}_pack"
-                + ("_stream" if has_stream_pack else "")
-                if has_slab_pack
-                else (
-                    f"flashnext_level1_q4g{self.group_size}_slab"
-                    if has_slab else f"flashnext_level1_q4g{self.group_size}"
-                )
-            )
-            if self._boundary_profiler.enabled and proj_name and self._boundary_profiler.selected_for(
-                proj_name.replace("_proj", "_qmv")
-            ):
-                kernel_name += f"_boundary_{proj_name.replace('_proj', '_qmv')}"
-            kernel = maker(
-                name=kernel_name,
-                input_names=input_names,
-                output_names=["out"],
-                source=body,
-                header=_mlx_qmv_header(),
-                ensure_row_contiguous=True,
-                compile_options={"math_mode": "safe"},
-            )
-            self._kernels[key] = kernel
-        return kernel
-
-    def _get_fused_up_swiglu_kernel(
-        self,
-        x: Any,
-        tokens: int,
-        slots: int,
-        input_width: int,
-        output_width: int,
-        has_slab: bool = False,
-        has_slab_pack: bool = False,
-        has_stream_pack: bool = False,
-        proj_name: str = "up_proj",
-    ) -> Any:
-        """Build the opt-in Up-QMV kernel with an inline SwiGLU epilogue."""
-        import mlx.core as mx
-
-        maker = getattr(self.backend, "metal_kernel", None)
-        if maker is None:
-            maker = mx.fast.metal_kernel
-        dtype = getattr(x, "dtype", None)
-        key = (
-            "fused-up-swiglu", self.group_size, str(dtype), tokens, slots, input_width,
-            output_width, has_slab, has_slab_pack, has_stream_pack, proj_name, self.header_size,
+            kind, self.group_size, str(getattr(x, "dtype", None)), tokens, slots,
+            input_width, output_width, proj_name, slot_input, has_slab_pack,
+            has_stream_pack, has_shared_y, has_shared_parts, self.header_size,
         )
         kernel = self._kernels.get(key)
         if kernel is not None:
             return kernel
-
-        body = _FUSED_UP_SWIGLU_BODY
-        body = body.replace("TOKENS", str(tokens))
-        body = body.replace("SLOTS", str(slots))
-        body = body.replace("IN_WIDTH", str(input_width))
-        body = body.replace("OUT_WIDTH", str(output_width))
-        body = body.replace("GROUPS", str(input_width // self.group_size))
-        body = body.replace("GROUP_SIZE", str(self.group_size))
-        if has_slab_pack:
-            header_size, record_stride = _slab_layout_constants(self.group_size, self.header_size)
-            body = body.replace("SLAB_HEADER_SIZE", f"{header_size}u")
-            body = body.replace("SLAB_RECORD_STRIDE", f"{record_stride}u")
-        body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
-        body = body.replace(
-            "STREAM_PACK_ENABLED", "1" if has_stream_pack else "0"
-        )
-        body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
+        fast = input_width % 512 == 0
+        values = {
+            "TOKENS": str(tokens),
+            "SLOTS": str(slots),
+            "IN_WIDTH": str(input_width),
+            "OUT_WIDTH": str(output_width),
+            "GROUP_SIZE": str(self.group_size),
+            "SLOT_INPUT": "1" if slot_input else "0",
+            "SLAB_PACK_ENABLED": "1" if has_slab_pack else "0",
+            "STREAM_PACK_ENABLED": "1" if has_stream_pack else "0",
+            "HAS_SHARED_Y": "1" if has_shared_y else "0",
+            "HAS_SHARED_PARTS": "1" if has_shared_parts else "0",
+            "QMV_MIXED_IMPL": "qmv_fast_mixed_impl" if fast else "qmv_mixed_impl",
+            "QMV_ACCUMULATE_IMPL": (
+                "qmv_fast_accumulate_impl" if fast else "qmv_accumulate_impl"
+            ),
+        }
         if has_slab_pack:
             from .slab_pack import get_slab_layout
+
+            header_size, record_stride = _slab_layout_constants(
+                self.group_size, self.header_size
+            )
             layout = get_slab_layout(self.group_size)
-            w_off = layout.offset(proj_name, "weight")
-            s_off = layout.offset(proj_name, "scales")
-            b_off = layout.offset(proj_name, "biases")
-            body = body.replace("PROJ_W_OFFSET", f"{w_off}u")
-            body = body.replace("PROJ_S_OFFSET", f"{s_off}u")
-            body = body.replace("PROJ_B_OFFSET", f"{b_off}u")
-        body = body.replace(
-            "QMV_MIXED_IMPL",
-            "qmv_fast_mixed_impl" if input_width % 512 == 0 else "qmv_mixed_impl",
-        )
+            values.update({
+                "SLAB_HEADER_SIZE": f"{header_size}u",
+                "SLAB_RECORD_STRIDE": f"{record_stride}u",
+                "W_OFFSET": f"{layout.offset(proj_name, 'weight')}u",
+                "S_OFFSET": f"{layout.offset(proj_name, 'scales')}u",
+                "B_OFFSET": f"{layout.offset(proj_name, 'biases')}u",
+            })
         input_names = ["x", "weight", "scales", "biases", "routes"]
+        if kind == "down_combine":
+            input_names.append("scores")
         if has_slab_pack:
             input_names.append("slab_pack")
             if has_stream_pack:
                 input_names.append("stream_pack")
-        elif has_slab:
-            input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
-        input_names.append("gate_out")
+        if kind == "up_swiglu":
+            input_names.append("gate_out")
+        if has_shared_y:
+            input_names.append("shared_y")
+        elif has_shared_parts:
+            input_names.extend(["shared", "shared_gate"])
+
+        base = f"flashnext_level1_q4g{self.group_size}"
+        if kind == "projection":
+            name = f"{base}_{proj_name}_pack" if has_slab_pack else base
+            if has_stream_pack:
+                name += "_stream"
+            label = _QMV_LABELS.get(proj_name)
+        elif kind == "up_swiglu":
+            name = f"{base}_up_swiglu_pack" if has_slab_pack else f"{base}_up_swiglu"
+            label = None
+        else:
+            name = f"{base}_down_combine"
+            if has_slab_pack:
+                name += "_pack_stream" if has_stream_pack else "_pack"
+            if has_shared_y:
+                name += "_shared"
+            elif has_shared_parts:
+                name += "_shared_parts"
+            label = "fused_down"
+        if (
+            label is not None
+            and self._boundary_profiler.enabled
+            and self._boundary_profiler.selected_for(label)
+        ):
+            name += f"_boundary_{label}"
+        maker = getattr(self.backend, "metal_kernel", None)
+        if maker is None:
+            import mlx.core as mx
+
+            maker = mx.fast.metal_kernel
         kernel = maker(
-            name=(
-                f"flashnext_level1_q4g{self.group_size}_up_swiglu_pack"
-                if has_slab_pack
-                else (
-                    f"flashnext_level1_q4g{self.group_size}_up_swiglu_slab"
-                    if has_slab else f"flashnext_level1_q4g{self.group_size}_up_swiglu"
-                )
-            ),
+            name=name,
             input_names=input_names,
             output_names=["out"],
-            source=body,
+            source=_render(_BODIES[kind], values),
             header=_mlx_qmv_header(),
             ensure_row_contiguous=True,
             compile_options={"math_mode": "safe"},
@@ -723,223 +604,36 @@ class MetalMoEExecutor:
         self._kernels[key] = kernel
         return kernel
 
-    def _get_fused_down_kernel(
-        self, x, tokens, slots, input_width, output_width,
-        has_slab: bool = False, has_slab_pack: bool = False,
-        has_stream_pack: bool = False,
-        has_shared_y: bool = False, has_shared_parts: bool = False,
-    ):
-        import mlx.core as mx
-
-        maker = getattr(self.backend, "metal_kernel", None)
-        if maker is None:
-            maker = mx.fast.metal_kernel
-        key = ("fused-down", self.group_size, str(getattr(x, "dtype", None)), tokens, slots,
-               input_width, output_width, has_slab, has_slab_pack,
-               has_stream_pack, has_shared_y, has_shared_parts, self.header_size)
-        kernel = self._kernels.get(key)
-        if kernel is None:
-            body = _FUSED_DOWN_COMBINE_BODY.replace("TOKENS", str(tokens))
-            body = body.replace("SLOTS", str(slots))
-            body = body.replace("IN_WIDTH", str(input_width))
-            body = body.replace("OUT_WIDTH", str(output_width))
-            body = body.replace("GROUPS", str(input_width // self.group_size))
-            body = body.replace("GROUP_SIZE", str(self.group_size))
-            if has_slab_pack:
-                header_size, record_stride = _slab_layout_constants(self.group_size, self.header_size)
-                body = body.replace("SLAB_HEADER_SIZE", f"{header_size}u")
-                body = body.replace("SLAB_RECORD_STRIDE", f"{record_stride}u")
-            body = body.replace("SLAB_PACK_ENABLED", "1" if has_slab_pack else "0")
-            body = body.replace(
-                "STREAM_PACK_ENABLED", "1" if has_stream_pack else "0"
-            )
-            body = body.replace("SLAB_ENABLED", "1" if has_slab else "0")
-            body = body.replace("HAS_SHARED_Y", "1" if has_shared_y else "0")
-            if has_slab_pack:
-                from .slab_pack import get_slab_layout
-                layout = get_slab_layout(self.group_size)
-                body = body.replace("DOWN_W_OFFSET", f"{layout.offset('down_proj', 'weight')}u")
-                body = body.replace("DOWN_S_OFFSET", f"{layout.offset('down_proj', 'scales')}u")
-                body = body.replace("DOWN_B_OFFSET", f"{layout.offset('down_proj', 'biases')}u")
-            body = body.replace(
-                "HAS_SHARED_PARTS", "1" if has_shared_parts else "0"
-            )
-            body = body.replace(
-                "QMV_ACCUMULATE_IMPL",
-                "qmv_fast_accumulate_impl" if input_width % 512 == 0 else "qmv_accumulate_impl",
-            )
-            input_names = ["x", "weight", "scales", "biases", "routes", "scores"]
-            if has_slab_pack:
-                input_names.append("slab_pack")
-                if has_stream_pack:
-                    input_names.append("stream_pack")
-            elif has_slab:
-                input_names.extend(["slab_weight", "slab_scales", "slab_biases"])
-            if has_shared_y:
-                input_names.append("shared_y")
-            elif has_shared_parts:
-                input_names.extend(["shared", "shared_gate"])
-            suffix = ""
-            if has_slab_pack:
-                suffix += "_pack"
-                if has_stream_pack:
-                    suffix += "_stream"
-            elif has_slab:
-                suffix += "_slab"
-            if has_shared_y:
-                suffix += "_shared"
-            elif has_shared_parts:
-                suffix += "_shared_parts"
-            kernel_name = f"flashnext_level1_q4g{self.group_size}_down_combine{suffix}"
-            if self._boundary_profiler.selected_for("fused_down"):
-                kernel_name += "_boundary_fused_down"
-            kernel = maker(
-                name=kernel_name,
-                input_names=input_names,
-                output_names=["out"],
-                source=body,
-                header=_mlx_qmv_header(),
-                ensure_row_contiguous=True,
-                compile_options={"math_mode": "safe"},
-            )
-            self._kernels[key] = kernel
-        return kernel
-
-    def _metal_fused_up_swiglu(
-        self,
-        x: Any,
-        routes: Any,
-        gate_out: Any,
-        up: Q4G32Projection,
-        output_width: int,
-        slab_up: Q4G32Projection | None = None,
-        slab_pack: Any = None,
-        stream_pack: Any = None,
-    ) -> Any:
-        """Run Up QMV and consume gate output in the same Metal dispatch."""
-        import mlx.core as mx
-
-        tokens, input_width = _shape(x)[0], _shape(x)[-1]
-        slots = _shape(routes)[1]
-        has_slab = slab_up is not None
-        has_slab_pack = slab_pack is not None
-        has_stream_pack = stream_pack is not None
-        if has_stream_pack and not has_slab_pack:
-            raise ValueError("stream pack requires a resident slab pack")
-        kernel = self._get_fused_up_swiglu_kernel(
-            x, tokens, slots, input_width, output_width,
-            has_slab=has_slab, has_slab_pack=has_slab_pack,
-            has_stream_pack=has_stream_pack,
-        )
-        inputs = [x, up.weight, up.scales, up.biases, routes]
-        if has_slab_pack:
-            inputs.append(slab_pack)
-            if has_stream_pack:
-                inputs.append(stream_pack)
-        elif has_slab:
-            inputs.extend([slab_up.weight, slab_up.scales, slab_up.biases])
-        # Keeping gate_out as the final input makes the dependency explicit.
-        inputs.append(gate_out)
-
-        if (
-            not self._boundary_profiler.enabled
-            or not self._boundary_profiler.selected_for("swiglu")
-        ):
+    def _launch(self, label, kernel, inputs, x, grid, threadgroup, output_shape):
+        """Dispatch one kernel, timing it only when its boundary is profiled."""
+        profiler = self._boundary_profiler
+        if label is None or not profiler.enabled or not profiler.selected_for(label):
             result = kernel(
-                inputs=inputs,
-                template=[("T", x.dtype)],
-                grid=(32, ((output_width + 7) // 8) * 2, tokens * slots),
-                threadgroup=(32, 2, 1),
-                output_shapes=[(tokens, slots, output_width)],
+                inputs=inputs, template=[("T", x.dtype)], grid=grid,
+                threadgroup=threadgroup, output_shapes=[output_shape],
                 output_dtypes=[x.dtype],
             )
             return result[0] if isinstance(result, (tuple, list)) else result
 
         def issue():
             result = kernel(
-                inputs=inputs,
-                template=[("T", x.dtype)],
-                grid=(32, ((output_width + 7) // 8) * 2, tokens * slots),
-                threadgroup=(32, 2, 1),
-                output_shapes=[(tokens, slots, output_width)],
+                inputs=inputs, template=[("T", x.dtype)], grid=grid,
+                threadgroup=threadgroup, output_shapes=[output_shape],
                 output_dtypes=[x.dtype],
             )
             return result[0] if isinstance(result, (tuple, list)) else result
 
-        return self._boundary_profiler.measure(
-            "swiglu", issue, self._complete_boundary
-        )
+        return profiler.measure(label, issue, self._complete_boundary)
 
-    def _metal_fused_down_combine(
-        self, x, routes, scores, down, output_width, slab_down=None, slab_pack=None,
-        stream_pack=None, shared_y=None, shared=None, shared_gate=None,
-    ):
-        import mlx.core as mx
-
-        tokens, input_width = _shape(x)[0], _shape(x)[-1]
-        slots = _shape(routes)[1]
-        scales = down.scales
-        biases = down.biases
-        has_slab = slab_down is not None
-        has_slab_pack = slab_pack is not None
-        has_stream_pack = stream_pack is not None
-        if has_stream_pack and not has_slab_pack:
+    @staticmethod
+    def _pack_inputs(inputs, slab_pack, stream_pack):
+        if stream_pack is not None and slab_pack is None:
             raise ValueError("stream pack requires a resident slab pack")
-        has_shared_y = shared_y is not None
-        has_shared_parts = shared is not None and shared_gate is not None
-        if (shared is None) != (shared_gate is None):
-            raise ValueError("shared and shared_gate must be provided together")
-        if has_shared_y and has_shared_parts:
-            raise ValueError("provide shared_y or shared parts, not both")
-        kernel = self._get_fused_down_kernel(
-            x, tokens, slots, input_width, output_width,
-            has_slab=has_slab, has_slab_pack=has_slab_pack,
-            has_stream_pack=has_stream_pack,
-            has_shared_y=has_shared_y,
-            has_shared_parts=has_shared_parts,
-        )
-        inputs = [x, down.weight, scales, biases, routes, scores]
-        if has_slab_pack:
+        if slab_pack is not None:
             inputs.append(slab_pack)
-            if has_stream_pack:
+            if stream_pack is not None:
                 inputs.append(stream_pack)
-        elif has_slab:
-            inputs.extend([slab_down.weight, slab_down.scales, slab_down.biases])
-        if has_shared_y:
-            inputs.append(shared_y.reshape(tokens, output_width))
-        elif has_shared_parts:
-            inputs.extend([
-                shared.reshape(tokens, output_width),
-                shared_gate.reshape(tokens),
-            ])
-        if (
-            not self._boundary_profiler.enabled
-            or not self._boundary_profiler.selected_for("fused_down")
-        ):
-            result = kernel(
-                inputs=inputs,
-                template=[("T", x.dtype)],
-                grid=(((output_width + 7) // 8) * 64, 1, tokens),
-                threadgroup=(64, 1, 1),
-                output_shapes=[(tokens, output_width)],
-                output_dtypes=[x.dtype],
-            )
-            return result[0] if isinstance(result, (tuple, list)) else result
-
-        def issue():
-            result = kernel(
-                inputs=inputs,
-                template=[("T", x.dtype)],
-                grid=(((output_width + 7) // 8) * 64, 1, tokens),
-                threadgroup=(64, 1, 1),
-                output_shapes=[(tokens, output_width)],
-                output_dtypes=[x.dtype],
-            )
-            return result[0] if isinstance(result, (tuple, list)) else result
-
-        return self._boundary_profiler.measure(
-            "fused_down", issue, self._complete_boundary
-        )
+        return inputs
 
     def _metal_projection(
         self,
@@ -948,68 +642,89 @@ class MetalMoEExecutor:
         projection: Q4G32Projection,
         output_width: int,
         slot_input: bool,
-        slab_projection: Q4G32Projection | None = None,
         slab_pack: Any = None,
         stream_pack: Any = None,
         proj_name: str = "",
     ) -> Any:
-        shape = _shape(x)
-        tokens, input_width = shape[0], shape[-1]
+        tokens, input_width = _shape(x)[0], _shape(x)[-1]
         slots = _shape(routes)[1]
-        has_slab = slab_projection is not None
-        has_slab_pack = slab_pack is not None
-        has_stream_pack = stream_pack is not None
-        if has_stream_pack and not has_slab_pack:
-            raise ValueError("stream pack requires a resident slab pack")
-        kernel = self._get_metal_kernel(
-            x, tokens, slots, input_width, output_width, slot_input,
-            has_slab=has_slab, has_slab_pack=has_slab_pack,
-            has_stream_pack=has_stream_pack, proj_name=proj_name,
+        inputs = self._pack_inputs(
+            [x, projection.weight, projection.scales, projection.biases, routes],
+            slab_pack, stream_pack,
         )
-        import mlx.core as mx
+        kernel = self._kernel(
+            "projection", x, tokens, slots, input_width, output_width,
+            proj_name=proj_name, slot_input=slot_input,
+            has_slab_pack=slab_pack is not None,
+            has_stream_pack=stream_pack is not None,
+        )
+        return self._launch(
+            _QMV_LABELS.get(proj_name), kernel, inputs, x,
+            (32, ((output_width + 7) // 8) * 2, tokens * slots), (32, 2, 1),
+            (tokens, slots, output_width),
+        )
 
-        scales = projection.scales
-        biases = projection.biases
-        inputs = [x, projection.weight, scales, biases, routes]
-        if has_slab_pack:
-            inputs.append(slab_pack)
-            if has_stream_pack:
-                inputs.append(stream_pack)
-        elif has_slab:
-            inputs.extend([slab_projection.weight, slab_projection.scales, slab_projection.biases])
-        label = {
-            "gate_proj": "gate_qmv",
-            "up_proj": "up_qmv",
-            "down_proj": "down_qmv",
-        }.get(proj_name)
-        if (
-            not self._boundary_profiler.enabled
-            or label is None
-            or not self._boundary_profiler.selected_for(label)
-        ):
-            result = kernel(
-                inputs=inputs,
-                template=[("T", x.dtype)],
-                grid=(32, ((output_width + 7) // 8) * 2, tokens * slots),
-                threadgroup=(32, 2, 1),
-                output_shapes=[(tokens, slots, output_width)],
-                output_dtypes=[x.dtype],
-            )
-            return result[0] if isinstance(result, (tuple, list)) else result
+    def _metal_fused_up_swiglu(
+        self,
+        x: Any,
+        routes: Any,
+        gate_out: Any,
+        up: Q4G32Projection,
+        output_width: int,
+        slab_pack: Any = None,
+        stream_pack: Any = None,
+    ) -> Any:
+        """Run Up QMV and consume gate output in the same Metal dispatch."""
+        tokens, input_width = _shape(x)[0], _shape(x)[-1]
+        slots = _shape(routes)[1]
+        inputs = self._pack_inputs(
+            [x, up.weight, up.scales, up.biases, routes], slab_pack, stream_pack,
+        )
+        # Keeping gate_out as the final input makes the dependency explicit.
+        inputs.append(gate_out)
+        kernel = self._kernel(
+            "up_swiglu", x, tokens, slots, input_width, output_width,
+            proj_name="up_proj", has_slab_pack=slab_pack is not None,
+            has_stream_pack=stream_pack is not None,
+        )
+        return self._launch(
+            "swiglu", kernel, inputs, x,
+            (32, ((output_width + 7) // 8) * 2, tokens * slots), (32, 2, 1),
+            (tokens, slots, output_width),
+        )
 
-        def issue():
-            result = kernel(
-                inputs=inputs,
-                template=[("T", x.dtype)],
-                grid=(32, ((output_width + 7) // 8) * 2, tokens * slots),
-                threadgroup=(32, 2, 1),
-                output_shapes=[(tokens, slots, output_width)],
-                output_dtypes=[x.dtype],
-            )
-            return result[0] if isinstance(result, (tuple, list)) else result
-
-        return self._boundary_profiler.measure(
-            label, issue, self._complete_boundary
+    def _metal_fused_down_combine(
+        self, x, routes, scores, down, output_width, slab_pack=None,
+        stream_pack=None, shared_y=None, shared=None, shared_gate=None,
+    ):
+        tokens, input_width = _shape(x)[0], _shape(x)[-1]
+        slots = _shape(routes)[1]
+        if (shared is None) != (shared_gate is None):
+            raise ValueError("shared and shared_gate must be provided together")
+        if shared_y is not None and shared is not None:
+            raise ValueError("provide shared_y or shared parts, not both")
+        inputs = self._pack_inputs(
+            [x, down.weight, down.scales, down.biases, routes, scores],
+            slab_pack, stream_pack,
+        )
+        if shared_y is not None:
+            inputs.append(shared_y.reshape(tokens, output_width))
+        elif shared is not None:
+            inputs.extend([
+                shared.reshape(tokens, output_width),
+                shared_gate.reshape(tokens),
+            ])
+        kernel = self._kernel(
+            "down_combine", x, tokens, slots, input_width, output_width,
+            proj_name="down_proj", has_slab_pack=slab_pack is not None,
+            has_stream_pack=stream_pack is not None,
+            has_shared_y=shared_y is not None,
+            has_shared_parts=shared is not None,
+        )
+        return self._launch(
+            "fused_down", kernel, inputs, x,
+            (((output_width + 7) // 8) * 64, 1, tokens), (64, 1, 1),
+            (tokens, output_width),
         )
 
     def _reference_projection(
@@ -1029,7 +744,7 @@ class MetalMoEExecutor:
             )
         import mlx.core as mx
 
-        # MLX's dequantize uses the same affine Q4/G32 representation.  This
+        # MLX's dequantize uses the same affine Q4 representation.  This
         # fallback preserves values and dtypes while avoiding custom Metal.
         dense = mx.dequantize(
             projection.weight,
@@ -1052,7 +767,6 @@ class MetalMoEExecutor:
         *,
         return_all: bool = False,
         scores: Any = None,
-        slab_projections: Mapping[str, Any] | Sequence[Any] | None = None,
         slab_pack: Any = None,
         stream_pack: Any = None,
         shared_y: Any = None,
@@ -1118,15 +832,6 @@ class MetalMoEExecutor:
                 raise ValueError("projections must contain gate, up, and down")
             gate, up, down = (_as_projection(item) for item in projections)
 
-        slab_gate = slab_up = slab_down = None
-        if slab_projections is not None:
-            if isinstance(slab_projections, Mapping):
-                slab_gate = _as_projection(slab_projections["gate_proj"])
-                slab_up = _as_projection(slab_projections["up_proj"])
-                slab_down = _as_projection(slab_projections["down_proj"])
-            else:
-                slab_gate, slab_up, slab_down = (_as_projection(item) for item in slab_projections)
-
         gate_width = _shape(gate.weight)[1]
         inter_width = _shape(up.weight)[1]
         if gate_width != inter_width or gate_width > self.max_width:
@@ -1150,90 +855,10 @@ class MetalMoEExecutor:
             raise ValueError(
                 "packed slab execution requires hidden=2560 and intermediate=640"
             )
-        if slab_gate is not None:
-            _validate_projection(
-                slab_gate, None, self.hidden_size, gate_width, self.group_size
-            )
-            _validate_projection(
-                slab_up, None, self.hidden_size, inter_width, self.group_size
-            )
-            _validate_projection(
-                slab_down, None, inter_width, self.hidden_size, self.group_size
-            )
 
-        use_metal = self.available
-        if stream_pack is not None and not use_metal:
-            raise RuntimeError("stream pack requires custom Metal")
-        if use_metal:
-            # Separate gate and up projections outperform the fused variant
-            # on M4. Fusion raises register pressure enough to exceed the
-            # saved launch. The down-plus-router fusion remains profitable.
-            gate_out = self._metal_projection(
-                x, routes, gate, gate_width, False, slab_projection=slab_gate,
-                slab_pack=slab_pack, stream_pack=stream_pack,
-                proj_name="gate_proj"
-            )
-            # return_all exposes the raw Up projection for verification. Keep
-            # that diagnostic API unchanged when the fusion flag is enabled.
-            if self.fused_up_swiglu and not return_all:
-                activation = self._metal_fused_up_swiglu(
-                    x, routes, gate_out, up, inter_width,
-                    slab_up=slab_up, slab_pack=slab_pack,
-                    stream_pack=stream_pack,
-                )
-            else:
-                up_out = self._metal_projection(
-                    x, routes, up, inter_width, False, slab_projection=slab_up,
-                    slab_pack=slab_pack, stream_pack=stream_pack,
-                    proj_name="up_proj"
-                )
-                from mlx_vlm.models.activations import swiglu
-
-                if (
-                    self._boundary_profiler.enabled
-                    and self._boundary_profiler.selected_for("swiglu")
-                ):
-                    activation = self._boundary_profiler.measure(
-                        "swiglu",
-                        lambda: swiglu(gate_out, up_out),
-                        self._complete_boundary,
-                    )
-                else:
-                    activation = swiglu(gate_out, up_out)
-            if scores is not None and not return_all:
-                if self.group_size == 64:
-                    # Keep the G64 reduction in MLX.  The generic path uses
-                    # the score dtype for the product and sum, while the
-                    # fused kernel accumulates in float32 before its final
-                    # output cast.  These orders differ for BF16 scores.
-                    down_out = self._metal_projection(
-                        activation, routes, down, self.hidden_size, True,
-                        slab_projection=slab_down, slab_pack=slab_pack,
-                        stream_pack=stream_pack, proj_name="down_proj",
-                    )
-                    down_out = weighted_combine(down_out, routes, scores)
-                    if shared_y is not None:
-                        down_out = down_out + shared_y
-                    elif shared is not None:
-                        down_out = down_out + shared_gate * shared
-                else:
-                    down_out = self._metal_fused_down_combine(
-                        activation, routes, scores, down, self.hidden_size,
-                        slab_down=slab_down, slab_pack=slab_pack,
-                        stream_pack=stream_pack,
-                        shared_y=shared_y,
-                        shared=shared, shared_gate=shared_gate,
-                    )
-            else:
-                down_out = self._metal_projection(
-                    activation, routes, down, self.hidden_size, True,
-                    slab_projection=slab_down, slab_pack=slab_pack,
-                    stream_pack=stream_pack, proj_name="down_proj"
-                )
-            self.last_path = "custom-metal"
-            self.fallback_reason = None
-
-        else:
+        if not self.available:
+            if stream_pack is not None:
+                raise RuntimeError("stream pack requires custom Metal")
             gate_out, up_out, down_out = self._reference_all(x, routes, gate, up, down)
             if scores is not None and not return_all:
                 down_out = weighted_combine(down_out, routes, scores)
@@ -1243,8 +868,65 @@ class MetalMoEExecutor:
                     down_out = down_out + shared_gate * shared
             self.last_path = "reference"
             self.fallback_reason = self.capabilities["reason"]
-        if use_metal and not return_all:
-            return down_out
+            return (gate_out, up_out, down_out) if return_all else down_out
+
+        # Separate gate and up projections outperform the fused variant on
+        # M4. Fusion raises register pressure enough to exceed the saved
+        # launch. The down-plus-router fusion remains profitable.
+        gate_out = self._metal_projection(
+            x, routes, gate, gate_width, False, slab_pack=slab_pack,
+            stream_pack=stream_pack, proj_name="gate_proj",
+        )
+        # return_all exposes the raw Up projection for verification. Keep
+        # that diagnostic API unchanged when the fusion flag is enabled.
+        up_out = None
+        if self.fused_up_swiglu and not return_all:
+            activation = self._metal_fused_up_swiglu(
+                x, routes, gate_out, up, inter_width,
+                slab_pack=slab_pack, stream_pack=stream_pack,
+            )
+        else:
+            up_out = self._metal_projection(
+                x, routes, up, inter_width, False, slab_pack=slab_pack,
+                stream_pack=stream_pack, proj_name="up_proj",
+            )
+            from mlx_vlm.models.activations import swiglu
+
+            if (
+                self._boundary_profiler.enabled
+                and self._boundary_profiler.selected_for("swiglu")
+            ):
+                activation = self._boundary_profiler.measure(
+                    "swiglu",
+                    lambda: swiglu(gate_out, up_out),
+                    self._complete_boundary,
+                )
+            else:
+                activation = swiglu(gate_out, up_out)
+        if scores is not None and not return_all and self.group_size != 64:
+            down_out = self._metal_fused_down_combine(
+                activation, routes, scores, down, self.hidden_size,
+                slab_pack=slab_pack, stream_pack=stream_pack,
+                shared_y=shared_y, shared=shared, shared_gate=shared_gate,
+            )
+        else:
+            down_out = self._metal_projection(
+                activation, routes, down, self.hidden_size, True,
+                slab_pack=slab_pack, stream_pack=stream_pack,
+                proj_name="down_proj",
+            )
+            if scores is not None and not return_all:
+                # Keep the G64 reduction in MLX. The generic path uses the
+                # score dtype for the product and sum, while the fused kernel
+                # accumulates in float32 before its final output cast. These
+                # orders differ for BF16 scores.
+                down_out = weighted_combine(down_out, routes, scores)
+                if shared_y is not None:
+                    down_out = down_out + shared_y
+                elif shared is not None:
+                    down_out = down_out + shared_gate * shared
+        self.last_path = "custom-metal"
+        self.fallback_reason = None
         return (gate_out, up_out, down_out) if return_all else down_out
 
     def _reference_all(self, x: Any, routes: Any, gate: Any, up: Any, down: Any):

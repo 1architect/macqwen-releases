@@ -10,16 +10,14 @@ cold whatever ran before it.
 Conditions flip live switches only:
 
 * ``baseline``: current reads.
-* ``coalesce0`` / ``coalesce2``: large gathers read file-adjacent rows with
-  one preadv, with a gap tolerance of 0 or 2 rows (FLASHNEXT_COALESCE_GAP).
-* ``coalesce0-64``: coalescing with 64 file-ordered tasks per part.
-* ``pipeline``: compute each prefill MoE layer in expert chunks while the
-  next chunk reads (FLASHNEXT_PREFILL_PIPELINE).
 * ``ngram-parallel``: n-gram rows of large lookups read on the I/O pool
   (FLASHNEXT_NGRAM_PARALLEL_MIN=64).
 
+Read coalescing and the prefill MoE pipeline were measured on 2026-09-22 and
+removed; the research log keeps their results.
+
     python -m models.flashnext.tests.bench.bench_prefill_io --tokens 2048 \
-        --conditions baseline coalesce0 --rounds 2
+        --conditions baseline ngram-parallel --rounds 2
 """
 from __future__ import annotations
 
@@ -39,26 +37,14 @@ sys.path.insert(0, str(ROOT))
 
 from macqwen.results import output_path  # noqa: E402
 
-CONDITIONS = ("baseline", "coalesce0", "coalesce2", "coalesce0-64", "pipeline",
-              "pipeline-coalesce0", "ngram-parallel")
+CONDITIONS = ("baseline", "ngram-parallel")
 
 
 def apply_condition(backend, name: str) -> None:
-    from models.flashnext import expert_cache
-
     from models.flashnext import ngram
 
-    backend.store._coalesce_gap = {"coalesce0": 0, "coalesce2": 2, "coalesce0-64": 0,
-                                   "pipeline-coalesce0": 0}.get(name, -1)
-    expert_cache._COALESCE_TASKS = 64 if name == "coalesce0-64" else 16
+    del backend
     ngram.set_parallel_min_rows(64 if name == "ngram-parallel" else 0)
-    setter = getattr(expert_cache, "set_prefill_pipeline", None)
-    wants = name in ("pipeline", "pipeline-coalesce0")
-    if setter is None:
-        if wants:
-            raise SystemExit("this runtime has no prefill pipeline")
-    else:
-        setter(wants)
 
 
 def build_prompt(tokenizer, tokens: int) -> str:
@@ -75,7 +61,7 @@ def main() -> int:
     parser.add_argument("--decode", type=int, default=8)
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--conditions", nargs="+", choices=CONDITIONS,
-                        default=["baseline", "coalesce0"])
+                        default=["baseline", "ngram-parallel"])
     parser.add_argument("--profile-io", action="store_true")
     args = parser.parse_args()
     target = output_path("flashnext", "prefill-io", "prefill-io.json")

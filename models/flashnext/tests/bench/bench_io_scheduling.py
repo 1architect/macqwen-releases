@@ -395,68 +395,10 @@ def worker_sweep(args) -> int:
     return 0
 
 
-def topology_compare(args) -> int:
-    if args.worker_json is None or not args.worker_json.is_file():
-        raise SystemExit(
-            "topology comparison requires --worker-json from the worker sweep"
-        )
-    worker_payload = json.loads(args.worker_json.read_text())
-    premise = worker_payload.get("premise", {})
-    if not premise.get("topology_eligible", False):
-        print("PREMISE GATE: blocked; no task-topology benchmark was run", flush=True)
-        return 0
-    workers = int(worker_payload.get("selected_workers", args.workers))
-    records = []
-    for round_index in range(args.rounds):
-        topologies = (
-            ("projection", "expert")
-            if round_index % 2 == 0
-            else ("expert", "projection")
-        )
-        for topology in topologies:
-            records.append(_run_child(workers, topology, args.tokens, 1))
-    summaries = [_summary([record]) for record in records]
-    print("TOPOLOGY SUMMARY", flush=True)
-    for row in summaries:
-        print(json.dumps(row, sort_keys=True), flush=True)
-    digests = sorted({digest for row in summaries for digest in row["digests"]})
-    if len(digests) > 1:
-        print(
-            "DIGEST GATE: mismatch; no topology interpretation is allowed",
-            flush=True,
-        )
-    by_topology = {
-        topology: [row for row in summaries if row["topology"] == topology]
-        for topology in ("projection", "expert")
-    }
-    projection = [row["gen_median"] for row in by_topology["projection"]]
-    expert = [row["gen_median"] for row in by_topology["expert"]]
-    if projection and expert:
-        projection_rate = st.median(projection)
-        expert_rate = st.median(expert)
-        change = (expert_rate / projection_rate - 1.0) * 100.0
-        print(
-            f"INTERPRETATION: expert-task grouping changes generation by {change:+.1f}% "
-            "against the projection-task control; inspect queue, pread, layer "
-            "completion, physical bytes, RAM, and digest before judging it.",
-            flush=True,
-        )
-    _write_result(args.json, {
-        "mode": "topology",
-        "workers": workers,
-        "tokens": args.tokens,
-        "rounds": args.rounds,
-        "records": records,
-        "summaries": summaries,
-        "digests": digests,
-    })
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--mode", choices=("control", "workers", "topology", "production"), default="control"
+        "--mode", choices=("control", "workers", "production"), default="control"
     )
     parser.add_argument("--tokens", type=int, default=32)
     parser.add_argument("--rounds", type=int, default=2)
@@ -477,9 +419,7 @@ def main(argv: list[str] | None = None) -> int:
         return production_compare(args)
     if args.mode == "control":
         return section17_control(args)
-    if args.mode == "workers":
-        return worker_sweep(args)
-    return topology_compare(args)
+    return worker_sweep(args)
 
 
 if __name__ == "__main__":

@@ -123,27 +123,5 @@ class ProfileResetTests(unittest.TestCase):
         self.assertEqual(expert_cache._TIMERS["read_tasks"], 0)
 
 
-class LastRowPrefillTests(unittest.TestCase):
-    def test_flag_projects_only_the_last_row_of_a_short_prompt(self):
-        language = _Language()
-        cache = [_Cache()]
-        ids = mx.array([[1, 2, 3]], dtype=mx.int32)
-        with (
-            patch("models.flashnext.prefill.PREFILL_LAST_ROW", True),
-            patch("models.flashnext.prefill.mx.clear_cache") as clear_cache,
-        ):
-            _, token = prefill_language(language, ids, cache)
-        self.assertEqual(language.calls, [(3, True, True, None)])
-        self.assertEqual(language.argmax_shapes, [(1, 1, 1)])
-        self.assertEqual(int(token.item()), 3)
-        # A short prompt keeps the allocator cache, as the full path does.
-        clear_cache.assert_not_called()
-
-    def test_default_keeps_full_logits(self):
-        language = _Language()
-        prefill_language(language, mx.array([[1, 2]], dtype=mx.int32), [_Cache()])
-        self.assertEqual(language.calls, [(2, False, False, None)])
-
-
 if __name__ == "__main__":
     unittest.main()

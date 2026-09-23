@@ -8,7 +8,6 @@ CHAT_ENV = {
     # identical token digests, so the Metal executor is the default now.
     "FLASHNEXT_METAL_G64": "1",
     "FLASHNEXT_SLAB_G64": "0",
-    "FLASHNEXT_SLAB": "0",
     "FLASHNEXT_SLAB_GLOBAL": "60",
     "FLASHNEXT_SLAB_PACK": "1",
     "FLASHNEXT_SLAB_PACK_REQUIRE_EXISTING": "0",

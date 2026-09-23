@@ -29,8 +29,6 @@ PROMPT = "Explique a fotossintese em duas frases."
 # environment cannot silently turn this diagnostic into another experiment.
 FROZEN_CONTROL_ENV = {
     "FLASHNEXT_METAL_RUNTIME": "1",
-    "FLASHNEXT_SLAB": "0",
-    "FLASHNEXT_SLAB_LAYERS": "0",
     "FLASHNEXT_SLAB_GLOBAL": "60",
     "FLASHNEXT_SLAB_PACK": "1",
     "FLASHNEXT_SLAB_PACK_REQUIRE_EXISTING": "1",
@@ -43,8 +41,6 @@ FROZEN_CONTROL_ENV = {
     "FLASHNEXT_FUSED_UP_SWIGLU": "0",
     "FLASHNEXT_STREAM_PACK": "0",
     "FLASHNEXT_STREAM_PACK_CHUNK": "0",
-    "FLASHNEXT_EARLY_SUBMIT": "0",
-    "FLASHNEXT_WARM": "0",
     "FLASHNEXT_TOPK_THRESHOLD": "0.85",
     "FLASHNEXT_PROFILE_IO": "0",
     "FLASHNEXT_PROFILE_SCORE_SYNC": "1",
@@ -162,7 +158,6 @@ def main(argv=None) -> int:
     model_path = str(resolve_flashnext(str(args.model) if args.model else None))
     model, _, _ = load_streaming(
         model_path,
-        expert_capacity=0,
         verbose=False,
         keep_vision=False,
         use_mtp=False,

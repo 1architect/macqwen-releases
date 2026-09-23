@@ -46,7 +46,7 @@ class G64BenchmarkTests(unittest.TestCase):
         self.assertEqual(set(comparison), {"g64-reference", "g64-metal"})
         for env in comparison.values():
             self.assertEqual(env["FLASHNEXT_METAL_RUNTIME"], "1")
-            for key in ("FLASHNEXT_SLAB", "FLASHNEXT_SLAB_GLOBAL", "FLASHNEXT_SLAB_PACK",
+            for key in ("FLASHNEXT_SLAB_GLOBAL", "FLASHNEXT_SLAB_PACK",
                         "FLASHNEXT_SLAB_G64", "FLASHNEXT_STREAM_PACK"):
                 self.assertEqual(env[key], "0")
                 self.assertIn(key, LOAD_TIME_SETTINGS)

@@ -58,7 +58,7 @@ def main():
     args = parser.parse_args()
 
     model, _, store = load_streaming(
-        MODEL, expert_capacity=0, verbose=True, keep_vision=False, use_mtp=False
+        MODEL, verbose=True, keep_vision=False, use_mtp=False
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
     language = model.language_model

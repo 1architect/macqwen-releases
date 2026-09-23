@@ -112,7 +112,7 @@ class LoaderCompatibilityTest(unittest.TestCase):
             }
             store = SimpleNamespace(refs=refs)
             with patch.object(loader, "StreamingQuantizedEmbedding", side_effect=lambda *a: a[1]):
-                self.assertEqual(loader._swap_ngram(current, store, 1, "affine"), 2)
+                self.assertEqual(loader._swap_ngram(current, store, "affine"), 2)
             self.assertEqual(len(current.language_model.model.layers[1].ple.ple_embedding.ngram_embedding.shards), 2)
 
     def test_ngram_swap_rejects_incomplete_set_before_replacement(self):
@@ -122,7 +122,7 @@ class LoaderCompatibilityTest(unittest.TestCase):
         refs = {"language_model.model.layers.1.ple.ple_embedding.ngram_embedding.shards.0.weight": object()}
         with patch.object(loader, "StreamingQuantizedEmbedding"):
             with self.assertRaisesRegex(ValueError, "incomplete n-gram"):
-                loader._swap_ngram(current, SimpleNamespace(refs=refs), 1, "affine")
+                loader._swap_ngram(current, SimpleNamespace(refs=refs), "affine")
         self.assertIs(current.language_model.model.layers[1].ple.ple_embedding.ngram_embedding, table)
 
     def test_conv1d_sanitization_uses_each_target_module_layout(self):

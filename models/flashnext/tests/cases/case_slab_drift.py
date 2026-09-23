@@ -18,7 +18,6 @@ def command(config, _result_path: Path) -> list[str]:
 def environment(_config) -> dict[str, str]:
     return {
         "FLASHNEXT_GPU_KEEPWARM": "0",
-        "FLASHNEXT_PREFILL_LAST_ROW": "0",
         "FLASHNEXT_NORM_WEIGHT_CACHE": "0",
         "FLASHNEXT_SLAB_COUNTS": "turn",
         "FLASHNEXT_PREWARM": "0",

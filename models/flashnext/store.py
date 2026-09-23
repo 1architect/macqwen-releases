@@ -107,6 +107,21 @@ class TensorRef:
         self.row_bytes = trailing * _DTYPES[dtype][0].itemsize
 
 
+_ADVICE = {
+    "normal": mmap.MADV_NORMAL,
+    "random": mmap.MADV_RANDOM,
+    "sequential": mmap.MADV_SEQUENTIAL,
+}
+_LIBC = None
+
+
+def _libc():
+    global _LIBC
+    if _LIBC is None:
+        _LIBC = ctypes.CDLL(None, use_errno=True)
+    return _LIBC
+
+
 class SafeTensorStore:
     """Memory-mapped view over every shard of a safetensors checkpoint."""
 
@@ -132,7 +147,6 @@ class SafeTensorStore:
         self._map_lock = threading.Lock()
         self._views: Dict[str, np.ndarray] = {}
         self._shared_views: Dict[str, np.ndarray] = {}
-        self._drop_ngram = os.environ.get("FLASHNEXT_NGRAM_DONTNEED") == "1"
         self._read_mode = os.environ.get("FLASHNEXT_READ", "pread")
         # Rows per positioned read. Chunk 1 gives every expert its own read and
         # its own allocation, which the main thread then concatenates. Chunk 2
@@ -142,43 +156,17 @@ class SafeTensorStore:
         # harness against a 4.4% band. Chunk 8 alone was 8% worse, because
         # three reads per layer cannot keep the NVMe queue busy.
         self._pread_chunk = int(os.environ.get("FLASHNEXT_PREAD_CHUNK", "2"))
-        self._hybrid_cutoff = int(os.environ.get("FLASHNEXT_HYBRID_CUTOFF", "2"))
-        self._sort_reads = os.environ.get("FLASHNEXT_SORT_READS") == "1"
-        # Large gathers (prefill) can read runs of file-adjacent rows with one
-        # preadv each. The destination slot of every row is unchanged, so the
-        # arithmetic is unchanged. -1 disables it; 0 merges only adjacent
-        # rows; N also reads gaps of up to N rows into a scratch buffer.
-        self._coalesce_gap = int(os.environ.get("FLASHNEXT_COALESCE_GAP", "-1"))
-        self._no_cache = os.environ.get("FLASHNEXT_F_NOCACHE") == "1"
-        # Kernel read-ahead on the shard descriptors. It was measured once,
-        # at 13 percent slower when off, and the code was removed. The
-        # question now is a different one: whether that cost is flat across
-        # miss rates or concentrated where GPU busy peaks. Spillover past the
-        # layer's own wait would show up as the second shape.
+        # Kernel read-ahead on the shard descriptors. Off measured 1.3% faster,
+        # flat across miss rates, inside the band; the default stays on.
         self._rdahead = os.environ.get("FLASHNEXT_RDAHEAD", "1") != "0"
-        # The PLE n-gram shards hold 25 GB and every token reads rows from
-        # them. Those reads land in the same page cache the experts compete
-        # for, and cache occupancy is the variable that decides decode rate.
-        # With this on, the shards that hold nothing but n-gram rows are
-        # opened F_NOCACHE, so their traffic cannot evict an expert. The two
-        # shards that mix n-gram with other tensors are left alone.
-        self._ngram_nocache = os.environ.get("FLASHNEXT_NGRAM_NOCACHE") == "1"
-        self._ngram_only_shards: set = set()
         self._dlpack = os.environ.get("FLASHNEXT_DLPACK", "1") == "1"
         self._mmap_advice = os.environ.get("FLASHNEXT_MMAP_ADVICE", "random")
         self._pinned_rows: set = set()
-        # Residency tracking for the `resident` read mode. A mapped read of a
-        # cached row costs 0.99 ms against pread's 3.26; a mapped read of a
-        # cold row costs 21.89 against 13.62. The gate therefore has to be
-        # right about 78% of the time to break even, and it has to be cheap:
-        # `mincore` answers exactly but costs 7.2 us per row, more than the
-        # 8.2 us it saves. This tracks residency in a bounded LRU instead, at
-        # dictionary cost. `bench_residency.py` measures its accuracy against
-        # mincore before anyone trusts it.
-        # Observing residency is separate from acting on it. Mapping resident
-        # rows was measured and rejected, but knowing which rows are resident
-        # is still worth having: it is what tells a routing experiment whether
-        # a cheaper expert was available.
+        # Residency tracking. Mapping resident rows instead of reading them was
+        # measured and rejected, but knowing which rows are resident is what
+        # tells cache-aware routing whether a cheaper expert was available.
+        # This tracks rows the process read in a bounded LRU at dictionary
+        # cost; `bench_residency.py` measured it at 97.6% precise.
         self._track_residency = os.environ.get("FLASHNEXT_TRACK_RESIDENT") == "1"
         self._resident_cap = int(
             os.environ.get("FLASHNEXT_RESIDENT_ROWS", "12000")
@@ -192,17 +180,6 @@ class SafeTensorStore:
 
         for shard in shards:
             self.add_shard(shard)
-        self._classify_shards()
-
-    def _classify_shards(self) -> None:
-        """Record which shards hold n-gram rows and nothing else."""
-        kinds: Dict[str, set] = {}
-        for name, ref in self.refs.items():
-            kind = "ngram" if ".ngram_embedding." in name else "other"
-            kinds.setdefault(ref.shard, set()).add(kind)
-        self._ngram_only_shards = {
-            shard for shard, seen in kinds.items() if seen == {"ngram"}
-        }
 
     def add_shard(self, shard: str) -> None:
         """Register an extra safetensors shard beside the indexed checkpoint."""
@@ -240,20 +217,14 @@ class SafeTensorStore:
                 shape=ref.shape,
             )
             # Without this the kernel reads ahead around every scattered row.
-            # The advice on self._maps never reached here: np.memmap opens its
-            # own mapping, so the two are unrelated.
+            # np.memmap opens its own mapping, so self._maps advice misses it.
             self._advise_view(view)
             self._views[name] = view
         return view
 
     def _advise_view(self, view: np.ndarray) -> None:
-        advice = {
-            "normal": mmap.MADV_NORMAL,
-            "random": mmap.MADV_RANDOM,
-            "sequential": mmap.MADV_SEQUENTIAL,
-        }[self._mmap_advice]
         try:
-            view._mmap.madvise(advice)
+            view._mmap.madvise(_ADVICE[self._mmap_advice])
         except (AttributeError, OSError):
             pass
 
@@ -261,14 +232,9 @@ class SafeTensorStore:
         self._mmap_advice = value
         for view in self._views.values():
             self._advise_view(view)
-        advice = {
-            "normal": mmap.MADV_NORMAL,
-            "random": mmap.MADV_RANDOM,
-            "sequential": mmap.MADV_SEQUENTIAL,
-        }[value]
         for handle in self._maps.values():
             try:
-                handle.madvise(advice)
+                handle.madvise(_ADVICE[value])
             except (AttributeError, OSError):
                 pass
 
@@ -285,12 +251,7 @@ class SafeTensorStore:
                         # mmap keeps its own descriptor on this platform. The
                         # Python file object is not needed after mapping.
                         file.close()
-                    advice = {
-                        "normal": mmap.MADV_NORMAL,
-                        "random": mmap.MADV_RANDOM,
-                        "sequential": mmap.MADV_SEQUENTIAL,
-                    }[self._mmap_advice]
-                    handle.madvise(advice)
+                    handle.madvise(_ADVICE[self._mmap_advice])
                     self._maps[shard] = handle
         return handle
 
@@ -308,37 +269,30 @@ class SafeTensorStore:
             self._shared_views[name] = view
         return view
 
+    def _mapped(self, name: str, mode: str) -> np.ndarray:
+        """The mapped view a non-pread mode gathers from."""
+        if mode == "shared_mmap":
+            return self._shared_view(name)
+        if mode == "mmap":
+            return self._view(name)
+        raise ValueError(f"unknown FlashNext read mode: {mode!r}")
+
     def shape(self, name: str) -> Tuple[int, ...]:
         return self.refs[name].shape
 
     def rows_np(
         self, name: str, indices: Sequence[int], read_mode: str | None = None
     ) -> np.ndarray:
-        """Gather rows as numpy. Safe to call from worker threads: the page
-        faults happen inside numpy, which drops the GIL, so concurrent calls
-        keep the NVMe queue busy instead of idling between serial reads."""
+        """Gather rows as numpy. Safe to call from worker threads: the reads
+        and page faults release the GIL, so concurrent calls keep the NVMe
+        queue busy instead of idling between serial reads."""
         rows = indices if isinstance(indices, list) else list(indices)
         mode = read_mode or self._read_mode
-        if mode == "hybrid":
-            mode = "shared_mmap" if len(rows) <= self._hybrid_cutoff else "pread"
-        if mode == "resident":
-            out = self.empty_rows(name, len(rows))
-            self._rows_resident(name, rows, out)
-            return out
         if mode in ("pread", "preadv"):
-            return self._rows_pread(name, rows, mode)
-        view = (
-            self._shared_view(name)
-            if mode == "shared_mmap"
-            else self._view(name)
-        )
-        out = np.ascontiguousarray(view[rows])
-        if self._drop_ngram and ".ngram_embedding." in name:
-            try:
-                view._mmap.madvise(mmap.MADV_DONTNEED)
-            except (AttributeError, OSError):
-                pass
-        return out
+            out = self.empty_rows(name, len(rows))
+            self._pread_into(name, rows, out, mode)
+            return out
+        return np.ascontiguousarray(self._mapped(name, mode)[rows])
 
     def pin_rows(self, name: str, rows: Sequence[int]) -> int:
         """Keep selected file-backed rows resident without copying them."""
@@ -346,7 +300,7 @@ class SafeTensorStore:
         view = self._shared_view(name)
         base = int(view.__array_interface__["data"][0])
         page = mmap.PAGESIZE
-        libc = ctypes.CDLL(None, use_errno=True)
+        libc = _libc()
         total = 0
         for row in rows:
             address = base + int(row) * ref.row_bytes
@@ -378,7 +332,7 @@ class SafeTensorStore:
 
     def unpin_all(self) -> None:
         self._pinned_rows.clear()
-        libc = ctypes.CDLL(None)
+        libc = _libc()
         for address, length in self._pinned:
             libc.munlock(ctypes.c_void_p(address), ctypes.c_size_t(length))
         self._pinned.clear()
@@ -400,13 +354,8 @@ class SafeTensorStore:
                                 "F_RDAHEAD could not be cleared on "
                                 f"{shard}; refusing to run the arm"
                             )
-                    if self._no_cache or (
-                        self._ngram_nocache and shard in self._ngram_only_shards
-                    ):
-                        fcntl.fcntl(fd, fcntl.F_NOCACHE, 1)
                     self._fds[shard] = fd
         return fd
-
 
     def _mark_read(self, name: str, rows) -> None:
         """Record rows just pulled in, newest last, evicting the oldest."""
@@ -421,7 +370,7 @@ class SafeTensorStore:
             table.popitem(last=False)
 
     def believed_resident(self, name: str, row: int) -> bool:
-        """Whether a mapped read of this row is expected to avoid the drive."""
+        """Whether this row is expected to be in memory without a read."""
         key = (name, int(row))
         if key in self._pinned_rows:
             return True
@@ -436,52 +385,12 @@ class SafeTensorStore:
         """Enable or disable tracking without reloading the model store."""
         self._track_residency = bool(enabled)
 
-    def _rows_resident(
-        self, name: str, rows: Sequence[int], out: np.ndarray
+    def _pread_into(
+        self, name: str, rows: Sequence[int], out: np.ndarray, read_mode: str
     ) -> None:
-        """Map rows the page cache already holds, read the rest.
-
-        A resident row costs a memcpy through the shared map at 25 GB/s. The
-        same row through pread costs a kernel copy at 7.7 GB/s. A cold row
-        reverses that: its faults serialise and cost 1.6x a pread.
-
-        Rows held by mlock are known resident. With FLASHNEXT_TRACK_RESIDENT
-        the LRU is consulted too, which covers far more rows than the pin
-        budget reaches but can be wrong. A wrong guess costs about 3.6x what a
-        right one saves, so measure the tracker before trusting it.
-        """
-        ref = self.refs[name]
-        hits = []
-        misses = []
-        for slot, row in enumerate(rows):
-            resident = self.believed_resident(name, row)
-            (hits if resident else misses).append((slot, row))
-        if hits:
-            view = self._shared_view(name)
-            for slot, row in hits:
-                out[slot] = view[row]
-        if misses:
-            fd = self._fd(ref.shard)
-            for slot, row in misses:
-                offset = ref.start + row * ref.row_bytes
-                args = (fd, [memoryview(out[slot]).cast("B")], offset)
-                read = (
-                    _trace_read(name, row, ref.row_bytes, _profiled_preadv, *args)
-                    if _PHYSICAL_MISS_TRACE
-                    else _profiled_preadv(*args)
-                )
-                if read != ref.row_bytes:
-                    raise OSError(f"short pread for {name} row {row}")
-        if self._track_residency:
-            self._mark_read(name, rows)
-
-    def _rows_pread(
-        self, name: str, rows: Sequence[int], read_mode: str
-    ) -> np.ndarray:
-        """Read expert rows with explicit positioned I/O instead of mmap faults."""
+        """Read rows with positioned I/O into ``out[slot]``, in row order."""
         ref = self.refs[name]
         dtype, _ = _DTYPES[ref.dtype]
-        out = np.empty((len(rows), *ref.shape[1:]), dtype=dtype)
         fd = self._fd(ref.shard)
         for slot, row in enumerate(rows):
             offset = ref.start + row * ref.row_bytes
@@ -506,7 +415,6 @@ class SafeTensorStore:
                 raise OSError(f"short pread for {name} row {row}")
         if self._track_residency:
             self._mark_read(name, rows)
-        return out
 
     def empty_rows(self, name: str, count: int) -> np.ndarray:
         """Allocate one destination for a whole layer's gather."""
@@ -558,95 +466,10 @@ class SafeTensorStore:
         """
         rows = indices if isinstance(indices, list) else list(indices)
         mode = read_mode or self._read_mode
-        if mode == "hybrid":
-            mode = "shared_mmap" if len(rows) <= self._hybrid_cutoff else "pread"
-        if mode == "resident":
-            self._rows_resident(name, rows, out)
-            return
         if mode in ("pread", "preadv"):
-            ref = self.refs[name]
-            fd = self._fd(ref.shard)
-            dtype, _ = _DTYPES[ref.dtype]
-            for slot, row in enumerate(rows):
-                offset = ref.start + row * ref.row_bytes
-                if mode == "preadv":
-                    args = (fd, [memoryview(out[slot]).cast("B")], offset)
-                    read = (
-                        _trace_read(name, row, ref.row_bytes, _profiled_preadv, *args)
-                        if _PHYSICAL_MISS_TRACE
-                        else _profiled_preadv(*args)
-                    )
-                else:
-                    args = (fd, ref.row_bytes, offset)
-                    data = (
-                        _trace_read(name, row, ref.row_bytes, _profiled_pread, *args)
-                        if _PHYSICAL_MISS_TRACE
-                        else _profiled_pread(*args)
-                    )
-                    read = len(data)
-                    if read == ref.row_bytes:
-                        out[slot] = np.frombuffer(data, dtype=dtype).reshape(
-                            ref.shape[1:]
-                        )
-                if read != ref.row_bytes:
-                    raise OSError(f"short pread for {name} row {row}")
-            if self._track_residency:
-                self._mark_read(name, rows)
+            self._pread_into(name, rows, out, mode)
             return
-        view = (
-            self._shared_view(name)
-            if mode == "shared_mmap"
-            else self._view(name)
-        )
-        out[:] = view[rows]
-        if self._drop_ngram and ".ngram_embedding." in name:
-            try:
-                view._mmap.madvise(mmap.MADV_DONTNEED)
-            except (AttributeError, OSError):
-                pass
-
-    def rows_into_slots(
-        self, name: str, pairs: Sequence[tuple[int, int]], out: np.ndarray,
-    ) -> None:
-        """Read (row, slot) pairs into ``out[slot]``, merging file-adjacent rows.
-
-        ``pairs`` must be sorted by row. A run of rows whose file gaps are at
-        most ``_coalesce_gap`` rows becomes one ``preadv`` whose iovecs point
-        at each row's own destination slot, with gap rows landing in a
-        scratch buffer. Destination layout matches ``rows_into`` exactly.
-        """
-        ref = self.refs[name]
-        fd = self._fd(ref.shard)
-        row_bytes = ref.row_bytes
-        gap = max(0, self._coalesce_gap)
-        scratch = None
-        index = 0
-        count = len(pairs)
-        while index < count:
-            end = index + 1
-            while (
-                end < count
-                and 0 < pairs[end][0] - pairs[end - 1][0] <= gap + 1
-            ):
-                end += 1
-            vectors = []
-            previous = None
-            for row, slot in pairs[index:end]:
-                if previous is not None and row - previous > 1:
-                    missing = (row - previous - 1) * row_bytes
-                    if scratch is None or len(scratch) < missing:
-                        scratch = bytearray(max(missing, row_bytes))
-                    vectors.append(memoryview(scratch)[:missing])
-                vectors.append(memoryview(out[slot]).cast("B"))
-                previous = row
-            first = pairs[index][0]
-            expected = (pairs[end - 1][0] - first + 1) * row_bytes
-            read = _profiled_preadv(fd, vectors, ref.start + first * row_bytes)
-            if read != expected:
-                raise OSError(f"short preadv for {name} rows {first}..")
-            index = end
-        if self._track_residency:
-            self._mark_read(name, [row for row, _slot in pairs])
+        out[:] = self._mapped(name, mode)[rows]
 
     def to_mx(self, name: str, out: np.ndarray) -> mx.array:
         """Wrap a numpy gather as mx. Call from the main thread only."""
@@ -660,9 +483,7 @@ class SafeTensorStore:
         """Return the requested rows of `name`, stacked along axis 0."""
         ref = self.refs[name]
         _, target = _DTYPES[ref.dtype]
-        out = self.rows_np(name, indices)
-
-        array = mx.array(out)
+        array = mx.array(self.rows_np(name, indices))
         # uint16 -> bfloat16 is a reinterpret, not a conversion.
         if target is mx.bfloat16:
             array = array.view(mx.bfloat16)
@@ -671,9 +492,6 @@ class SafeTensorStore:
     def whole_np(self, name: str) -> np.ndarray:
         """The full tensor as numpy. One sequential pass, no gather."""
         return np.asarray(self._view(name))
-
-    def whole(self, name: str) -> mx.array:
-        return self.rows(name, range(self.refs[name].shape[0]))
 
     def close(self) -> None:
         self.unpin_all()

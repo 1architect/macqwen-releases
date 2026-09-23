@@ -52,7 +52,7 @@ def main() -> None:
     from models.flashnext.adaptive_topk import set_route_observer
     from models.flashnext.loader import load_streaming
 
-    model, _, _ = load_streaming(path, expert_capacity=0, verbose=False,
+    model, _, _ = load_streaming(path, verbose=False,
                                  keep_vision=False, use_mtp=False)
     tokenizer = AutoTokenizer.from_pretrained(path)
     language = model.language_model

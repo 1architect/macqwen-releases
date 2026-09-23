@@ -92,7 +92,7 @@ def main(argv=None) -> int:
     from models.flashnext.loader import load_streaming
 
     model, _config, store = load_streaming(
-        os.path.expanduser(args.model), expert_capacity=0, verbose=False,
+        os.path.expanduser(args.model), verbose=False,
         keep_vision=False, use_mtp=False)
     switches = []
     for layer in model.language_model.model.layers:

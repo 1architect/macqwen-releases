@@ -42,8 +42,6 @@ QUALITY_PROMPTS = PROMPTS + (
 PROFILES = {
     "pread": (0.85, {}, 1.0, "pread"),
     "shared-mmap": (0.85, {}, 1.0, "shared_mmap"),
-    "hybrid": (0.85, {}, 1.0, "hybrid"),
-    "mixed": (0.85, {}, 1.0, "mixed"),
 }
 
 
@@ -86,7 +84,7 @@ def main() -> None:
     args = parser.parse_args()
 
     model, _, store = load_streaming(
-        MODEL, expert_capacity=0, verbose=True, keep_vision=False, use_mtp=False
+        MODEL, verbose=True, keep_vision=False, use_mtp=False
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
     language = model.language_model

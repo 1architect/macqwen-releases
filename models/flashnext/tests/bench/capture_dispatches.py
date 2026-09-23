@@ -56,7 +56,7 @@ def main() -> int:
 
     model_dir = str(resolve_flashnext())
     model, _, _ = load_streaming(
-        model_dir, expert_capacity=0, verbose=False, keep_vision=False,
+        model_dir, verbose=False, keep_vision=False,
         use_mtp=False,
     )
     language = model.language_model

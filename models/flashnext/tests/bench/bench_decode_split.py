@@ -152,7 +152,7 @@ def main() -> None:
     from transformers import AutoTokenizer
 
     model, _, _ = load_streaming(
-        path, expert_capacity=0, verbose=False, keep_vision=False, use_mtp=False
+        path, verbose=False, keep_vision=False, use_mtp=False
     )
     tokenizer = AutoTokenizer.from_pretrained(path)
     language = model.language_model
