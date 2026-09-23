@@ -50,35 +50,51 @@ production harness, both inside bands near 15%. Full record: the last
 ### Next steps, in order
 
 The paths in "Next decode and prefill paths" were run on 2026-09-22; the
-results are in "Next-path results" in `research.md`.
+results are in "Next-path results" in `research.md`. Keep-warm is the chat
+default since then (`FLASHNEXT_GPU_KEEPWARM=1` in `settings/launch.py`);
+`/config model gpu-keepwarm off` turns it off and saves
+`flashnext_gpu_keepwarm` in preferences. The quiet paired decode runs now
+measure 2.86 to 2.93 tok/s at 8 pins, so 3 tok/s needs about 10 to 15 ms/token.
 
-1. Keep-warm is the chat default since 2026-09-22 (`FLASHNEXT_GPU_KEEPWARM=1`
-   in `settings/launch.py`). `/config model gpu-keepwarm off` turns it off
-   live and saves `flashnext_gpu_keepwarm` in preferences, so the choice
-   holds across launches. Evidence: +23.1% over three paired 128-token arms
-   at 8 pins (3 of 3, band about 2.5%, identical digests), and a 384-token
-   answer held P15 with no thermal or performance warning.
-2. The remaining lever with a measured premise is memory for the page cache:
-   the cache simulator prices each extra GB near 4 GB at about 13% fewer
-   reads. `FLASHNEXT_STREAM_EMBED=1` frees the 397 MB input embedding and read
-   6.6% fewer bytes in 4 of 4 pairs, with no resolved rate change. A longer
-   paired run would settle it.
-3. Unresolved and off, each needs longer paired arms on a quiet machine:
-   `FLASHNEXT_IO_QOS=user-interactive`, the compiled-glue stack
+1. Prefill with keep-warm on. Every prefill measurement so far ran with
+   keep-warm off (`bench_prefill_io` forces `FLASHNEXT_GPU_KEEPWARM=0`). A
+   1,007-token prefill spent 14.9 s of 49.3 s in the score sync that drains
+   GPU work, and the GPU likely runs that work at the collapsed clock because
+   it idles while each layer reads about 1 GB. Keep-warm already spins during
+   prefill read waits. Add keep-warm conditions to `bench_prefill_io` and
+   run paired arms at about 1,000 tokens, with and without
+   `FLASHNEXT_NGRAM_PARALLEL_MIN=64` (n-gram reads took 5.6 s of that
+   prefill). No runtime change is needed.
+2. Measure the exact decode changes as one bundle on 128-token pairs:
+   `FLASHNEXT_STREAM_EMBED=1` (6.6% fewer bytes, rate +0.3% inside 1.0%),
+   compiled injections with compiled norm and cached gain
    (`FLASHNEXT_COMPILE_HC=1`, `FLASHNEXT_COMPILE_NORM=1`,
-   `FLASHNEXT_NORM_WEIGHT_CACHE=1`), and
-   `FLASHNEXT_NGRAM_PARALLEL_MIN=64` for prefill.
-4. The QSA flags passed their exact-digest gate at 2.6K context. Their speed
-   needs a 16K to 32K context comparison.
-5. Rejected, do not retry without a new premise: cache admission or an
-   app-owned expert cache (realizable policies stay within 3% of LRU), no-copy
-   Metal buffers over checkpoint mappings (Metal makes the whole region
-   resident), the prefill MoE pipeline, prefill read coalescing, last-row
-   prefill logits (not exact), compiled hyper-connections (not exact), and
-   the hit-first MoE split.
-6. Use 128-token paired arms in one process (`bench_long_states` with repeated
-   conditions) for small decode effects. The 32-token harness gave bands of
-   19% to 25% on a busy machine.
+   `FLASHNEXT_NORM_WEIGHT_CACHE=1`, +0.9% inside 1.6%) and
+   `FLASHNEXT_IO_QOS=user-interactive` (+1.2% inside 2.1%). All keep the
+   token digest. Each was measured on noisy 32-token arms. Add a bundle
+   condition to `bench_long_states` (the streamed embedding is load time, so
+   it needs one fresh process per arm or a load-time flag in both arms) and
+   promote the bundle together if it resolves.
+3. Re-split one decode token at P15. Every earlier cost split (reads, GPU,
+   host) was measured with the GPU clock collapsed. One profiled run with
+   keep-warm on (`FLASHNEXT_PROFILE_IO=1`, separate from throughput arms)
+   shows whether the next lever is physical bytes or GPU dispatches.
+4. Measure the QSA flags at 16K to 32K context.
+   `FLASHNEXT_QSA_CACHE_POOLED_KEYS=1` and `FLASHNEXT_QSA_SCATTER_DECODE=1`
+   passed their exact-digest gate at 2.6K context. The work they remove grows
+   with context, which is where agent sessions with long tool results sit.
+   The prefill for each arm takes minutes; use few pairs.
+5. Rejected, do not retry without a new premise: shrinking the checkpoint,
+   cache admission or an app-owned expert cache (realizable policies stay
+   within 3% of LRU), no-copy Metal buffers over checkpoint mappings (Metal
+   makes the whole region resident), the prefill MoE pipeline, prefill read
+   coalescing, last-row prefill logits (not exact), compiled hyper-connections
+   (not exact), the hit-first MoE split, and further pin-depth sweeps.
+6. Method: use 128-token paired arms in one process (`bench_long_states` with
+   repeated conditions) for small decode effects. The 32-token harness gave
+   bands of 19% to 25% on a busy machine. Close other applications first; the
+   Claude app renderer and `mediaanalysisd` added one to two cores of load
+   during the 2026-09-22 runs.
 
 ### Rules the user set this session
 
