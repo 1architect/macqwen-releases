@@ -4,6 +4,12 @@
 
 ### Changed
 
+- Make Flash-Next the documented primary runtime: the README leads with
+  SSD-streamed MoE on the installed `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP`
+  checkpoint (alias `vontra-mtp`, 22 shards, 105.4 GiB) with its download,
+  current chat defaults, and current 128-token results; K2-Horizon, Bonsai-2,
+  and Qwen3.8-27B stay supported as secondary runtimes. oQ4 and REAP-288
+  numbers remain as labeled history.
 - Remove the `fast` routing profile and its `--fast` flag. It dropped
   experts without renormalizing and never passed the quality gate; use
   `fast-quality` for approximate routing with quality recovery.

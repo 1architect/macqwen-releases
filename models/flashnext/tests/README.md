@@ -53,11 +53,12 @@ metrics, command, per-arm results, interpretation, and JSONL record.
 
 ## Flash-Next controls
 
-Historical Q4/G32 cases retain their original controls for provenance. Current
-REAP Q4/G64 uses the G64 Metal executor by default; set
-`FLASHNEXT_METAL_G64=0` for the generic-MLX rollback. G64 slabs and stream-pack
-remain off. New comparisons use greedy decoding and exact digests. Quality
-checks use `chat.sh`, normal sampling, and explicit effort settings.
+Historical Q4/G32 cases retain their original controls for provenance. The
+installed Vontra Q4/G32 checkpoint runs the Metal runtime with the chat
+defaults in `settings/launch.py` (slab pack, stream-pack, keep-warm, and the
+exact bundle on); set an explicit environment value for the rollback of any
+member. G64 slabs remain off. New comparisons use greedy decoding and exact
+digests. Quality checks use `chat.sh`, normal sampling, and explicit effort settings.
 
 The future paired G64 quality comparison predeclares seeds 7, 19, and 73,
 alternates arm order, keeps slabs and stream-pack off, and requires completed

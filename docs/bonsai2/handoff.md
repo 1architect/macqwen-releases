@@ -55,13 +55,13 @@ Run checkpoint-free Bonsai-2 tests:
 
 ```bash
 .venv/bin/python -m unittest discover \
-  -s models/bonsai2 -p 'test_*.py' -q
+  -s models/bonsai2/tests/unit -t . -p 'test_*.py' -q
 ```
 
 Run affected shared tests and compile checks:
 
 ```bash
-.venv/bin/python -m unittest discover -s macqwen -p 'test_*.py'
+.venv/bin/python -m unittest discover -s macqwen/tests -t . -p 'test_*.py'
 .venv/bin/python -m compileall -q macqwen models/bonsai2
 ```
 
@@ -139,8 +139,8 @@ pass in the managed Python 3.12 MLX runtime with the declared
 `mlx-vlm==0.6.17` and Pillow dependencies.
 
 We also completed a low-context check with three fresh
-control children: 3,283 prompt tokens, 32 output tokens, and 7.33, 7.34,
-and 7.38 tok/s with matching greedy digests. The raw record is
+control children: 3,283 prompt tokens, 32 output tokens, and 7.375, 7.339,
+and 7.328 tok/s (median 7.339) with matching greedy digests. The raw record is
 [`20260919-low-context-short-check.jsonl`](../../results/bonsai2/20260919-low-context-short-check.jsonl).
 This is diagnostic evidence only: VM swap activity occurred, and the current
 physical-read field includes prefill and decode. Revalidate the sustained and

@@ -95,11 +95,12 @@ measure 2.86 to 2.93 tok/s at 8 pins, so 3 tok/s needs about 10 to 15 ms/token.
 
 Rejected experiment switches were removed from the runtime (list in the
 last `research.md` section); their names now do nothing, and an unknown
-`FLASHNEXT_READ` raises. Read modes are `pread` (default), `preadv`,
-`shared_mmap` and `mmap`. Saved sessions from before the refactor report
+`FLASHNEXT_READ` raises. Read modes are `pread` (default), `preadv` and
+`shared_mmap`. Saved sessions from before the refactor report
 "different engine code". The refactored runtime reproduced the recorded
 128-token digest `e19af44d5268e9d1`. Shared-expert overlap off
-(`FLASHNEXT_OVERLAP=0`) measured +5.2% inside a 9.0% band and stays on;
+(`FLASHNEXT_OVERLAP=0`) measured +5.2% inside a 9.0% band, so the disabled
+overlap stays in the defaults;
 `bench_long_states` has a `keepwarm-nooverlap` condition to repeat it.
 
 The exact opt-in bundle became the chat default at the user's request on
@@ -187,11 +188,16 @@ folders.
 Read this file, [`research.md`](research.md), and
 [`AGENT_INVARIANTS.md`](AGENT_INVARIANTS.md) before changing code or starting
 an experiment. [`CONTRIBUTING.md`](../../CONTRIBUTING.md) defines the project
-rules. The current branch contains the corrective REAP integration; inspect
+rules. Inspect
 the worktree before every change instead of relying on a recorded clean/dirty
 state.
 
 ## Decision and current state
+
+The resume at the top supersedes this section where they disagree: the
+installed checkpoint is `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP`, not REAP,
+and the bundle, slab pack, and keep-warm defaults below replace the older
+off-states. The REAP-era promotion evidence is preserved as history.
 
 Our canonical backend is the MLX-backed `FlashNextBackend`. `chat.sh` defaults
 to the MLX-backed Metal runtime (`FLASHNEXT_METAL_RUNTIME=1`). For REAP Q4/G64,
@@ -204,17 +210,20 @@ controlled 32-token speed and exact-digest evidence below. We skip the
 long-turn quality gate at our request for this decision. This is a specific
 promotion exception, not proof of general quality or long-turn equivalence.
 
-The current research checkpoint is:
+The installed checkpoint is:
 
 ```text
-sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit
+Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP
 ```
 
-It uses generic MLX Q4/G64 expert weights and Q4/G32 n-gram weights. We keep
-the generic MLX Q4/G64 reference path available for REAP comparisons and rollback.
+It uses Q4/G32 expert weights with the checkpoint policy above (8 resident
+experts). The REAP-era promotion below compared generic MLX Q4/G64 execution
+against the G64 Metal executor on `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`
+(Q4/G64 expert weights, Q4/G32 n-gram weights), which is no longer installed.
+We keep the generic MLX reference path available for comparisons and rollback.
 Only the G64 executor default changes. G64 slabs remain off with
-`FLASHNEXT_SLAB_G64=0`, and stream-pack remains off with
-`FLASHNEXT_STREAM_PACK=0`. We reject and remove the native prototype because
+`FLASHNEXT_SLAB_G64=0`. Stream-pack and the exact bundle are on by default
+since 2026-09-23 (see the resume); the native prototype stays removed because
 it does not implement the complete model. MLX remains canonical; no native
 runtime flag is needed.
 
@@ -249,10 +258,10 @@ and `FLASHNEXT_STREAM_PACK_CHUNK=2`. The launcher only fills unset
 variables, so any member rolls back with an explicit value, for example
 `FLASHNEXT_IO_WORKERS=16 ./chat.sh`.
 
-We roll back to generic MLX Q4/G64 execution with an explicit override:
+We roll back to generic MLX execution with an explicit override:
 
 ```bash
-FLASHNEXT_METAL_G64=0 ./chat.sh --checkpoint "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
+FLASHNEXT_METAL_G64=0 ./chat.sh --model flashnext --checkpoint vontra-mtp
 ```
 
 The runtime flag selects the MLX-backed Metal path. The separate G64 flag
@@ -269,8 +278,8 @@ For compatible Q4/G32 checkpoints, the historical engineering control is
 epsilon `0.02`, chunk 2, and 16 I/O workers. Do not copy that profile onto
 REAP and call it a REAP measurement.
 
-The normal routing profile is `exact-quality`. Research-only profiles include
-`cache-aware`, `speculative-fast`, and MTP variants. They require their own
+The normal routing profile is `exact-quality`. Research-only profiles are
+`standard`, `fast-quality`, `cache-aware`, and `fused-quality`. They require their own
 quality and trajectory gates and are not normal defaults.
 
 REAP `xhigh` keeps its requested reasoning mode but caps reasoning within the
@@ -297,8 +306,9 @@ other checkpoints keep 32. The policy is keyed by content identity, so any path
 spelling or copy of the same files receives it. Pin history, slab packs and
 sessions use the location identity in the on-disk path spelling. Slab packs
 unused for 14 days are deleted (`FLASHNEXT_SLAB_PACK_MAX_AGE_DAYS`). The
-opt-in candidates `FLASHNEXT_PREFILL_LAST_ROW`, `FLASHNEXT_NORM_WEIGHT_CACHE`
-and `FLASHNEXT_SLAB_COUNTS=cumulative` stay off. `research.md` records the
+opt-in candidates `FLASHNEXT_PREFILL_LAST_ROW`
+and `FLASHNEXT_SLAB_COUNTS=cumulative` stay off. (`FLASHNEXT_NORM_WEIGHT_CACHE`
+is on as part of the 2026-09-23 bundle.) `research.md` records the
 evidence and the gates each one still needs.
 
 ## Legitimate validation on record
@@ -368,12 +378,13 @@ write the failed arm and available evidence to the result artifact before
 returning a failing status. Every artifact must bind the checkpoint identity,
 runtime-source fingerprint, and benchmark-harness fingerprint.
 
-Our normal G64 or REAP experiment protocol first requires a short exact-quality
+Our normal G64 experiment protocol first requires a short exact-quality
 gate, then long-turn quality with the same agent prompt and explicit sampling
 seed. A short matching digest is necessary but not sufficient. Our requested
 2026-09-17 G64 executor promotion is a specific exception: we skip long-turn
-validation without marking it passed. G64 slabs and stream-pack remain disabled
-until their separate quality and controlled performance gates are clear.
+validation without marking it passed. G64 slabs remain off
+until their separate quality and controlled performance gates are clear;
+stream-pack and the slab pack are on as part of the current defaults.
 
 Our pending long-turn G64 comparison retains Astra's recommendation and requires
 our permission before execution. We predeclare exactly three seeds, 7, 19,
@@ -411,30 +422,31 @@ Set up the local environment with:
 
 ```bash
 ./chat.sh setup
-./chat.sh --checkpoint "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
+./chat.sh --model flashnext --checkpoint vontra-mtp
 ```
 
 Use `--model-path` or `MACQWEN_FLASHNEXT_MODEL` for an explicit complete
-checkpoint. The REAP directory is normally under
-`$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
+checkpoint. The Vontra directory is normally under
+`$HOME/models/Qwen3.8-Flash-Next-MLX-4bit-MTP`.
 
 Before a code change, inspect the worktree and the last commit. Keep unrelated
 user changes intact and do not reset or discard them implicitly.
 
 ## Open risks and bugs
 
-- REAP long-turn quality and trajectory are unverified; hard reasoning turns
-  can loop or produce incomplete output.
-- We enable the custom Q4/G64 executor at our request despite the open
+- Vontra long-turn quality and trajectory are unverified beyond the recorded
+  gates; hard reasoning turns can loop or produce incomplete output.
+- We keep the G64 executor default on the strength of the REAP-era short
+  speed evidence above despite the open
   long-turn quality gate. The earlier interrupted attempt also used an oversized
-  `xhigh` allowance. It remains incomplete, not a quality failure. The new short
+  `xhigh` allowance. It remains incomplete, not a quality failure. The short
   speed evidence does not establish general quality or long-turn equivalence.
-- REAP checkpoint-specific RMSNorm and mixed Conv1d layout handling must remain
+- Vontra checkpoint-specific RMSNorm and mixed Conv1d layout handling must remain
   shape-checked and fingerprint-aware; do not rewrite checkpoint tensors.
 - Issue #23 tracks the bit-exact RMSNorm compile gate.
 - Issue #24 tracks routed-expert Q4/G64 and Q4/G128 investigation.
-- Issue #25 tracks the REAP-288 quality/performance gate, with REAP-384 as a
-  fallback checkpoint.
+- Issue #25 tracks the Flash-Next quality/performance gate (REAP-288 historical,
+  with REAP-384 as a fallback checkpoint).
 - Issue #43 tracks the pre-load wired-memory comparison.
 - Issue #45 tracks interval-valid Metal/SSD DMA contention evidence.
 - Issue #48 tracks SSD DMA and GPU contention outside Flash-Next.
@@ -457,11 +469,12 @@ our requested promotion does not resolve the separate long-turn quality gate.
    benchmark protocol.
 5. Retain the pending long-turn G64 quality comparison with packed residency off
    in both arms. Run it only with our permission; do not start a fused-down rewrite.
-6. Run a REAP-specific 32-versus-8 expert-pin comparison only with unchanged
-   routes, arithmetic, and packed-residency policy.
+6. Revisit expert-pin counts only with a new premise and unchanged
+   routes, arithmetic, and packed-residency policy. The Vontra 8-pin policy
+   is set.
 7. Treat last-row-only logits below the 2,048-token prefill threshold as a
    time-to-first-token and memory candidate, not a decode optimization.
-8. If investigating G64 or REAP performance, run the short digest gate first,
+8. If investigating G64 performance, run the short digest gate first,
    then the long-turn quality gate, then the reversed interleaved benchmark.
 9. Record new evidence in `research.md`, update this handoff only with the
    resulting operational decision, and state clearly whether the result is

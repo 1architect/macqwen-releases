@@ -1,8 +1,8 @@
 # Bonsai-2 measurements
 
 This directory supports the active
-[`research.md`](../research.md); operational instructions remain in
-[`handoff.md`](../handoff.md).
+[`research.md`](../../docs/bonsai2/research.md); operational instructions remain in
+[`handoff.md`](../../docs/bonsai2/handoff.md).
 
 All runs use greedy decoding with exact digests, one fresh child process per
 arm, and forward/reverse/forward rounds unless noted. Throughput shows median

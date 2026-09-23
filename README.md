@@ -2,78 +2,84 @@
 
 [![CI](https://github.com/1architect/macqwen-releases/actions/workflows/ci.yml/badge.svg)](https://github.com/1architect/macqwen-releases/actions/workflows/ci.yml)
 
-MACQWEN runs large language models on low-memory Apple Silicon Macs. Its
-primary runtime streams selected Flash-Next model data from SSD while keeping
-the dense model core in unified memory.
+MACQWEN streams sparse Mixture-of-Experts language models from SSD on
+low-memory Apple Silicon Macs. The primary runtime keeps the dense model
+core in unified memory while streaming selected expert rows and n-gram
+rows from the checkpoint on demand.
 
-The repository contains runtime code, tests, documentation, and measurement
-records. It does not contain model weights.
+Three resident runtimes (K2-Horizon 7B, Bonsai-2 27B, Qwen3.8-27B, all
+smaller than the primary MoE) are
+supported for comparison and research, but they are not the project's
+focus. Everything below leads with the streamed MoE runtime.
 
-## Supported runtimes
+## Primary runtime: Flash-Next (SSD-streamed sparse MoE)
 
-| Runtime | Role | Checkpoint | Launch |
-|---|---|---|---|
-| Flash-Next | Primary SSD-streamed runtime | Vontra 4-bit MTP (installed); oQ4 and REAP-288 are historical | `./chat.sh --model flashnext --checkpoint vontra-mtp` |
-| K2-Horizon 7B | Resident MLX alternative | Official 8-bit MLX checkpoint | `./chat.sh --model k2-horizon --checkpoint k2` |
-| Bonsai-2 27B | Experimental ternary, text-only runtime | Official 2-bit MLX checkpoint | `./chat.sh --model bonsai2 --checkpoint b2` |
-| Qwen3.8-27B | Research runtime | Compatible local V4 build | `./chat.sh BUILD --profile plain` |
+| Item | Value |
+|---|---|
+| Checkpoint | `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP` (installed; alias `vontra-mtp`) |
+| Weights | 22 safetensors shards, 3,747 indexed tensors (incl. 76 MTP), 113.2 GB / 105.4 GiB |
+| Quantisation | Uniform 4-bit affine, group 32; multimodal modules and MoE router gates stay BF16 |
+| Architecture | `qwen4_exp` sparse MoE: 48 layers, 512 routed experts (top-10) + 1 shared, vocab 248,320, 262,144 context |
+| Language stack | 125B total / 6B active, plus 51B n-gram table (20M entries) and a 4B MTP draft block (MTP disabled in production) |
+| Launch | `./chat.sh --model flashnext --checkpoint vontra-mtp` |
 
-## Reference performance (Flash-Next)
+Streaming means each token reads only the experts and n-gram rows it
+needs. `exact-quality` is the normal routing profile; the other profiles
+(`standard`, `cache-aware`, `fast-quality`, `fused-quality`) are research
+controls — see the [Flash-Next brief](docs/flashnext/brief.md).
 
-| Runtime | Operation | Result |
-|---|---|---:|
-| Flash-Next | Vontra 4-bit, 60-slot pack, 32 pins, 32 tokens, 4 arms | 2.28 tok/s median (2.02–2.77), 2.36 tok/s tail, 402 MB/token |
-| Flash-Next | Vontra 4-bit, 8 pins, 72 tokens | 2.14 tok/s, 2.10 tok/s tail, about 350 MB/token after pinning |
-| Flash-Next | Historical oQ4 (removed), 60-slot pack, 32 tokens, warm cache | 3.08 tok/s, 3.00 tok/s tail, 279.7 MB/token |
-| Flash-Next | Historical REAP-288 (removed), terminal sanity, 32 tokens | 3.74 tok/s median, 3.45 tok/s tail, 193.3 MB/token |
-| Flash-Next | Long-prompt prefill near 5,000 tokens | About 40–50 tok/s; 62.19 tok/s in a synthetic diagnostic |
+Current chat defaults live in `models/flashnext/settings/launch.py`:
+Metal runtime, 60-slot skew slab pack on a frozen per-checkpoint profile,
+GPU keep-warm on, 8 resident experts on this checkpoint (32 elsewhere),
+and the exact opt-in bundle (streamed embedding, compiled glue/norm,
+cached norm gain, interactive QoS, parallel n-gram prefill, both QSA
+flags, stream-pack chunk 2). Any member rolls back with an explicit
+value, for example:
 
-These observations come from the M4 test system and cover Flash-Next only.
-The first two rows describe the installed checkpoint. The oQ4 and REAP rows
-were measured on checkpoints that are no longer installed and cannot be
-reproduced here; they are not a baseline for the current runtime. Short
-32-token arms run inside a warm-up window of about 40 tokens, so they read
-higher than longer answers. The 62.19 tok/s figure is not production
-throughput. See the [Flash-Next measurement evidence](results/flashnext/)
-for conditions and provenance.
+```bash
+FLASHNEXT_GPU_KEEPWARM=0 ./chat.sh --model flashnext --checkpoint vontra-mtp
+```
 
-Flash-Next REAP-288 currently uses the G64 Metal executor by default. Its
-short exact-digest speed result supports that executor choice under the tested
-conditions; long-turn quality remains unverified. See the
-[Flash-Next handoff](docs/flashnext/handoff.md) for the operational state.
+## Reference performance (Flash-Next, installed checkpoint)
 
-We test on an M4 Mac with 16 GB of unified memory and a 256 GB SSD. Results
-vary with memory pressure, SSD state, and the macOS file cache.
+| Operation | Result |
+|---|---|
+| Current defaults, 128 tokens, 8 pins, slab on | 3.05–3.09 tok/s; bundle +2.4% mean over pre-bundle, 3/3 pairs, two-SE 1.0%, digest `e19af44d5268e9d1` |
+| 128-token paired arms, 8 pins, keep-warm off / on | 2.33–2.41 / 2.86–2.93 tok/s |
+| `bench_production`, 96 tokens, keep-warm off / on | 2.19 / 2.55 tok/s |
+| Chat, 8 pins (policy), 72 tokens | about 2.14 tok/s, about 350 MB/token |
+| Historical 60-slot protocol, 32 pins, 32 tokens, 4 arms | 2.28 tok/s median (2.02–2.77), 2.36 tok/s tail, 402 MB/token |
+| Historical oQ4 (not installed), 60-slot pack, 32 tokens | 3.08 tok/s, 3.00 tok/s tail, 279.7 MB/token |
+| Historical REAP-288 (not installed), terminal sanity, 32 tokens | 3.74 tok/s median, 3.45 tok/s tail, 193.3 MB/token |
+| Long-prompt prefill near 5,000 tokens (historical oQ4) | About 40–50 tok/s; 62.19 tok/s in a synthetic diagnostic (not production) |
+
+Measured on an M4 Mac with 16 GB unified memory and a 256 GB SSD; the
+first rows are the installed checkpoint and the oQ4/REAP rows cannot be
+reproduced here. Short 32-token arms sit inside a ~40-token warm-up
+window and read higher than longer answers. Evidence:
+[results/flashnext/](results/flashnext/) (latest:
+`20260923-035157-bundle-slab/`, `20260923-034046-extras-split/`),
+[Flash-Next handoff](docs/flashnext/handoff.md). Goal: 3 tok/s decode
+(333 ms/token) without quantizing or pruning.
 
 ## Quick start
 
-Requirements: an Apple Silicon Mac, Python 3.12, a fast SSD, and enough free
-space for at least one checkpoint.
-
-Clone the repository and create its managed environment:
+Requirements: Apple Silicon Mac, Python 3.12, a fast SSD, and ~120 GB
+free for the checkpoint plus page-cache headroom.
 
 ```bash
 git clone https://github.com/1architect/macqwen-releases.git
 cd macqwen-releases
 ./chat.sh setup
+hf download Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP \
+  --local-dir "$HOME/models/Qwen3.8-Flash-Next-MLX-4bit-MTP"
+./chat.sh --model flashnext --checkpoint vontra-mtp
 ```
 
-Download the recommended oQ4 checkpoint:
-
-```bash
-hf download Vontra/Qwen3.8-Flash-Next-MLX-oQ4 \
-  --local-dir "$HOME/models/Qwen3.8-Flash-Next-MLX-oQ4"
-```
-
-Start a chat:
-
-```bash
-./chat.sh --model flashnext --checkpoint oq4
-```
-
-When exactly one compatible checkpoint is installed, MACQWEN selects it
-automatically. With multiple checkpoints, select one with `--model` and
-`--checkpoint`.
+With exactly one compatible checkpoint installed, MACQWEN selects it
+automatically. Set `MACQWEN_MODEL_ROOT` when checkpoints live outside
+`~/models`. A full path also works with `--checkpoint`, and the
+launcher validates the checkpoint before loading.
 
 Run the project live-test terminal:
 
@@ -85,47 +91,14 @@ It asks which installed runtime and checkpoint to test, discovers that
 runtime's cases, and writes each run to its own folder under
 `results/<runtime>/`. See [docs/testing.md](docs/testing.md).
 
-## Flash-Next
+## Secondary runtimes (supported, not the focus)
 
-Flash-Next streams routed experts and n-gram data from SSD. `exact-quality` is
-the normal routing profile. The other profiles are research controls and may
-change output; use them only with the quality and measurement rules in the
-[Flash-Next documentation](docs/flashnext/brief.md).
-
-The current REAP rollback is generic MLX expert execution:
-
-```bash
-FLASHNEXT_METAL_G64=0 ./chat.sh --checkpoint "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
-```
-
-G64 slabs, stream packing, and QSA optimization flags remain off. The removed
-native-runtime prototype is not part of the supported launcher.
-
-### Flash-Next checkpoints
-
-| Alias | Checkpoint | Use |
-|---|---|---|
-| `oq4` | `Vontra/Qwen3.8-Flash-Next-MLX-oQ4` | Recommended quality baseline |
-| `oq3` / `oq3-mtp` | `Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP` | Disk-constrained research only; it failed the recorded code-quality gate |
-| — | `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit` | Current research checkpoint; use its full path |
-
-Download REAP-288 with:
-
-```bash
-hf download sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit \
-  --local-dir "$HOME/models/Qwen3.8-Flash-Next-REAP-288-MLX-4bit"
-```
-
-Set `MACQWEN_MODEL_ROOT` when checkpoints live outside `~/models`. The
-launcher accepts a full checkpoint path with `--checkpoint` and validates the
-checkpoint before loading it.
-
-## Other runtimes
+They run resident checkpoints with no SSD streaming. Prefer them only
+for comparison or their own research questions.
 
 ### K2-Horizon 7B
 
-K2-Horizon is a resident 7B MLX model. It does not use Flash-Next streaming or
-routing.
+Resident 7B MLX model (about 9.6 GB on disk).
 
 ```bash
 hf download abenzerps/K2-Horizon-7B-MLX-8bit \
@@ -133,14 +106,14 @@ hf download abenzerps/K2-Horizon-7B-MLX-8bit \
 ./chat.sh --model k2-horizon --checkpoint k2
 ```
 
-The checkpoint supplies executable `model.py` code. Use a checkpoint source we
-trust. Read the [K2-Horizon brief](docs/k2_horizon/brief.md) and
-[handoff](docs/k2_horizon/handoff.md) before changing or benchmarking it.
+The checkpoint supplies executable `model.py`; use a source we trust.
+See the [brief](docs/k2_horizon/brief.md) and
+[handoff](docs/k2_horizon/handoff.md).
 
 ### Bonsai-2 27B
 
-Bonsai-2 is an experimental ternary-weight 27B runtime. Milestone 1 is
-text-only and uses the checkpoint's bundled `runtime/` loader.
+Experimental ternary-weight 27B, text-only (Milestone 1), via the
+checkpoint's bundled `runtime/` loader.
 
 ```bash
 hf download prism-ml/Ternary-Bonsai-2-27B-mlx-2bit \
@@ -148,23 +121,20 @@ hf download prism-ml/Ternary-Bonsai-2-27B-mlx-2bit \
 ./chat.sh --model bonsai2 --checkpoint b2
 ```
 
-The backend validates the bundled loader before selecting the checkpoint. Use
-a checkpoint source we trust. See the [Bonsai-2 brief](docs/bonsai2/brief.md),
-[research record](docs/bonsai2/research.md), and
+See the [brief](docs/bonsai2/brief.md) and
 [handoff](docs/bonsai2/handoff.md).
 
 ### Qwen3.8-27B
 
-The research runtime uses the managed environment and a compatible local V4
-checkpoint. A supported build must include `bf16-ends/` beside its weights.
-`BUILD` is the directory suffix under the model root:
+Dense research runtime on a compatible local V4 build (must include
+`bf16-ends/` beside its weights). `BUILD` is the directory suffix:
 
 ```bash
 ./chat.sh BUILD --profile plain
 ```
 
-See the [Qwen3.8-27B handoff](docs/qwen27b/handoff.md) before using or
-benchmarking this runtime.
+See the [handoff](docs/qwen27b/handoff.md). No V4 checkpoint is
+currently installed.
 
 ## Daily use
 
@@ -179,8 +149,10 @@ Inside the chat, use:
 /quit
 ```
 
-Use `/status` for model, profile, routing, context, and memory information.
-Use `/config display animate off` to disable output animation.
+Use `/status` for model, profile, routing, context, and memory
+information. Flash-Next extras: `/config model gpu-keepwarm off`
+disables keep-warm and saves the choice. Use
+`/config display animate off` to disable output animation.
 
 ## Local API server
 
@@ -190,9 +162,9 @@ Start the local server with:
 ./chat.sh --server
 ```
 
-The compatibility command `/server` is also accepted inside chat. The default
-address is `http://127.0.0.1:8080`, and the server processes one generation at
-a time.
+The compatibility command `/server` is also accepted inside chat. The
+default address is `http://127.0.0.1:8080`, and the server processes one
+generation at a time.
 
 | Protocol | Endpoint |
 |---|---|
@@ -247,9 +219,10 @@ override with `MACQWEN_PYTHON` or a model-specific `MACQWEN_*_PYTHON` variable.
 
 - No checkpoint appears: pass its full path with `--checkpoint`.
 - A download is incomplete: resume the `hf download` command into the same directory.
+- The Vontra download is ~105 GiB: confirm free space before retrying.
 - Several checkpoints are installed: provide both `--model` and `--checkpoint`.
 - Generation slows down: close memory-heavy applications and retry.
-- K2-Horizon or Bonsai-2 is not selected: provide its model and checkpoint aliases explicitly.
+- A secondary runtime is not selected: pass its model and checkpoint aliases explicitly.
 - A command has changed: run `/help` for the active command list.
 
 ## Tests and development
@@ -270,7 +243,7 @@ Use `./tests/run.sh` for live-model evidence. Every run writes to
 `results/<runtime>/`. Read [docs/testing.md](docs/testing.md),
 [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [measurement standard](docs/measurement-standard.md) before changing code or
-running experiments.
+running experiments. Do not run benchmarks without approval of the plan.
 
 ## Documentation and layout
 
@@ -287,17 +260,20 @@ provenance and may contain obsolete commands.
 ```text
 macqwen/                    Shared chat, commands, settings, tools, and test engine
 tests/                      Project live-test terminal
-models/flashnext/           Flash-Next runtime and benchmarks
+models/flashnext/           Flash-Next streaming runtime and benchmarks
 models/k2_horizon/          K2-Horizon runtime, adapter, settings, and tests
 models/bonsai2/             Bonsai-2 runtime, kernels, settings, and tests
 models/qwen27b/             Qwen3.8-27B runtime and research utilities
 docs/                       Current guides, evidence, and historical records
+results/                    Per-run measurement records (one folder per run)
 ```
 
 ## License
 
 MACQWEN source code uses the MIT License. Models and dependencies use their
-own licenses. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+own licenses. See [LICENSE](LICENSE) and [NOTICE](NOTICE). The Vontra
+checkpoint card carries the Qwen Community License 1.0; review it before
+use or redistribution.
 
 ## Acknowledgements
 

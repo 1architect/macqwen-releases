@@ -2,26 +2,29 @@
 
 ## Purpose
 
-Flash-Next runs a sparse 176B Qwen model on a 16 GB Apple Silicon Mac. Large sparse tensor families stay on SSD. Flash-Next is the primary
+Flash-Next runs a sparse Qwen MoE on a 16 GB Apple Silicon Mac. Large sparse tensor families stay on SSD. Flash-Next is the primary
 MACQWEN runtime.
 
 ## Model and checkpoint
 
-The current research checkpoint is `sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit`.
-It has 131 indexed shard files, 288 routed experts per layer, Q4/G64 expert
-weights, and Q4/G32 n-gram weights. Our 2026-09-17 short benchmark supports
-G64 executor promotion. General quality and long-turn equivalence remain unverified.
+The installed checkpoint is `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP` (alias `vontra-mtp`): 48 layers, 512 routed experts (top-10) plus 1 shared expert, uniform 4-bit affine weights at group size 32, 22 safetensors shards totalling 113.2 GB, vocabulary 248,320 and 262,144 context. The language stack holds 125B parameters with 6B active per token, beside a 51B hashed n-gram table and a 4B native MTP draft block. MTP stays disabled in production. Its checkpoint policy sets 8 resident experts; other checkpoints keep 32.
 
 `Vontra/Qwen3.8-Flash-Next-MLX-oQ4` remains the recorded quality baseline. It
 has 111.7 GB of model weights across 22 safetensors shards, quantised from the
 official BF16 weights with a 4-bit base and 228 protected modules at 5 and 8
-bit. It is not installed during the current REAP work.
+bit. It is not installed, so its numbers cannot be reproduced here.
+
+`sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit` is a historical research
+checkpoint. It has 131 indexed shard files, 288 routed experts per layer,
+Q4/G64 expert weights, and Q4/G32 n-gram weights. It is not installed. Our
+2026-09-17 short benchmark on REAP supports the G64 executor default below.
+General quality and long-turn equivalence remain unverified.
 
 `Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP` is supported and is not installed. It has 86.2 GiB across 19 shards with a 3-bit base and 746
 protected modules. It runs faster and fails a code task that oQ4 passes, so it was removed from the reference machine. See the checkpoint
 quality section below.
 
-REAP compatibility accepts both n-gram shard naming conventions, selects the
+Checkpoint compatibility accepts both n-gram shard naming conventions, selects the
 RMSNorm convention per model, sanitizes mixed Conv1d layouts, and filters stale
 expert IDs from old pin history. `chat.sh` defaults to the MLX-backed Metal
 runtime (`FLASHNEXT_METAL_RUNTIME=1`). We default to the G64 Metal executor
@@ -32,7 +35,7 @@ bundle (streamed embedding, compiled glue, QoS, QSA flags, stream-pack and
 others; see `settings/launch.py`).
 
 We enabled this default on 2026-09-17 after six reversed interleaved pairs
-of 32 tokens. Reference median is 2.374 tok/s; Metal median is 2.665 tok/s.
+of 32 tokens on REAP. Reference median is 2.374 tok/s; Metal median is 2.665 tok/s.
 Our paired gain is +13.4% mean and +15.1% median, with 6/6 wins and
 two-sided sign-test `p=0.031`. All output digests match. Our
 [`research.md`](research.md) records the artifacts and controls.
@@ -44,7 +47,8 @@ Packed residency remains unpromoted.
 
 The runtime saves an explicit `--checkpoint` choice and otherwise selects the sole complete compatible local checkpoint.
 
-REAP has 288 routed experts per layer; the oQ4 baseline has 512. Each token
+The installed Vontra checkpoint has 512 routed experts per layer; the
+historical REAP checkpoint has 288. Each token
 uses a small expert set. The large hashed n-gram table is also sparse at
 lookup time.
 
@@ -182,9 +186,10 @@ generations are incomplete gates, not quality failures.
 We require our permission before any new quality or performance run.
 Both QSA flags are on as part of the 2026-09-23 bundle; the existing
 allocation guard remains active.
-Residency is a separate policy question: a
-REAP-specific 32-versus-8 pin comparison must preserve routing and arithmetic
-and win on physical reads or sustained throughput. Extending last-row-only
+Residency is a separate policy question: the Vontra 8-pin policy is set by
+checkpoint identity, so further pin-count comparisons need a new premise and
+must preserve routing and arithmetic while winning on physical reads or
+sustained throughput. Extending last-row-only
 logits below the current 2,048-token threshold is a prefill latency and memory
 candidate, not a decode claim.
 
@@ -207,8 +212,10 @@ Threshold `1.0` keeps the shipped router selection.
 ## Status
 
 Our text runtime, five routing profiles, exact sessions, and shared chat
-integration are active. We default to G64 Metal execution for REAP and retain
-`FLASHNEXT_METAL_G64=0` as the generic MLX rollback. G64 slabs remain off;
+integration are active. We default to the Metal runtime with the G64 executor
+flag on and retain
+`FLASHNEXT_METAL_G64=0` as the generic MLX rollback; the supporting speed
+evidence is the REAP-era comparison above. G64 slabs remain off;
 the exact opt-in bundle, including stream-pack and the QSA flags, is on. Cache-aware stays optional; MTP stays
 disabled. Our requested promotion uses short controlled speed and exact-digest
 evidence. We skip long-turn quality validation at our request and leave general

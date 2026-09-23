@@ -52,13 +52,13 @@ Run checkpoint-free K2 tests:
 
 ```bash
 .venv/bin/python -m unittest discover \
-  -s models/k2_horizon -p 'test_*.py' -q
+  -s models/k2_horizon/tests/unit -t . -p 'test_*.py' -q
 ```
 
 Run affected shared tests and compile checks:
 
 ```bash
-.venv/bin/python -m unittest discover -s macqwen -p 'test_*.py'
+.venv/bin/python -m unittest discover -s macqwen/tests -t . -p 'test_*.py'
 .venv/bin/python -m compileall -q macqwen models/k2_horizon
 ```
 

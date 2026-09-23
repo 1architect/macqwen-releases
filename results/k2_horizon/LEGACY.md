@@ -11,8 +11,8 @@ are not a second test workflow. Follow the [measurement standard](../../docs/mea
 for new evidence, filenames, and incomplete-run labels.
 
 This directory supports the active
-[`research.md`](../research.md); operational instructions remain in
-[`handoff.md`](../handoff.md).
+[`research.md`](../../docs/k2_horizon/research.md); operational instructions remain in
+[`handoff.md`](../../docs/k2_horizon/handoff.md).
 
 This is our results index for the 2026-09-16 K2-Horizon 7B memory and decode
 check, plus our product profiling diagnostic and Metal diagnostic. We used

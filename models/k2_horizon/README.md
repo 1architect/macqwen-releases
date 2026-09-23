@@ -29,7 +29,7 @@ checkpoint from a source we trust.
 
 ```bash
 .venv/bin/python -m unittest discover \
-  -s models/k2_horizon -p 'test_*.py' -q
+  -s models/k2_horizon/tests/unit -t . -p 'test_*.py' -q
 ```
 
 ## Package map
@@ -40,6 +40,5 @@ checkpoint from a source we trust.
 | `checkpoint.py` | Checkpoint validation, discovery, and aliases |
 | `protocol.py` | Reasoning and JSON tool-call translation |
 | `settings.py` | Model-owned environment and session defaults |
-| `bench.py` | Fresh-process paired benchmark harness |
-| `cache.py` | Instance-level KV growth test support |
-| `test_*.py` | Checkpoint-free runtime and harness coverage |
+| `tests/bench/bench.py` | Fresh-process paired benchmark harness |
+| `tests/unit/test_*.py` | Checkpoint-free runtime and harness coverage |

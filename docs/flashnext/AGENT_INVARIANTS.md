@@ -136,7 +136,8 @@ defaults.
    our permission.
 4. Retain the predeclared-seed, completed-output G64 quality protocol as pending
    work. Our default promotion does not clear this gate or authorize a run.
-5. Compare 32 versus 8 REAP expert pins without changing routes or arithmetic.
+5. Revisit expert-pin counts only with a new premise and unchanged routes
+   or arithmetic. The Vontra 8-pin policy is set.
 6. Evaluate last-row-only prefill below 2,048 tokens as a TTFT/memory change.
 7. Profile the current reference path before deciding whether another
    checkpoint-specific G64 kernel experiment is worthwhile.

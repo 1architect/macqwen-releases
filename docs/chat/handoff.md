@@ -143,11 +143,12 @@ Its clauses keep direct answers, reject invented API names and results, request 
 
 Run the shared suite:
 
-.venv/bin/python -m unittest discover -s macqwen -p 'test_*.py'
-.venv/bin/python -m unittest discover -s models/flashnext -p 'test_*.py'
-.venv/bin/python -m unittest discover -s models/qwen27b -p 'test_*.py'
-.venv/bin/python -m unittest discover -s models/k2_horizon -p 'test_*.py'
-.venv/bin/python -m unittest discover -s models/bonsai2 -p 'test_*.py'
+```bash
+.venv/bin/python -m unittest discover -s macqwen/tests -t . -p 'test_*.py'
+.venv/bin/python -m unittest discover -s models/flashnext/tests/unit -t . -p 'test_*.py'
+.venv/bin/python -m unittest discover -s models/qwen27b/tests/unit -t . -p 'test_*.py'
+.venv/bin/python -m unittest discover -s models/k2_horizon/tests/unit -t . -p 'test_*.py'
+.venv/bin/python -m unittest discover -s models/bonsai2/tests/unit -t . -p 'test_*.py'
 .venv/bin/python -m compileall -q macqwen models/flashnext models/qwen27b models/k2_horizon models/bonsai2
 git diff --check
 ```
